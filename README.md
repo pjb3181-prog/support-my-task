@@ -42,6 +42,8 @@
 
 ## 실행 방법
 
+> ⚠️ JDK 17~21 필요. 최신 Android Studio(2026.x)의 JBR 25는 Gradle 8.9와 비호환.
+
 1. Android Studio 설치 (JBR 포함)
 2. Android SDK 설치 (platforms;android-35, build-tools, platform-tools)
 3. `local.properties`에 SDK 경로 설정 (Git 미커밋)

@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-08-19 14:23 - Android 개발환경 구축 + Phase 1 빌드 검증
+
+Completed:
+- Android Studio 2026.1.3.7 설치(공식 Google 배포, 관리자 권한 없이 NSIS 추출 방식)
+- JBR 21(JBRSDK 21.0.11) 설치 — 프로젝트(Gradle 8.9/AGP 8.7.3/Kotlin 2.0.21)와 호환되는 JDK
+- Android SDK 구성요소 설치: platform-tools, platforms;android-35, build-tools;34.0.0
+- Gradle Wrapper 생성(gradle-wrapper.jar, gradlew, gradlew.bat)
+- local.properties 생성(sdk.dir, Git 미커밋)
+- assembleDebug 빌드 성공 → app-debug.apk(8.9MB) 생성
+- Room 스키마 export 확인(app/schemas/1.json)
+- test 태스크 실행 성공(테스트 없음, NO-SOURCE)
+
+Changed:
+- gradle.properties: android.overridePathCheck=true 추가(한글 경로 우회)
+- 신규: gradle/wrapper/gradle-wrapper.jar, gradlew, gradlew.bat
+- 신규: app/schemas/1.json(Room 스키마 export)
+- 신규: local.properties(Git 미커밋)
+
+Test:
+- assembleDebug: BUILD SUCCESSFUL
+- test: BUILD SUCCESSFUL(NO-SOURCE)
+- APK: app/build/outputs/apk/debug/app-debug.apk(8,895,905 bytes)
+
+Known Issues:
+- Android Studio 설치가 관리자 권한(UAC) 요구 → NSIS 추출 방식으로 우회(정식 설치 아님)
+- 프로젝트 경로에 한글 포함 → android.overridePathCheck=true로 우회
+- Dropbox 폴더 내 .gradle 캐시 "immutable location" 오류 → org.gradle.projectcachedir로 우회
+- 최신 Android Studio(2026.1.3.7)의 JBR 25는 프로젝트(Gradle 8.9)와 비호환 → JBR 21 사용
+
+Next:
+- Phase 2: 제목 Parser + 단위 테스트
+
+---
+
 ## 2026-08-19 14:01 - Phase 1 / 프로젝트 스캐폴드 + Room DB 구성
 
 Completed:
