@@ -133,7 +133,34 @@ isTarget = isMine || (roomType != null)
 - 항목 origin: `TEMPLATE_COPY`(템플릿 복사) / `EVENT_ONLY`(이 일정에만 추가).
 - 템플릿 수정은 **신규 일정에만** 적용. 기존 체크리스트는 독립.
 
-## 8. Notification 구조
+## 8. Checklist 생성 파이프라인
+
+```
+Event (isTarget=true)
+    ↓
+roomType / scheduleType에 해당하는 Template 조회
+    ↓
+ROOM Template items → TYPE Template items 순서로 병합
+    ↓
+중복 제거 (trim + 대소문자 무시, exact match)
+    ↓
+Checklist + ChecklistItem 생성 (단일 transaction)
+```
+
+- **Template은 기준값**: 실제 일정에는 복사본(ChecklistItem)을 생성한다.
+  - Template에서 복사된 항목: `origin = TEMPLATE_COPY`, `templateItemId = 원본 TemplateItem.id`
+  - 사용자가 개별 일정에 추가한 항목: `origin = EVENT_ONLY`, `templateItemId = null`
+- **병합 순서**: ROOM → TYPE 고정. 각 템플릿 내부는 `sortOrder` 유지.
+- **중복 제거**: 정규화된 텍스트(trim + 대소문자 무시)가 같은 항목은 한 번만 유지.
+  - 중복 시 먼저 병합된(ROOM) 항목의 텍스트와 templateItemId 유지.
+  - 의미가 비슷해도 문자열이 다르면 중복으로 간주하지 않음 (fuzzy/AI 매칭 없음).
+- **Idempotency**: `checklists.eventId` UNIQUE + 생성 전 기존 Checklist 존재 확인.
+  - 동일 Event 재Sync 시 재생성 금지. 기존 completed/사용자 항목 보존.
+- **최초 생성 정책**: Event가 처음 target이 되었을 때만 생성. target→non-target 전이 시 즉시 삭제하지 않고 보존.
+- **제목/템플릿 변경**: 이미 생성된 Checklist는 자동 재생성하지 않음 (복사본 독립 유지).
+- **Transaction**: Checklist + ChecklistItem N개를 `@Transaction`으로 원자적 생성.
+
+## 9. Notification 구조
 
 - 알림은 **행동 지시형이 아니라 일정 존재 상기형**. 탭 시 체크리스트 화면 이동.
 - 규칙 세 가지 방식 중 하나만 사용:
@@ -142,7 +169,7 @@ isTarget = isMine || (roomType != null)
 - `appliesTo`: `ALL`(모든 일정) / `TIMED_ONLY`(시간 지정 일정만, All-day 제외)
 - All-day: T-60/T-30 미생성, 임의 시작 시각 표시 안 함.
 
-## 9. Room DB Entity 관계
+## 10. Room DB Entity 관계
 
 ```
 events (1) ──── (1) checklists (1) ──── (n) checklist_items
@@ -166,7 +193,7 @@ settings (독립, key-value)
 - `Instant` ↔ `Long`(epoch millis) 변환은 `Converters`가 담당.
 - enum(`TemplateKind`, `ItemOrigin`, `RuleAppliesTo`)은 Room 2.6.1 기본 지원(String name 저장).
 
-## 10. Event identification / Immutable ID 정책
+## 11. Event identification / Immutable ID 정책
 
 - 모든 Graph 요청에 `Prefer: IdType="ImmutableId"` 헤더 적용.
 - **stableKey 우선순위**:

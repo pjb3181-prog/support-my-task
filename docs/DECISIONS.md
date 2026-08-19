@@ -171,3 +171,62 @@ Reason:
 
 Alternatives:
 - 모든 캘린더 취합 → 범위 초과·복잡도 증가로 기각.
+
+---
+
+## 2026-08-19 - Checklist는 Template 참조가 아닌 복사본
+
+Decision:
+체크리스트 템플릿은 기준값일 뿐이며, 실제 일정에는 복사본(ChecklistItem)을 생성한다.
+Template에서 복사된 항목은 `origin = TEMPLATE_COPY` + `templateItemId = 원본 TemplateItem.id`,
+사용자가 개별 일정에 추가한 항목은 `origin = EVENT_ONLY` + `templateItemId = null`로 구분한다.
+
+Reason:
+템플릿을 직접 참조하면 템플릿 수정이 기존 일정의 진행 상태(완료/추가/삭제)와 충돌한다.
+복사본으로 분리하면 기존 체크리스트가 독립적으로 유지된다.
+
+Alternatives:
+- TemplateItem 직접 참조 → 템플릿 수정 시 기존 일정 오염으로 기각.
+
+---
+
+## 2026-08-19 - ROOM → TYPE 순으로 템플릿 병합
+
+Decision:
+체크리스트 항목은 ROOM 템플릿 항목 → TYPE 템플릿 항목 순서로 병합한다.
+각 템플릿 내부는 `sortOrder` 오름차순을 유지하고, 병합 결과의 sortOrder는 0부터 순차 재할당한다.
+
+Reason:
+장소(ROOM) 준비물이 유형(TYPE) 준비물보다 우선 표시되는 것이 사용자 관례와 일치한다.
+
+Alternatives:
+- TYPE → ROOM 순서 → 사용자 관례와 불일치로 기각.
+
+---
+
+## 2026-08-19 - 문자열 exact normalized match만 중복 제거
+
+Decision:
+ROOM + TYPE 템플릿 병합 시 중복 제거는 정규화된 텍스트(trim + 대소문자 무시)의 exact match로만 판정한다.
+중복 시 먼저 병합된(ROOM) 항목을 유지한다. 의미가 비슷해도 문자열이 다르면 중복으로 간주하지 않는다.
+
+Reason:
+규칙 기반·결정적 동작을 보장하고, AI/fuzzy 매칭의 불확실성과 오탐을 피한다.
+
+Alternatives:
+- fuzzy/AI 유사도 매칭 → 오탐·비결정성으로 기각.
+
+---
+
+## 2026-08-19 - 기존 Checklist 자동 재생성 금지
+
+Decision:
+Event의 title/scheduleType/roomType이 변경되거나 템플릿이 수정되어도 이미 생성된 Checklist는 자동 재생성하지 않는다.
+동일 Event 재Sync 시에도 `checklists.eventId` UNIQUE + 생성 전 존재 확인으로 중복 생성을 막는다.
+target→non-target 전이 시에도 기존 Checklist와 completed 상태를 보존한다.
+
+Reason:
+기존 체크리스트는 사용자가 이미 진행 중일 수 있어, 자동 재생성 시 혼란·데이터 손실 위험이 있다.
+
+Alternatives:
+- 기존 체크리스트 자동 갱신 → 사용자 진행 상태와 충돌로 기각.

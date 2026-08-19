@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import com.nomistake.app.data.local.entity.ChecklistEntity
 import com.nomistake.app.data.local.entity.ChecklistItemEntity
 import kotlinx.coroutines.flow.Flow
@@ -23,6 +24,28 @@ interface ChecklistDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertItem(item: ChecklistItemEntity): Long
+
+    @Query("SELECT * FROM checklist_items WHERE checklistId = :checklistId ORDER BY sortOrder ASC")
+    suspend fun getItems(checklistId: Long): List<ChecklistItemEntity>
+
+    @Query("SELECT COUNT(*) FROM checklists WHERE eventId = :eventId")
+    suspend fun countByEventId(eventId: Long): Int
+
+    /**
+     * Checklist + ChecklistItem N개를 단일 transaction으로 생성한다.
+     * 중간 실패 시 Checklist만 있고 Item이 없는 불완전 상태가 남지 않도록 보장한다.
+     *
+     * @return 생성된 Checklist id
+     */
+    @Transaction
+    suspend fun createChecklistWithItems(
+        checklist: ChecklistEntity,
+        items: List<ChecklistItemEntity>
+    ): Long {
+        val checklistId = insertChecklist(checklist)
+        insertItems(items.map { it.copy(checklistId = checklistId) })
+        return checklistId
+    }
 
     @Query("SELECT * FROM checklist_items WHERE checklistId = :checklistId ORDER BY sortOrder ASC")
     fun observeItems(checklistId: Long): Flow<List<ChecklistItemEntity>>

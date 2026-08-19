@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-08-19 15:00 - Phase 3: Checklist 생성/병합 엔진 + 단위/통합 테스트
+
+Completed:
+- ChecklistGenerator 구현 (순수 Kotlin, Android/Room 의존 없음)
+  - ROOM → TYPE 템플릿 병합 순서 고정, 각 템플릿 내부 sortOrder 유지
+  - 중복 제거: 정규화된 텍스트(trim + 대소문자 무시) exact match만 사용 (fuzzy/AI 없음)
+  - 중복 시 먼저 병합된(ROOM) 항목의 텍스트/templateItemId 유지
+  - 병합 결과 sortOrder 0부터 순차 재할당
+- ChecklistRepository 구현 (DB read/write 오케스트레이션)
+  - isTarget=false → no-op (Checklist/Item 생성 안 함)
+  - Idempotency: 생성 전 기존 Checklist 존재 확인 + checklists.eventId UNIQUE
+  - 최초 target 시 ROOM + TYPE 템플릿 조회 → 병합 → Checklist + ChecklistItem 생성
+  - scheduleType null 시 "일반회의" fallback
+- ChecklistDao에 @Transaction 생성 함수 추가 (Checklist + Item N개 원자적 생성)
+  - createChecklistWithItems, getItems, countByEventId 추가
+- 순수 도메인 모델 추가: TemplateItem, MergedChecklistItem
+- 단위 테스트 8개 (ChecklistGeneratorTest, JVM 순수)
+- 통합 테스트 8개 (ChecklistRepositoryTest, Robolectric + in-memory Room)
+  - Robolectric 4.14.1 + androidx.test:core 1.6.1 의존성 추가
+  - isIncludeAndroidResources=true 설정
+
+Changed:
+- 신규: app/src/main/java/com/nomistake/app/domain/{TemplateItem,MergedChecklistItem,ChecklistGenerator}.kt
+- 신규: app/src/main/java/com/nomistake/app/data/repository/ChecklistRepository.kt
+- 신규: app/src/test/java/com/nomistake/app/domain/ChecklistGeneratorTest.kt
+- 신규: app/src/test/java/com/nomistake/app/data/repository/ChecklistRepositoryTest.kt
+- 수정: app/src/main/java/com/nomistake/app/data/local/dao/ChecklistDao.kt (@Transaction + 조회 메서드)
+- 수정: gradle/libs.versions.toml (robolectric, androidx-test-core 추가)
+- 수정: app/build.gradle.kts (testOptions + testImplementation)
+- 수정: docs/ARCHITECTURE.md (§8 Checklist 생성 파이프라인 추가, 섹션 재번호)
+- 수정: docs/DECISIONS.md (복사본/병합순서/중복제거/재생성금지 결정 4건)
+
+Test:
+- test: BUILD SUCCESSFUL (31 tests, 0 failures, 0 errors, 0 skipped)
+  - ChecklistGeneratorTest 8 + ChecklistRepositoryTest 8 + EventTitleParserTest 15
+- assembleDebug: BUILD SUCCESSFUL
+- APK: C:/Users/parkj/AppData/Local/nomistake-build/app/outputs/apk/debug/app-debug.apk (8,912,347 bytes)
+
+Known Issues:
+- Robolectric in-memory Room 테스트는 JVM에서 실행 (Emulator 미사용). Android instrumentation 미사용.
+- JAVA_HOME이 셸에 미설정 → 빌드 시 JBR 21 경로를 명시적으로 지정 필요
+  (C:/Users/parkj/AppData/Local/jbr-21.0.11-windows-x64-b1163.116)
+- Graph 연동은 이번 Phase에서 미구현 (다음 Phase에서 구현 예정)
+
+Next:
+- Phase 4: MSAL 인증 + Graph 동기화 (MERI Calendar 선택 → selectedCalendarId 저장 → Event Sync)
+
+---
+
 ## 2026-08-19 14:42 - Phase 2: Event Title Parser + 단위 테스트
 
 Completed:
