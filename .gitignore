@@ -1,0 +1,46 @@
+# ===== Gradle =====
+.gradle/
+build/
+**/build/
+
+# ===== Android =====
+local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
+captures/
+.externalNativeBuild/
+.cxx/
+.navigation/
+
+# ===== IDE =====
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# ===== Secrets / Credentials (절대 커밋 금지) =====
+*.pem
+*.key
+secrets.properties
+keystore.properties
+client_secret*.json
+credentials.json
+*.token
+*.jwt
+msal_config.json
+auth_config.json
+
+# ===== 회사 대외비 / 개인 데이터 (절대 커밋 금지) =====
+*.ics
+schedule_data/
+confidential/
+대외비/
+*.pst
+*.ost
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
