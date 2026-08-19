@@ -25,11 +25,13 @@
 
 - **서버 없음**, **AI 없음**. 규칙 기반(제목 파서 + 템플릿 매핑)만 사용.
 - 동기화는 `CalendarSyncSource` 인터페이스로 추상화 → 테스트/교체 용이.
+  - `CalendarSyncSource`는 선택된 Calendar 하나의 Event만 반환한다(§3 참조).
 - MVVM: ViewModel이 UseCase를 호출, Room Flow를 UI에 노출.
 
 ## 2. Microsoft Graph Calendar Sync 구조
 
 - **인증**: MSAL (Microsoft Authentication Library)로 OAuth2 토큰 획득.
+- **Calendar 선택**: 이름이 `MERI`인 캘린더만 선택(§3 참조). 선택된 Calendar ID로만 동기화.
 - **동기화 주기**: 30분(기본) + 앱 실행 시 즉시 + 수동 새로고침. WorkManager 사용.
 - **요청 헤더**: 모든 Graph 요청에 `Prefer: IdType="ImmutableId"` 적용.
 - **수정 처리**: stableKey 기준 upsert.
@@ -41,7 +43,63 @@
   - target → non-target: 알림 취소 / 목록 제거 / soft-delete
   - non-target → target: 활성화 / 체크리스트 생성 / 알림 등록
 
-## 3. Event Title Parser
+## 3. Outlook Calendar 선택 정책 (MERI 전용)
+
+- v1은 사용자의 모든 Outlook 캘린더를 읽지 않는다. **이름이 정확히 `MERI`인 캘린더 하나만** 처리한다.
+- 기본 Calendar 및 다른 계정/다른 캘린더는 처리하지 않는다.
+
+### 최초 선택 흐름 (Graph 연동 Phase에서 구현)
+
+1. Microsoft 로그인
+2. 접근 가능한 Calendar 목록 조회
+3. 이름이 정확히 `MERI`인 Calendar 탐색
+4. 발견되면 해당 Calendar의 ID를 앱 설정에 저장
+5. 이후 일정 동기화는 저장된 Calendar ID에 대해서만 수행
+
+- 초기 기본 대상 이름: `MERI` (최초 자동 선택을 위한 기본값일 뿐, 핵심 로직에 하드코딩하지 않음)
+- 설정 저장값: `selectedCalendarId`, `selectedCalendarName` (SettingEntity key-value로 저장, DB migration 불필요)
+- 향후 설정 화면에서 "동기화할 Outlook 캘린더 변경" 기능을 추가할 수 있도록 구조를 열어둠.
+
+### Calendar ID 우선 사용
+
+- 동기화할 때마다 Calendar 이름을 다시 검색하지 않는다.
+- 최초 선택 후에는 저장된 `selectedCalendarId`로 해당 Calendar만 조회한다.
+- Calendar 이름은 화면 표시 및 재선택을 위한 메타데이터로만 사용한다.
+
+### CalendarSyncSource 계약
+
+- `CalendarSyncSource`는 모든 Calendar의 Event를 취합하지 않는다.
+- **선택된 Calendar 하나의 Event만 반환**하는 것이 기본 계약이다.
+- calendarId는 UI/비즈니스 로직 여러 곳에서 직접 관리하지 않고 한 곳(Calendar 설정 Repository)에서 책임진다.
+- 향후 Graph 구현 시: `selected calendar → calendarView` 순서로 동기화.
+
+### 처리 파이프라인
+
+```text
+Microsoft account
+    ↓
+Calendar 목록
+    ↓
+MERI Calendar 선택
+    ↓
+selectedCalendarId 저장
+    ↓
+MERI Calendar Event만 Sync
+    ↓
+Event Title Parser
+    ↓
+[대] / [세] / attendeeCode 파싱
+    ↓
+isTarget 판정
+    ↓
+Checklist 생성
+    ↓
+Notification
+```
+
+- 다른 Calendar의 Event는 Parser 단계까지 전달하지 않는다.
+
+## 4. Event Title Parser
 
 ```
 1) roomType: ^\[(대|세)\] → "대" | "세" | null
@@ -52,13 +110,13 @@
    → 없으면 null → "일반회의" fallback
 ```
 
-## 4. `[대]`, `[세]`, attendee code 규칙
+## 5. `[대]`, `[세]`, attendee code 규칙
 
 - `[대]` = 대회의실, `[세]` = 세미나실 (장소 태그, 일정 유형과 독립·동시 적용)
 - attendee code = 제목 **마지막 대괄호 `[...]`만** 파싱. 그 내부에서만 `"종"` 검색.
   - 본문/다른 괄호의 `"종"`은 절대 사용 안 함 (확정 규칙).
 
-## 5. 일정 처리 대상 판정식
+## 6. 일정 처리 대상 판정식
 
 ```
 isTarget = isMine || (roomType != null)
@@ -66,7 +124,7 @@ isTarget = isMine || (roomType != null)
 
 - `isMine=false && roomType=null` → 완전 무시(목록에도 표시 안 함)
 
-## 6. Checklist Template 구조
+## 7. Checklist Template 구조
 
 - 템플릿은 `(kind, key)` 조합이 유일.
   - `ROOM`: key = `대` | `세`
@@ -75,7 +133,7 @@ isTarget = isMine || (roomType != null)
 - 항목 origin: `TEMPLATE_COPY`(템플릿 복사) / `EVENT_ONLY`(이 일정에만 추가).
 - 템플릿 수정은 **신규 일정에만** 적용. 기존 체크리스트는 독립.
 
-## 7. Notification 구조
+## 8. Notification 구조
 
 - 알림은 **행동 지시형이 아니라 일정 존재 상기형**. 탭 시 체크리스트 화면 이동.
 - 규칙 세 가지 방식 중 하나만 사용:
@@ -84,7 +142,7 @@ isTarget = isMine || (roomType != null)
 - `appliesTo`: `ALL`(모든 일정) / `TIMED_ONLY`(시간 지정 일정만, All-day 제외)
 - All-day: T-60/T-30 미생성, 임의 시작 시각 표시 안 함.
 
-## 8. Room DB Entity 관계
+## 9. Room DB Entity 관계
 
 ```
 events (1) ──── (1) checklists (1) ──── (n) checklist_items
@@ -108,7 +166,7 @@ settings (독립, key-value)
 - `Instant` ↔ `Long`(epoch millis) 변환은 `Converters`가 담당.
 - enum(`TemplateKind`, `ItemOrigin`, `RuleAppliesTo`)은 Room 2.6.1 기본 지원(String name 저장).
 
-## 9. Event identification / Immutable ID 정책
+## 10. Event identification / Immutable ID 정책
 
 - 모든 Graph 요청에 `Prefer: IdType="ImmutableId"` 헤더 적용.
 - **stableKey 우선순위**:

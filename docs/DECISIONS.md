@@ -124,3 +124,50 @@ Reason:
 
 Alternatives:
 - 별도 유형으로 분리 → v1에서 불필요한 복잡도로 기각.
+
+---
+
+## 2026-08-19 - Outlook 캘린더는 이름이 `MERI`인 캘린더 하나만 동기화
+
+Decision:
+v1은 사용자의 모든 Outlook 캘린더를 읽지 않고, 이름이 정확히 `MERI`인 캘린더 하나만 처리한다.
+기본 Calendar 및 다른 계정/다른 캘린더는 처리하지 않는다.
+
+Reason:
+사용자의 Outlook에는 여러 계정/캘린더가 존재하지만, 이 앱의 대상은 MERI 업무 일정뿐이다.
+전체 캘린더를 읽으면 노이즈가 많고 개인정보 노출 범위도 커진다.
+
+Alternatives:
+- 모든 캘린더 동기화 → 노이즈·개인정보 노출로 기각.
+- 사용자가 매번 수동 선택 → 번거로움으로 기각(최초 자동 선택 + 설정 변경 구조 채택).
+
+---
+
+## 2026-08-19 - 최초 Calendar 선택은 이름 `MERI` 자동 탐색, 이후 Calendar ID 우선 사용
+
+Decision:
+최초에는 이름이 정확히 `MERI`인 Calendar를 자동 탐색해 선택하고, 그 ID를 설정에 저장한다.
+이후 동기화는 저장된 `selectedCalendarId`로만 수행하며, 이름을 매번 재검색하지 않는다.
+`MERI`는 최초 자동 선택 기본값일 뿐 핵심 로직에 하드코딩하지 않는다.
+
+Reason:
+이름 재검색은 불안정(이름 변경/중복)하고 비효율적이다. ID 기반이 안정적이다.
+향후 설정 화면에서 다른 캘린더로 변경할 수 있도록 열어둔다.
+
+Alternatives:
+- 이름으로 매번 검색 → 불안정·비효율로 기각.
+- `MERI`를 코드에 하드코딩 → 확장성 저하로 기각.
+
+---
+
+## 2026-08-19 - CalendarSyncSource는 선택된 Calendar 하나의 Event만 반환
+
+Decision:
+`CalendarSyncSource`는 모든 Calendar의 Event를 취합하지 않고, 선택된 Calendar 하나의 Event만 반환한다.
+calendarId는 UI/비즈니스 로직 여러 곳에서 직접 관리하지 않고 한 곳(Calendar 설정 Repository)에서 책임진다.
+
+Reason:
+동기화 범위를 단일 캘린더로 한정해 파이프라인을 단순화하고, calendarId 관리 책임을 한 곳에 모은다.
+
+Alternatives:
+- 모든 캘린더 취합 → 범위 초과·복잡도 증가로 기각.

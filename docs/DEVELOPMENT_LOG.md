@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-08-19 14:42 - Phase 2: Event Title Parser + 단위 테스트
+
+Completed:
+- Outlook Calendar Sync 범위 설계 반영 (ARCHITECTURE.md §3, DECISIONS.md 3건)
+  - 이름이 `MERI`인 캘린더 하나만 동기화 (기본 Calendar/다른 계정은 처리 안 함)
+  - 최초 선택은 `MERI` 자동 탐색, 이후 `selectedCalendarId` 우선 사용 (이름 재검색 안 함)
+  - `CalendarSyncSource`는 선택된 Calendar 하나의 Event만 반환 (calendarId는 한 곳에서 책임)
+- EventTitleParser 구현 (순수 Kotlin, Android Context/Room/Network 의존 없음)
+  - roomType(`[대]`/`[세]` 맨 앞만), attendeeCode(마지막 `[...]`만), isMine(attendeeCode 내 `"종"`만)
+  - cleanTitle(태그 제거 + 앞뒤 공백 제거), scheduleType(priority 매칭 + "일반회의" fallback, 대소문자 무시)
+  - isTarget = isMine || (roomType != null)
+- 단위 테스트 15개 작성 (정상 5 + edge 10)
+- JUnit 4.13.2 의존성 추가
+
+Changed:
+- 신규: app/src/main/java/com/nomistake/app/domain/{ScheduleTypeRule,ParsedTitle,EventTitleParser}.kt
+- 신규: app/src/test/java/com/nomistake/app/domain/EventTitleParserTest.kt
+- 수정: gradle/libs.versions.toml (junit 추가), app/build.gradle.kts (testImplementation)
+- 수정: build.gradle.kts (build 디렉터리를 Dropbox 밖으로 이동)
+- 수정: docs/ARCHITECTURE.md (§3 Calendar 선택 정책 추가, 섹션 재번호)
+- 수정: docs/DECISIONS.md (MERI 전용 Sync 결정 3건)
+
+Test:
+- test: BUILD SUCCESSFUL (15 tests, 0 failures, 0 errors, 0 skipped)
+- assembleDebug: BUILD SUCCESSFUL
+- APK: C:/Users/parkj/AppData/Local/nomistake-build/app/outputs/apk/debug/app-debug.apk (8,912,289 bytes)
+
+Known Issues:
+- Dropbox가 app/build 디렉터리를 잠그는 문제 → build 디렉터리를 Dropbox 밖(C:/Users/parkj/AppData/Local/nomistake-build)으로 이동
+- Graph 연동은 이번 Phase에서 미구현 (Phase 3에서 구현 예정)
+
+Next:
+- Phase 3: MSAL 인증 + Graph 동기화 (MERI Calendar 선택 → selectedCalendarId 저장 → Event Sync)
+
+---
+
 ## 2026-08-19 14:23 - Android 개발환경 구축 + Phase 1 빌드 검증
 
 Completed:
