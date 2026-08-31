@@ -319,3 +319,68 @@ dynamic late-binding은 Outlook/typelib 버전과 무관하게 동작한다.
 Alternatives:
 - winget으로 .NET 8 SDK 설치 → 검증 전 소프트웨어 설치를 피하는 원칙으로 기각(향후 검토).
 - COMReference(tlbimp) → typelib 버전 의존·빌드 환경 요구로 기각.
+## 2026-08-31 - MERI Folder 재접근은 "저장된 EntryID/StoreID 직접 재오픈 우선 → NavigationPane fallback" (Phase 4B)
+
+Decision:
+MERI(M365 Group 캘린더) Folder 접근은 매번 NavigationPane을 탐색하지 않는다.
+1차로 이전 실행에서 저장한 Folder EntryID/StoreID(%LOCALAPPDATA% 로컬 파일)로
+`Session.GetFolderFromID(entryId, storeId)` 직접 재오픈하고(반환 폴더 Name='MERI' 재검증),
+실패 시 NavigationPane(CalendarModule → '모든 그룹 일정') 탐색 fallback, 찾으면 FolderID를
+다시 저장해 자가회복한다. GetSharedDefaultFolder는 최후 보조로 유지한다.
+
+Reason(2026-08-31 실측 — Case A/B/C/D 전부):
+- Case A(MERI 캘린더 뷰 열림) / Case B(메일 뷰, MERI 뷰 닫힘): GetFolderFromID 성공 —
+  UI 뷰 상태와 무관. Phase 4A의 ActiveExplorer 의존성이 재오픈 경로에서는 제거된다.
+- Case C(Outlook 완전 재시작 후 이전 세션의 ID): 성공 — EntryID/StoreID는 세션 간에도 유효.
+- Case D(ID 무효화): 실패를 감지해 NavigationPane fallback이 자동 복구 + ID 재저장.
+- 직접 재오픈은 NavigationPane 전체 탐색 대비 RCW 획득 수가 크게 적다(15 vs 98/cycle 실측).
+
+Alternatives:
+- 매 poll NavigationPane 전체 탐색 → 동작하지만 느리고 Explorer/UI 상태에 의존해 기각.
+- 장기 유지 Folder 객체 → 사용자 Outlook 재시작 시 stale RCW 위험으로 기각.
+
+## 2026-08-31 - PC Companion 일정 식별자: seriesKey=GlobalAppointmentID, occurrenceKey=seriesKey+Start (Phase 4B)
+
+Decision:
+- `seriesKey` = `GlobalAppointmentID`(읽기 실패 시 `"EID:"+EntryID` fallback): 일정(series/단일)의
+  안정 identity.
+- `occurrenceKey` = 반복 일정은 `seriesKey + "|" + Start(UTC Ticks)`, 비반복은 `seriesKey` 단독.
+- `EntryID`는 보조·진단용(identity 아님), `LastModificationTime`은 변경 감지 보조.
+- 시간 변경(회의 10:00→11:00)은 "기존 일정의 시간 수정"으로 처리(diff 엔진이 seriesKey 기반
+  time-moved 재매칭). "삭제+신규"로 오분류하지 않는다.
+
+Reason(문서 + 실측):
+- MS Learn(AppointmentItem.GlobalAppointmentID): EntryID가 바뀌는 상황(이동/재내보내기)에서도
+  불변, 회의 업데이트/응답을 특정 일정과 상관 짓는 MAPI 속성, 모든 copy에서 동일.
+- 실측(개인 캘린더 [NoMistake-TEST], 승인 후 생성→수정→완전 삭제): 단일 일정 시간 2회 변경에도
+  GlobalAppointmentID 불변; 반복 occurrence 시간 변경(exception) 후에도 GID == 마스터 GID 유지,
+  RecurrenceState 2(olApptOccurrence)→3(olApptException) 전이 확인.
+- Phase 4A MERI 실측: 마스터/occurrence GlobalAppointmentID 동일.
+- Graph 경로의 stableKey 정책(§11: iCalUId / seriesMasterId+startTime)과 호환 대응.
+
+Alternatives:
+- GlobalAppointmentID + Start를 occurrence key로만 쓰고 시간 변경을 삭제+신규로 처리 →
+  사용자에게 잘못된 삭제/추가 알림을 유발하고 Firebase upsert가 불안정해져 기각.
+- EntryID 기반 → 폴더/store 이동, 재내보내기 등에서 변동(MS 문서)이라 identity 부적합.
+
+## 2026-08-31 - PC Companion은 매 poll cycle "짧은 attach→read→전량 release", 기본 1시간 polling (Phase 4B)
+
+Decision:
+Outlook COM 세션을 장기 유지하지 않는다. 매 poll cycle마다 ROT attach → MERI 해석 → window 읽기
+→ snapshot diff → COM 전량 해제(역순 FinalReleaseComObject + GC 2회)를 반복한다.
+polling은 실행 직후 1회 sync 후 기본 1시간 간격(Thread.Sleep 대기, busy loop 금지)이고
+`--poll-minutes`로 검증용 짧은 간격 override가 가능하다(production 기본은 60분).
+Outlook이 꺼져 있으면 기본적으로 skip하고 다음 poll에 재시도한다(임의 시작 금지,
+`--start-outlook`로만 허용). Companion이 시작한 Outlook만 종료 시 Quit()한다.
+조회 window는 기본 과거 1일~미래 30일(인자로 변경 가능), removed 판정은 window 경계(±48h)
+이동 의심을 별도 표시해 hard delete를 보류한다.
+
+Reason(실측 기반):
+- 사용자의 Outlook 재시작/종료에 장기 session이 stale RCW로 깨지는 문제를 원천 차단한다.
+- cycle 단위로 해제 수를 매번 검증 가능(leak 즉시 발견) — 실측 cycle당 RCW 15~98개 해제.
+- attach 비용은 ROT 31~55ms로 polling 비용에 무시 가능. 대기 CPU 0.156%(10초 실측) ≈ 0.
+- 전체 4,000+건을 매번 읽지 않는 window 조회로 scan ~250ms(안정 시), 메모리 ~40MB 내외.
+
+Alternatives:
+- 장기 session 유지 → stale RCW 위험, 사용자 세션 간섭, leak 검증 곤란으로 기각.
+- Windows Service / Tray 상시 구동 → 아직 범위 밖(Phase 4B는 콘솔 검증).

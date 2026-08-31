@@ -75,34 +75,57 @@ MERI Calendar Event 조회 (Gate C)
 - 세 Gate가 모두 실제 회사 Microsoft 365 환경에서 확인되어야 Phase 4 성공.
 - Graph Event → EventTitleParser → EventEntity → ChecklistRepository 연결은 다음 Phase에서 진행.
 
-## 2-A. Classic Outlook COM 경로 (Phase 4A — 현재 운영 경로)
+## 2-A. Classic Outlook COM 경로 (Phase 4A/4B — 현재 운영 경로)
 
 ```
 Classic Outlook (Outlook Object Model/COM)
     ↓  OutlookCompanion (Windows 콘솔, desktop/OutlookCompanion)
-[향후] Firebase 전달  ← 이 단계는 미구현 (MERI 실측 완료 후 설계)
+    │   매 poll cycle: 짧은 attach → MERI 해석 → window 읽기 → snapshot diff → release
+    │   로컬 저장: %LOCALAPPDATA%\NoMistakeCompanion\{meri-folder.txt, meri-snapshot.txt}
+[향후] Firebase 전달  ← 이 단계는 미구현 (Phase 4B 검증 완료 후 설계)
     ↓
 Android 앱
 ```
 
-- **접근 경로(MERI 그룹 캘린더)**: MERI는 Microsoft 365 Group 캘린더로 `Session.Stores`에
-  탑재되지 않는다(폴더 트리 탐색으로는 발견 불가). `ActiveExplorer().NavigationPane →
-  CalendarModule → NavigationGroups('모든 그룹 일정') → NavigationFolders → .Folder` 경로로
-  Folder 객체를 직접 획득한다(2026-08-31 실측).
-- **일정 읽기**: `Folder.Items` + `Items.Restrict("[Start] >= '...'")`(JET). 날짜 형식은
-  `MM/dd/yyyy hh:mm tt`(AM/PM) — 24시간제 `HH:mm`은 ko-KR JET에서 0건으로 오해석되므로
-  사용하지 않는다. Restrict 결과 0건/실패 시 전체 순회 fallback으로 재확인한다.
+- **MERI Folder 재접근 우선순위 (Phase 4B 확정 — Case A/B/C/D 전부 실측)**:
+  1. **저장된 ID 직접 재오픈**: `%LOCALAPPDATA%\NoMistakeCompanion\meri-folder.txt`에 저장한
+     EntryID/StoreID로 `Session.GetFolderFromID(entryId, storeId)` 직접 재오픈. 반환 폴더의
+     `Name`이 'MERI'인지 재검증한다. 실측: MERI 캘린더 뷰 열림/닫힘 무관, **Outlook 재시작
+     이후에도 성공**(EntryID/StoreID는 세션 간에도 유효).
+  2. **NavigationPane fallback**: `ActiveExplorer().NavigationPane → CalendarModule →
+     NavigationGroups('모든 그룹 일정') → NavigationFolders → .Folder` (Phase 4A 발견 경로).
+     1차 실패(저장 ID 무효 등) 시 자동 탐색하고, 찾으면 FolderID를 다시 저장해 자가회복한다.
+  3. **GetSharedDefaultFolder('MERI')**: 최후 보조 fallback(실측상 resolve 실패하지만 유지).
+- **조회 window (Phase 4B)**: 전체 일정을 매번 읽지 않는다. 기본 **과거 1일 ~ 미래 30일**
+  (`--window-past`/`--window-future`로 변경 가능). 읽기는 `Items.Sort("[Start]")` +
+  `IncludeRecurrences=true` + `Restrict(window)`로 반복 일정을 occurrence 단위로 확장 열거하고,
+  실패/0건 시 plain Restrict, 그래도 안 되면 전체 순회(코드 window 재검사) 순서로 fallback한다.
+  JET 날짜 형식은 `MM/dd/yyyy hh:mm tt`(AM/PM) — 24시간제 `HH:mm`은 ko-KR JET에서 0건으로
+  오해석되므로 사용하지 않는다(2026-08-31 실측).
 - **읽는 필드**: EntryID, StoreID, GlobalAppointmentID, Subject, Start, End, AllDayEvent,
   Location, LastModificationTime, IsRecurring, RecurrenceState.
-- **식별자 후보**: `GlobalAppointmentID`(+occurrence의 Start 조합). occurrence의 EntryID는
-  마스터와 다르게 생성될 수 있으며 확장 열거 시에만 얻을 수 있다(§11의 Graph 식별자
-  정책과의 대응은 Phase 4B에서 정리).
-- **COM 수명**: 읽기 전용(항목 생성/수정/삭제 없음). 확보한 모든 RCW를
-  `Marshal.FinalReleaseComObject`로 명시 해제 후 GC 2회. Outlook이 이미 실행 중이면
-  `Quit()`하지 않고, 프로그램이 Outlook을 시작한 경우에만 `Quit()`한다.
-- **검증 결과(2026-08-31)**: Gate 1 연결 / Gate 2 Store·Folder 탐색 / Gate 3 MERI 발견 /
-  Gate 4 MERI 일정 읽기(다가오는 일정 10건 필드 실측) 전부 PASS. 실제 일정 값은 로컬
-  콘솔 출력으로만 확인했고 문서/Git에는 기록하지 않는다.
+- **Stable Event Key (Phase 4B 확정 — §11 Graph 정책과 대응)**:
+  - `seriesKey` = `GlobalAppointmentID`(빈 값 시 `"EID:"+EntryID` fallback) — 시간 수정에도
+    불변(2026-08-31 개인 캘린더 실측: 시간 2회 변경에도 GID 불변). series/단일 일정의 identity.
+  - `occurrenceKey` = 반복 일정은 `seriesKey + "|" + Start(UTC Ticks)`, 비반복은 `seriesKey` 단독.
+  - `sourceEntryId` = EntryID(보조·진단용, identity 아님), `lastModified` = LastModificationTime.
+  - 시간 변경은 "삭제+신규"가 아니라 **기존 일정의 시간 수정**(diff 엔진이 seriesKey 기반으로
+    time-moved 재매칭) — exception occurrence도 GID가 마스터와 동일하게 유지됨(실측).
+- **snapshot diff (Phase 4B)**: 매 poll의 읽기 결과를 이전 snapshot과 비교해
+  added/changed/removed/unchanged을 판별한다. removed 중 window 경계(±48h)에 걸린 Start는
+  "조회 window 밖 이동 가능성"으로 별도 표시해 hard delete 판단을 보류한다(soft-delete/tombstone
+  정책은 Firebase 단계에서 확정). 출력은 카운트만(Subject 원문 미출력). duplicate occurrenceKey는
+  감지해 경고하고 나중 값을 유지한다.
+- **COM 수명 (Phase 4B 확정)**: 매 poll cycle마다 **짧은 attach → read → 전량 release**를
+  반복한다(장기 session 유지 안 함). 사용자의 Outlook 재시작/종료 시 stale RCW 방지, cycle 단위
+  leak 검증, attach 비용 ms 단위(ROT attach 31~55ms 실측). 읽기 전용(생성/수정/삭제 없음),
+  확보한 RCW는 역순 `FinalReleaseComObject` + GC 2회, 이미 실행 중인 Outlook에는 `Quit()`하지
+  않고 Companion이 시작한 경우에만 종료한다. Outlook이 꺼져 있으면 기본적으로 기다리고
+  (`--start-outlook`로만 명시적 시작 허용).
+- **검증 결과(2026-08-31)**: Phase 4A Gate 1~4 PASS에 이어, Phase 4B에서 Case A/B/C/D
+  재접근 실측, 시간 변경 identity 실측, 2회 연속 sync diff 실측(`Unchanged 61`),
+  idle CPU 0.156%, SelfTest 21/21 PASS. 실제 일정 값은 로컬 콘솔/%LOCALAPPDATA%에만 존재하고
+  문서/Git에는 기록하지 않는다.
 
 ## 3. Outlook Calendar 선택 정책 (MERI 전용)
 
@@ -262,3 +285,23 @@ settings (독립, key-value)
   2. `iCalUId` (occurrence별 고유, 캘린더 간 안정 — 시리즈 식별 부적합, 개별 occurrence 식별 유용)
   3. `seriesMasterId + startTime`
 - `changeKey`는 변경 감지 보조값(identity 아님).
+
+### Classic Outlook(COM) 경로 대응 (Phase 4B 확정)
+
+현재 운영 경로(Classic Outlook COM)는 위 Graph 정책과 다음과 같이 대응한다(동일 일정을
+두 경로에서 읽더라도 identity가 호환되도록):
+
+| Graph | Classic Outlook COM | 역할 |
+|-------|---------------------|------|
+| `graphImmutableId`/`iCalUId` 계열 (Global Object ID) | `seriesKey` = `GlobalAppointmentID` | 일정(series/단일)의 안정 identity — 시간 수정에도 불변(2026-08-31 실측) |
+| `seriesMasterId + startTime` | `occurrenceKey` = `seriesKey + "\|" + Start(UTC Ticks)` (반복만) | 개별 occurrence(회차) 식별 |
+| `changeKey` | `LastModificationTime` | 변경 감지 보조값(identity 아님) |
+| (없음) | `EntryID` | 보조·진단 참조(폴더/store 이동, 재내보내기 등에서 변동 가능 — identity 금지) |
+
+- 시간 변경(예: 회의 10:00 → 11:00)은 "기존 occurrence 삭제 + 신규 생성"이 아니라
+  **기존 일정의 시간 수정**으로 처리한다(diff 엔진의 seriesKey 기반 time-moved 재매칭).
+- 삭제로 사라진 일정은 즉시 hard delete하지 않는다. window 경계(±48h) 이동 가능성은
+  별도 표시(WindowOutSuspect)하고, soft-delete/tombstone 정책은 Firebase 동기화 단계에서 확정한다.
+- `GlobalAppointmentID`는 마스터/occurrence/exception에서 동일하게 유지되고(실측),
+  MS 문서상 항목의 모든 copy에서 동일하며 회의 업데이트 상관(correlate) 용도로
+  시간/폴더 이동에 불변이다 — Graph `iCalUId`와 동일한 Global Object ID 계열이다.

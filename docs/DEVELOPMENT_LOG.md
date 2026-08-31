@@ -4,6 +4,53 @@
 
 ---
 
+## 2026-08-31 - Phase 4B: MERI Folder 재접근 안정성 + 일정 식별자 정책 + Polling/diff 검증
+
+Completed:
+- `desktop/OutlookCompanion`을 단일 Program.cs에서 기능별 파일 분리 구조로 재구성(빌드 체계 동일: Windows 내장 csc.exe/.NET Framework, 별도 설치 불필요)
+  - `ComHost.cs`(COM RCW 추적/해제, oleaut32!GetActiveObject P/Invoke ROT attach — Marshal.GetActiveObject 의존 제거로 net8.0 csproj 빌드 호환), `EventModels.cs`(EventRecord + KeyPolicy),
+    `SnapshotDiff.cs`(diff 엔진), `SnapshotStore.cs`(%LOCALAPPDATA% 로컬 저장 + 설정), `MeriAccess.cs`(MERI 재접근 정책), `MeriReader.cs`(window 조회 + 다단계 fallback + 계측),
+    `Gates.cs`(Phase 4A Gate 검증 로직 보존 이식), `SelfTest.cs`(순수 로직 테스트), `Program.cs`(모드/폴링 메인)
+- 모드: 기본(실행 직후 1회 sync + 기본 1시간 polling, Thread.Sleep 대기/busy loop 없음), `--once`, `--probe`(재접근 실측), `--test`, `--gates`(4A 보존), `--idle-test`, `--start-outlook`, `--poll-minutes`/`--window-past`/`--window-future` override
+- **MERI Folder 재접근 실측 — Case A/B/C/D 전부 성공(2026-08-31)**:
+  - 저장된 Folder EntryID/StoreID를 `%LOCALAPPDATA%\NoMistakeCompanion\meri-folder.txt`에 저장하고 `Session.GetFolderFromID(entryId, storeId)`로 직접 재오픈
+  - Case A(Outlook 실행 + MERI 캘린더 뷰 열림): 재오픈 SUCCESS
+  - Case B(Outlook 실행 + 메일 뷰/MERI 뷰 닫힘): 재오픈 SUCCESS — UI 뷰 상태와 무관하게 동작(ActiveExplorer 의존성 제거 확인)
+  - Case C(Outlook 완전 재시작 후 이전 세션의 저장 ID로 재접근): SUCCESS — EntryID/StoreID가 세션 간에도 유효(StoreID 세션 의존성 없음 실측)
+  - Case D(저장 ID 무효화): GetFolderFromID 실패 감지 → NavigationPane fallback 자동 탐색 → MERI 재발견 → 올바른 FolderID 재저장(자가회복 확인)
+- **Stable Event Key 정책 확정 — 문서 근거 + 실측**:
+  - seriesKey = `GlobalAppointmentID` (읽기 실패 시 `"EID:"+EntryID` fallback) / occurrenceKey = seriesKey + `"|"` + Start(UTC Ticks), 비반복은 seriesKey 단독 / sourceEntryId = EntryID(보조·진단) / lastModified = LastModificationTime
+  - 실측(사용자 승인, 개인 기본 캘린더의 `[NoMistake-TEST]` 임시 일정 생성→수정→삭제, MERI 미접촉, 잔여 0건 확인):
+    - 단일 일정: 시간 2회 변경에도 **GlobalAppointmentID 완전 불변** → 시간 변경 = "기존 일정의 시간 수정" 처리 확정
+    - 반복 일정: occurrence 시간 변경(exception 생성) 후에도 GID == 마스터 GID 유지, RecurrenceState 2(olApptOccurrence) → 3(olApptException) 전이 관측
+- **snapshot diff 엔진 실측**: added/changed/removed/unchanged 판별, 시간 이동을 "삭제+신규"가 아닌 time-moved(변경)로 재매칭, window 경계 밖 이동 의상(WindowOutSuspect) 별도 표시, duplicate occurrenceKey 감지 방지. 콘솔 출력은 카운트만(Subject 원문 미출력)
+- **성능 실측**(window: 과거 1일~미래 30일, MERI 폴더 전체 4,438건 기준):
+  - scan: Restrict+IncludeRecurrences 경로로 occurrence 61건, restrict 약 30~76ms + enumerate 약 200~1100ms(Outlook 재시작 직후 warm-up 포함, 안정 시 약 250ms)
+  - 메모리: scan 시 약 18→40MB, 대기 시 14.9MB 안정 / 대기 CPU: 10초 대기 중 15.6ms(평균 0.156%) ≈ 0
+  - cycle당 COM RCW 15~98개 명시 해제(장기 session 유지 없는 짧은 attach→read→release 방식)
+- **SelfTest(순수 로직, COM 미사용, 합성 fixture)**: 21/21 PASS — key 생성/재현성, diff(added/unchanged/changed/removed/time-moved/duplicate/window-out), snapshot 파일 roundtrip(특수문자 escape 포함)
+- **2회 연속 sync 실측**: sync#1 61건 snapshot 저장 → sync#2 `Added: 0 / Changed: 0 / Removed: 0 / Unchanged: 61` — 일정 재판독 시 key 재현성과 diff unchanged 판정 정확
+
+Changed:
+- 신규: desktop/OutlookCompanion/{ComHost,EventModels,SnapshotDiff,SnapshotStore,MeriAccess,MeriReader,Gates,SelfTest}.cs
+- 수정: Program.cs(4A 단일 파일을 4B 메인으로 재작성, 4A Gate 로직은 Gates.cs에 보존 이식), build.ps1(다중 파일 빌드), OutlookCompanion.csproj 주석, desktop README, README.md, docs/{ARCHITECTURE,DECISIONS}.md
+- Graph/MSAL(Phase 4) 및 Android(Phase 1~3)은 수정/삭제 없음 — 그대로 보존
+
+Build/Test:
+- csc.exe 빌드 성공, `--test` 21/21 PASS, probe/sync/idle-test 실측 전부 exit 0
+- 실제 일정 제목/장소/ID 원본 값은 로컬 콘솔과 %LOCALAPPDATA% 파일에만 존재 — Git/문서에 기록하지 않음
+
+Known Issues:
+- Outlook 미실행 상태에서 Companion이 Outlook을 직접 시작하면 ActiveExplorer가 없어 NavigationPane 탐색 불가. "저장 FolderID 무효 + Outlook UI 없음" 조합에서만 MERI 발견 실패하는데, Case C 실측상 저장 ID가 유효한 이상 실질적으로 발생하지 않음. 만료 시 사용자가 Outlook UI를 열면 다음 poll에 NavigationPane fallback이 자동 복구
+- Outlook 재시작 직후(초기화 전) ROT 등록이 늦을 수 있음 — attach 실패 시 skip하고 다음 poll에 재시도(실측: 수십 초 내 자연 회복)
+- Outlook 재시작 직후 첫 scan은 서버 동기화 진행 상태에 따라 항목 수가 일시적으로 다르게 관측될 수 있음(동일 세션에서 4,273건→4,438건 변화 관측) — snapshot diff 기반이므로 최초 sync 직후의 대규모 added는 이 현상과 구분해서 봐야 함
+- 시간 변경된 반복 occurrence(exception)의 "2번째 이후 occurrence" EntryID 비교는 MERI에 적합한 반복 일정이 생기면 재실측 필요(exception의 GID 불변성은 개인 캘린더 실측으로 확인)
+- Restrict 날짜 로케일 의존성은 다단계 fallback(반복 확장 Restrict → plain Restrict → 전체 순회+코드 window 재검사)으로 보완, 전체 순회는 최후 수단으로 유지
+
+Next:
+- Phase 5(사용자 합의 후): PC Companion → Firebase → Android 전달 설계. diff 결과(added/changed/removed)의 upsert/delete 매핑, 삭제 일정 soft-delete/tombstone 정책, seriesKey 기반 문서 구조 설계
+- 본 보고 후 사용자 검토를 거쳐 Phase 4/4A/4B 커밋을 fast-forward push(강제 push 금지)
+
 ## 2026-08-31 - Phase 4A: Classic Outlook(COM) 연결 타당성 검증 (MERI 그룹 캘린더 읽기 성공)
 
 Completed:

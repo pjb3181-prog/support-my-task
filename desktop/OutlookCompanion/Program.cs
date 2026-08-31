@@ -1,591 +1,243 @@
-// NoMistake Phase 4A - Classic Outlook(Outlook Object Model/COM) 연결 타당성 검증 콘솔.
+// NoMistake Phase 4B - PC Companion 메인(entry point + polling 구조).
 //
-// 목적: 현재 Windows 사용자 세션에 로그인되어 있는 Classic Outlook을 COM으로 읽어
-//       PC Companion 경로(Classic Outlook -> PC -> Firebase -> Android)의 타당성을 검증한다.
+// 모드:
+//   (기본)      1회 sync 직후 실행 + polling 반복(기본 1시간) - 운영 형태
+//   --once      1회 sync만 수행 후 종료
+//   --probe     MERI 재접근 실측(Case A/B/C/D): 저장된 ID 직접 재오픈 성공 여부 중심 보고
+//   --test      순수 로직 SelfTest(COM 미사용)
+//   --gates     Phase 4A Gate 검증(보존)
+//   --idle-test [초]  대기 상태 CPU 사용량 실측(기본 10초)
+// 인자:
+//   --poll-minutes N   polling 간격 override(검증용 짧은 간격 가능 / production 기본 60)
+//   --window-past N    조회 window 과거 일수(기본 1)
+//   --window-future N  조회 window 미래 일수(기본 30)
+//   --start-outlook    Outlook 미실행 시 Companion이 Outlook을 시작(기본은 시작하지 않고 skip)
 //
-// Gate 1: Classic Outlook 연결(ProgID 'Outlook.Application' 활성화)
-// Gate 2: Store/Folder 구조 탐색(캘린더 폴더 목록)
-// Gate 3: 이름이 정확히 'MERI'인 Calendar folder 발견
-// Gate 4: MERI Calendar에서 실제 Appointment 최소 1건 + 가까운 일정 최대 10건 읽기
-// 조사  : 반복 일정 occurrence 확장(IncludeRecurrences) 방식(전체 recurrence 동기화는 이 단계 범위 밖)
-//
-// COM 접근: dynamic late-binding(ProgID 활성화) - interop 어셈블리/COMReference가 필요 없다.
-//   - 현재 빌드 환경: Windows 내장 csc.exe(.NET Framework 4.x) - build.ps1 사용
-//   - .NET SDK 설치 후: dotnet build(OutlookCompanion.csproj)로 동일 소스 빌드 가능
-//
-// [보안] 콘솔 출력에 실제 일정 제목/장소/계정명이 표시될 수 있다.
-//        출력을 Git/README/DEVELOPMENT_LOG/테스트 픽스처에 복사하지 않는다.
-// [안전] 읽기 전용(항목 생성/수정/삭제 없음). Outlook이 이미 실행 중이면 Quit()하지 않고,
-//        이 프로그램이 Outlook을 시작한 경우에만 Quit()한다. COM 참조는 명시 해제한다.
+// [COM 수명 정책 - Phase 4B 확정] 매 poll cycle마다 짧게 attach -> read -> 전량 release.
+//   장기 session 유지 대비 이점: (1) 사용자의 Outlook 재시작/종료 시 stale RCW 방지,
+//   (2) cycle 단위 COM leak 검증 가능(해제 수 매번 출력), (3) attach 비용은 ms 단위로 polling 비용에 비해 무시 가능.
+// [안전] 읽기 전용. Companion이 시작한 Outlook만 종료 시 Quit()한다. Ctrl+C로 정상 종료 가능.
+// [보안] Subject/Location 원문은 절대 콘솔/로그에 출력하지 않는다(diff는 카운트만).
 
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
-using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 namespace OutlookCompanion
 {
     internal static class Program
     {
-        // ===== Outlook enum 상수 =====
-        private const int OlAppointmentItem = 26;      // OlItemType.olAppointmentItem (Item.Class)
-        private const int OlDefaultItemAppointment = 1; // OlItemType.olAppointmentItem (Folder.DefaultItemType)
-        private const int OlDefaultFolderCalendar = 9;  // OlDefaultFolders.olFolderCalendar
-        private const int MaxWalkDepth = 6;             // 폴더 트리 탐색 깊이 제한
-        private const int MaxVisitedFolders = 3000;     // 폴더 트리 탐색 수 제한
-        private const int MaxShow = 10;                 // 콘솔에 표시할 가까운 일정 수
-
-        // COM RCW 추적: 얻은 참조를 종료 시 명시 해제한다(Outlook.exe/COM 참조 잔존 방지).
-        private static readonly List<object> ComRefs = new List<object>();
-
-        private static T Track<T>(T obj) where T : class
-        {
-            if (obj != null && Marshal.IsComObject(obj)) ComRefs.Add(obj);
-            return obj;
-        }
-
-        // 역순 FinalReleaseComObject + GC 2회. 해제한 RCW 수를 반환한다.
-        private static int ReleaseAllCom()
-        {
-            int released = 0;
-            for (int i = ComRefs.Count - 1; i >= 0; i--)
-            {
-                try
-                {
-                    if (Marshal.IsComObject(ComRefs[i]))
-                    {
-                        Marshal.FinalReleaseComObject(ComRefs[i]);
-                        released++;
-                    }
-                }
-                catch { /* 개별 해제 실패는 프로세스 종료 시 정리됨 */ }
-            }
-            ComRefs.Clear();
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
-            return released;
-        }
-
-        // COM 속성 값을 안전하게 문자열로.
-        private static string S(object v)
-        {
-            if (v == null) return "";
-            string s = v.ToString();
-            return s ?? "";
-        }
-
-        private static string RecStateName(int state)
-        {
-            if (state == 0) return "olApptNotRecurring";
-            if (state == 1) return "olApptMaster";
-            if (state == 2) return "olApptOccurrence"; // MERI 실측(2026-08-31): 확장 열거 시 occurrence가 2로 관측됨
-            if (state == 4) return "olApptException";
-            return "Unknown(" + state + ")";
-        }
-
-        // 읽어들인 일정 스냅샷(정렬/표시용).
-        private sealed class ApptInfo
-        {
-            public string Subject = "";
-            public string Location = "";
-            public string EntryId = "";
-            public string GlobalId = "";
-            public DateTime Start;
-            public DateTime End;
-            public DateTime LastMod;
-            public bool AllDay;
-            public bool IsRecurring;
-            public int RecurrenceState;
-        }
-
-        // 'MERI' 후보 폴더(정확 일치 여부 포함).
-        private sealed class FoundFolder
-        {
-            public dynamic Folder;
-            public string Path = "";
-            public bool Exact;
-        }
-
         private static int Main(string[] args)
         {
             Console.OutputEncoding = Encoding.UTF8;
+            bool test = false, gates = false, probe = false, once = false, idle = false, startOutlook = false;
+            int pollMinutes = AppSettings.DefaultPollMinutes;
+            int windowPast = AppSettings.DefaultWindowPastDays;
+            int windowFuture = AppSettings.DefaultWindowFutureDays;
+            int idleSeconds = 10;
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                string a = args[i];
+                if (a == "--test") test = true;
+                else if (a == "--gates") gates = true;
+                else if (a == "--probe") probe = true;
+                else if (a == "--once") once = true;
+                else if (a == "--idle-test") idle = true;
+                else if (a == "--start-outlook") startOutlook = true;
+                else if (a == "--poll-minutes" && i + 1 < args.Length) { int v; if (int.TryParse(args[++i], out v) && v > 0) pollMinutes = v; }
+                else if (a == "--window-past" && i + 1 < args.Length) { int v; if (int.TryParse(args[++i], out v) && v >= 0) windowPast = v; }
+                else if (a == "--window-future" && i + 1 < args.Length) { int v; if (int.TryParse(args[++i], out v) && v > 0) windowFuture = v; }
+                else if (idle) { int v; if (int.TryParse(a, out v) && v > 0) idleSeconds = v; }
+            }
+
             Console.WriteLine("====================================================================");
-            Console.WriteLine(" NoMistake Phase 4A : Classic Outlook(COM) 연결 타당성 검증");
+            Console.WriteLine(" NoMistake Phase 4B : PC Companion(MERI polling 기반 검증)");
             Console.WriteLine("====================================================================");
             Console.WriteLine("* 읽기 전용: Outlook 항목을 생성/수정/삭제하지 않습니다.");
-            Console.WriteLine("* 보안: 출력에 실제 일정 값이 포함될 수 있습니다. Git/문서에 복사 금지.");
+            Console.WriteLine("* 보안: 실제 일정 제목/장소는 콘솔에 출력하지 않습니다(diff는 카운트만).");
+            Console.WriteLine("* COM 수명: 매 cycle 짧은 attach -> read -> 전량 release.");
             Console.WriteLine();
 
-            bool gate1 = false, gate2 = false, gate3 = false, gate4 = false;
-            bool outlookWasRunning = Process.GetProcessesByName("OUTLOOK").Length > 0;
-            Console.WriteLine("[0] OUTLOOK.EXE(시작 전): " + (outlookWasRunning ? "실행 중 - 이 프로그램이 종료하지 않음" : "미실행 - 이 프로그램이 시작(종료 시 Quit)"));
+            if (test) return SelfTest.Run();
+            if (idle) return IdleCpuTest(idleSeconds);
+            if (gates) return Gates.Run();
 
+            if (probe)
+            {
+                int p = RunSync(1, windowPast, windowFuture, startOutlook, true);
+                Console.WriteLine();
+                Console.WriteLine("[probe] 완료 (exit=" + p + ")");
+                return p;
+            }
+
+            // 기본: 실행 직후 1회 sync -> polling 반복(busy loop 없음: Thread.Sleep)
+            int exit = RunSync(1, windowPast, windowFuture, startOutlook, false);
+            if (exit != 0) return exit;
+            if (once)
+            {
+                Console.WriteLine("[once] 1회 sync 완료 - 종료.");
+                return 0;
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("[polling] 간격: " + pollMinutes + "분 (기본 " + AppSettings.DefaultPollMinutes + "분). Ctrl+C로 종료.");
+            int seq = 1;
+            while (true)
+            {
+                Thread.Sleep(TimeSpan.FromMinutes(pollMinutes)); // CPU 0 대기(busy loop 아님)
+                seq++;
+                try { RunSync(seq, windowPast, windowFuture, startOutlook, false); }
+                catch (Exception ex) { Console.WriteLine("[sync #" + seq + "] 오류(다음 poll에 재시도): " + ex.Message); }
+            }
+        }
+
+        // 1회 sync: attach -> MERI 해석(재접근 정책) -> window 읽기 -> diff -> snapshot 저장 -> 전량 release.
+        private static int RunSync(int seq, int windowPastDays, int windowFutureDays, bool allowStartOutlook, bool probeMode)
+        {
+            Console.WriteLine();
+            Console.WriteLine("[sync #" + seq + "] " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
+
+            bool wasRunning = ComHost.IsOutlookProcessRunning();
+            if (!wasRunning && !allowStartOutlook)
+            {
+                Console.WriteLine("[sync #" + seq + "] OUTLOOK.EXE 미실행 - skip(임의로 시작하지 않음. --start-outlook으로 허용)");
+                return 0; // 오류 아님: 다음 poll에 재시도
+            }
+
+            Process proc = Process.GetCurrentProcess();
+            long memBefore = proc.WorkingSet64;
+            bool startedByMe = false;
             dynamic app = null;
-            int exitCode = 2;
+
             try
             {
-                // ===== Gate 1: Classic Outlook 연결 =====
-                Type outlookType = Type.GetTypeFromProgID("Outlook.Application");
-                if (outlookType == null)
+                // (1) attach(실행 중이면 ROT attach, 아니면 Companion이 시작)
+                Stopwatch sw = Stopwatch.StartNew();
+                if (wasRunning)
                 {
-                    Console.WriteLine("[Gate 1] FAIL - 'Outlook.Application' ProgID 미등록(Classic Outlook 설치 필요).");
-                    return 2;
-                }
-                app = Track(Activator.CreateInstance(outlookType));
-                Console.WriteLine("[Gate 1] PASS - Classic Outlook 연결. Version: " + S(app.Version));
-                gate1 = true;
-
-                // ===== Gate 2: Store/Folder 구조 탐색 =====
-                dynamic ns = Track(app.GetNamespace("MAPI"));
-                dynamic stores = Track(ns.Stores);
-                int storeCount = Convert.ToInt32(stores.Count);
-                Console.WriteLine();
-                Console.WriteLine("[Gate 2] Store/Folder 구조 탐색 - Session.Stores: " + storeCount + "개");
-
-                List<string> calendarPaths = new List<string>();
-                List<FoundFolder> meriCandidates = new List<FoundFolder>();
-                int visited = 0;
-                for (int si = 1; si <= storeCount; si++)
-                {
-                    try
-                    {
-                        dynamic store = Track(stores.Item(si));
-                        string storeName = S(store.DisplayName);
-                        int storeType = -1;
-                        try { storeType = Convert.ToInt32(store.ExchangeStoreType); } catch { }
-                        Console.WriteLine("    Store[" + si + "] '" + storeName + "'  ExchangeStoreType=" + storeType);
-                        dynamic root = Track(store.GetRootFolder());
-                        WalkFolder(root, "\\\\" + storeName, 0, calendarPaths, meriCandidates, ref visited);
-                    }
+                    try { app = ComHost.Track(ComHost.AttachRunningOutlook()); }
                     catch (Exception ex)
                     {
-                        Console.WriteLine("    Store[" + si + "] 탐색 오류: " + ex.Message);
+                        Console.WriteLine("[attach] ROT attach 실패(Outlook 시작 직후일 수 있음) - 이번 cycle skip: " + ex.Message);
+                        return 0;
                     }
-                }
-                Console.WriteLine("    - 방문한 폴더: " + visited + "개 / 발견한 캘린더 폴더: " + calendarPaths.Count + "개");
-                foreach (string p in calendarPaths) Console.WriteLine("      CalendarFolder: " + p);
-                if (calendarPaths.Count > 0) gate2 = true;
-                else Console.WriteLine("[Gate 2] FAIL - 캘린더 폴더를 찾지 못했습니다.");
-
-                // ===== Gate 3: 'MERI' 캘린더 발견 =====
-                Console.WriteLine();
-                Console.WriteLine("[Gate 3] 'MERI' 캘린더 폴더 검색");
-                FoundFolder meri = null;
-
-                // (1) NavigationPane 경로: UI 캘린더 pane의 NavigationFolder에서 Folder 객체를 직접 얻는다.
-                //     M365 Group/공유 캘린더는 Session.Stores에 탑재되지 않아도 이 경로로 접근할 수 있다.
-                //     ('모든 그룹 일정' 등 NavigationGroup 포함, MERI 그룹 캘린더 발견용)
-                try
-                {
-                    dynamic explorer = app.ActiveExplorer();
-                    if (explorer != null)
-                    {
-                        dynamic pane = Track(explorer.NavigationPane);
-                        dynamic modules = Track(pane.Modules);
-                        dynamic calMod = Track(modules.GetNavigationModule(1)); // olModuleCalendar
-                        dynamic navGroups = Track(calMod.NavigationGroups);
-                        int gCount = Convert.ToInt32(navGroups.Count);
-                        Console.WriteLine("    - NavigationPane(CalendarModule) NavigationGroups: " + gCount + "개");
-                        for (int gi = 1; gi <= gCount && meri == null; gi++)
-                        {
-                            dynamic group = Track(navGroups.Item(gi));
-                            string gname = "";
-                            try { gname = S(group.Name); } catch { }
-                            dynamic navFolders = null;
-                            try { navFolders = Track(group.NavigationFolders); } catch { }
-                            if (navFolders == null) continue;
-                            int nfCount = Convert.ToInt32(navFolders.Count);
-                            for (int ni = 1; ni <= nfCount && meri == null; ni++)
-                            {
-                                dynamic nf = Track(navFolders.Item(ni));
-                                string disp = "";
-                                try { disp = S(nf.DisplayName); } catch { }
-                                dynamic nfFolder = null;
-                                try { nfFolder = Track(nf.Folder); } catch { }
-                                if (nfFolder == null)
-                                {
-                                    Console.WriteLine("      NavFolder '" + disp + "'(그룹 '" + gname + "') - Folder 접근 불가(미탑재)");
-                                    continue;
-                                }
-                                string fname = "";
-                                try { fname = S(nfFolder.Name); } catch { }
-                                if (fname.Trim().Equals("MERI", StringComparison.OrdinalIgnoreCase) || disp.Trim().Equals("MERI", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    meri = new FoundFolder();
-                                    meri.Folder = nfFolder;
-                                    meri.Path = "\\NavigationPane\\" + gname + "\\" + fname;
-                                    meri.Exact = fname.Trim().Equals("MERI", StringComparison.Ordinal);
-                                    Console.WriteLine("      NavigationFolder '" + disp + "'(그룹 '" + gname + "') -> Folder '" + fname + "' *** MERI 발견 ***");
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        Console.WriteLine("    - NavigationPane 미사용(ActiveExplorer 없음)");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("    - NavigationPane 탐색 실패: " + ex.Message);
-                }
-
-                // (2) 폴더 트리 탐색 후보(일반 캘린더 폴더)에서 정확 일치 우선
-                foreach (FoundFolder c in meriCandidates) if (c.Exact) { meri = c; break; }
-                if (meri == null && meriCandidates.Count > 0)
-                {
-                    meri = meriCandidates[0];
-                    Console.WriteLine("    주의: 'MERI'와 대소문자만 다른 폴더 발견: " + meri.Path);
-                }
-                if (meri == null)
-                {
-                    // fallback: 'MERI'를 Recipient로 resolve해 공유 기본 캘린더 열기 시도
-                    try
-                    {
-                        Console.WriteLine("    - 폴더 트리에 없음 - GetSharedDefaultFolder('MERI') 시도");
-                        dynamic recip = Track(ns.CreateRecipient("MERI"));
-                        recip.Resolve();
-                        if (Convert.ToBoolean(recip.Resolved))
-                        {
-                            dynamic shared = Track(ns.GetSharedDefaultFolder(recip, OlDefaultFolderCalendar));
-                            string sharedName = S(shared.Name);
-                            meri = new FoundFolder();
-                            meri.Folder = shared;
-                            meri.Path = "<shared:MERI>\\" + sharedName;
-                            meri.Exact = true;
-                            Console.WriteLine("    - Recipient 'MERI' resolve 성공. 공유 기본 캘린더: '" + sharedName + "'");
-                        }
-                        else
-                        {
-                            Console.WriteLine("    - Recipient 'MERI' resolve 실패(주소록에서 찾지 못함)");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine("    - GetSharedDefaultFolder 시도 실패: " + ex.Message);
-                    }
-                }
-                if (meri != null)
-                {
-                    gate3 = true;
-                    Console.WriteLine("[Gate 3] PASS - MERI 캘린더 발견: " + meri.Path);
+                    Console.WriteLine("[attach] 실행 중 Outlook에 ROT attach (" + sw.ElapsedMilliseconds + "ms)");
                 }
                 else
                 {
-                    Console.WriteLine("[Gate 3] FAIL - 이름이 'MERI'인 캘린더 폴더를 찾지 못했습니다.");
+                    Type t = Type.GetTypeFromProgID("Outlook.Application");
+                    if (t == null) { Console.WriteLine("[attach] Classic Outlook 미설치(ProgID 없음) - 종료"); return 2; }
+                    app = ComHost.Track(Activator.CreateInstance(t));
+                    startedByMe = true;
+                    Console.WriteLine("[attach] Outlook 미실행 - Companion이 시작(종료 시 Quit)");
                 }
+                sw.Stop();
 
-                // ===== Gate 4: 실제 Appointment 읽기 =====
-                Console.WriteLine();
-                dynamic readFolder = null;
-                string readLabel = "";
-                if (meri != null)
+                // (2) MERI Folder 해석(저장된 ID 직접 재오픈 -> NavigationPane fallback)
+                sw.Restart();
+                MeriAccessResult meri = MeriAccess.Resolve(app, true);
+                sw.Stop();
+                long resolveMs = sw.ElapsedMilliseconds;
+                if (meri.Folder == null)
                 {
-                    readFolder = meri.Folder;
-                    readLabel = "MERI";
+                    Console.WriteLine("[meri] MERI 폴더 해석 실패 - 이번 cycle skip(다음 poll에 재시도)");
+                    return 0;
+                }
+                MeriAccess.SaveFolderIds(meri);
+                Console.WriteLine("[meri] 방식=" + meri.Method + "  경로=" + meri.Path
+                    + "  directReopen(StoredId)=" + (meri.FromStoredId ? "SUCCESS" : "no"));
+                Console.WriteLine("[meri] 저장ID 상태: " + meri.StoredIdStatus);
+                Console.WriteLine("[meri] FolderID 캡처: EntryId " + meri.EntryId.Length + "자 / StoreId " + meri.StoreId.Length
+                    + "자 (원본 값은 %LOCALAPPDATA%\\NoMistakeCompanion 에만 저장)");
+
+                // (3) window 읽기
+                DateTime now = DateTime.Now;
+                ReadOptions opt = new ReadOptions { WindowStart = now.AddDays(-windowPastDays), WindowEnd = now.AddDays(windowFutureDays) };
+                ReadResult read = MeriReader.ReadWindow(meri.Folder, opt);
+                string pathName = read.UsedRestrictRecurrence ? "Restrict+IncludeRecurrences"
+                    : read.UsedRestrictPlain ? "plainRestrict(반복확장실패-주의)"
+                    : read.UsedFullWalk ? "전체순회fallback(최후)" : "0건";
+                Console.WriteLine("[read] window: 과거 " + windowPastDays + "일 ~ 미래 " + windowFutureDays + "일 / 폴더 전체 "
+                    + read.TotalItems + "건 -> 읽은 occurrence " + read.Events.Count + "건 (경로: " + pathName + ")");
+                Console.WriteLine("[read] 소요: restrict " + read.RestrictMs + "ms + enumerate " + read.EnumerateMs + "ms");
+                Console.WriteLine("[read] note: " + read.Note);
+
+                long memAfterRead = Process.GetCurrentProcess().WorkingSet64;
+                Console.WriteLine("[perf] memory(scan): " + Mb(memBefore) + " -> " + Mb(memAfterRead) + " MB");
+
+                if (probeMode)
+                {
+                    Console.WriteLine("[probe] resolve=" + resolveMs + "ms / directReopen=" + (meri.FromStoredId ? "SUCCESS" : "no")
+                        + " / method=" + meri.Method);
+                    return 0; // probe는 재접근/성능 실측이 목적(diff/snapshot 미저장)
+                }
+                // (4) diff(이전 snapshot vs 이번 scan - Subject 원문 미출력, 카운트만)
+                SnapshotData prev = SnapshotStore.LoadSnapshot();
+                if (prev != null && prev.Events.Count > 0)
+                {
+                    DateTime pws = KeyPolicy.FromIso(prev.WindowStartIso);
+                    DateTime pwe = KeyPolicy.FromIso(prev.WindowEndIso);
+                    DiffResult diff = SnapshotDiff.Compute(prev.Events, read.Events, pws, pwe);
+                    string dupNote = (diff.DuplicatePrev + diff.DuplicateCurr > 0)
+                        ? "  (주의: duplicate prev=" + diff.DuplicatePrev + " curr=" + diff.DuplicateCurr + ")"
+                        : "";
+                    Console.WriteLine("[diff] " + diff.Summary() + dupNote);
                 }
                 else
                 {
-                    Console.WriteLine("[Gate 4] SKIP - MERI 미발견, MERI 캘린더 일정을 읽을 수 없음.");
-                    Console.WriteLine("    -> Classic Outlook UI의 캘린더 목록에 'MERI'가 있는지,");
-                    Console.WriteLine("       'MERI'가 공유 캘린더라면 Outlook에서 열어두었는지 확인이 필요합니다.");
-                    Console.WriteLine();
-                    Console.WriteLine("    [참고 시연 - Gate 아님] 기본 캘린더로 COM 읽기 능력만 확인:");
-                    try
-                    {
-                        readFolder = Track(ns.GetDefaultFolder(OlDefaultFolderCalendar));
-                        readLabel = "기본 캘린더(참고 시연)";
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine("    - 기본 캘린더 열기 실패: " + ex.Message);
-                    }
+                    Console.WriteLine("[diff] 첫 sync(이전 snapshot 없음) - diff 미수행, 기준 snapshot 저장");
                 }
 
-                if (readFolder != null)
+                // (5) snapshot 저장(다음 poll의 diff 기준)
+                SnapshotData snap = new SnapshotData
                 {
-                    int total = 0;
-                    bool usedRestrict = false;
-                    List<ApptInfo> upcoming = new List<ApptInfo>();
-                    try { upcoming = ReadUpcoming(readFolder, DateTime.Now.AddMinutes(-1), out total, out usedRestrict); }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine("    - [Gate 4] 캘린더 항목 접근 실패: " + ex.Message);
-                    }
-                    Console.WriteLine("    - '" + readLabel + "' 전체 항목: " + total + "건 / 다가오는 일정: " + upcoming.Count + "건" + (usedRestrict ? " (Restrict 사용)" : " (전체 순회 fallback)"));
-                    if (readLabel == "MERI" && upcoming.Count >= 1) gate4 = true;
-                    int show = Math.Min(upcoming.Count, MaxShow);
-                    for (int k = 0; k < show; k++)
-                    {
-                        Console.WriteLine();
-                        PrintAppt(k + 1, upcoming[k]);
-                    }
-                    if (show == 0) Console.WriteLine("    - 표시할 다가오는 일정이 없습니다(과거 일정만 있는 캘린더일 수 있음).");
+                    SavedAtIso = KeyPolicy.ToIso(now),
+                    WindowPastDays = windowPastDays,
+                    WindowFutureDays = windowFutureDays,
+                    WindowStartIso = KeyPolicy.ToIso(opt.WindowStart),
+                    WindowEndIso = KeyPolicy.ToIso(opt.WindowEnd),
+                    PollSeq = seq,
+                    Events = read.Events
+                };
+                SnapshotStore.SaveSnapshot(snap);
+                Console.WriteLine("[save] snapshot " + read.Events.Count + "건 저장 -> " + SnapshotStore.SnapshotPath);
 
-                    // ===== 조사: 반복 일정 occurrence =====
-                    InvestigateRecurrence(readFolder, upcoming);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine();
-                Console.WriteLine("[오류] 예상치 못한 예외: " + ex.GetType().Name + " - " + ex.Message);
+                return 0;
             }
             finally
             {
-                // 정리: 이 프로그램이 Outlook을 시작한 경우에만 Quit()(사용자 Outlook 보호).
-                try { if (!outlookWasRunning && app != null) app.Quit(); }
+                // (6) 매 cycle 전량 해제(장기 session 유지 안 함 - Phase 4B COM 수명 정책)
+                try { if (startedByMe && app != null) app.Quit(); }
                 catch { }
-                int released = ReleaseAllCom();
-                Console.WriteLine();
-                Console.WriteLine("[정리] COM RCW 명시 해제: " + released + "개 + GC 2회(잔여 RCW는 프로세스 종료로 정리)");
-                Console.WriteLine("[정리] OUTLOOK.EXE(종료 후): " + (Process.GetProcessesByName("OUTLOOK").Length > 0 ? "실행 중" : "없음") + "  (시작 전: " + (outlookWasRunning ? "실행 중" : "미실행") + ")");
+                int released = ComHost.ReleaseAllCom();
+                Console.WriteLine("[release] COM RCW " + released + "개 해제 + GC 2회"
+                    + (startedByMe ? " + Companion이 시작한 Outlook Quit()" : ""));
             }
-
-            Console.WriteLine();
-            Console.WriteLine("========== Phase 4A 결과 요약 ==========");
-            Console.WriteLine("Gate 1 Classic Outlook 연결    : " + (gate1 ? "PASS" : "FAIL"));
-            Console.WriteLine("Gate 2 Store/Folder 구조 탐색 : " + (gate2 ? "PASS" : "FAIL"));
-            Console.WriteLine("Gate 3 MERI 캘린더 발견       : " + (gate3 ? "PASS" : "FAIL"));
-            Console.WriteLine("Gate 4 MERI 일정 읽기(1건 이상): " + (gate4 ? "PASS" : "FAIL"));
-            exitCode = (gate1 && gate2 && gate3 && gate4) ? 0 : 2;
-            Console.WriteLine("결과: " + (exitCode == 0 ? "Phase 4A 타당성 검증 통과" : "Phase 4A 미완 - FAIL 항목 확인 필요") + "  (exit=" + exitCode + ")");
-            Console.WriteLine("주의: 위 출력에 실제 일정 값이 있다면 Git/문서에 복사하지 마십시오.");
-            return exitCode;
         }
 
-        // 폴더에서 다가오는 일정을 읽는다.
-        // 1차: Items.Restrict(JET 필터) 사용, 실패 시 전체 순회 fallback(로케일/JET 형식 문제 대비).
-        private static List<ApptInfo> ReadUpcoming(dynamic folder, DateTime from, out int total, out bool usedRestrict)
+        // 대기 상태 CPU 사용량 실측(busy loop 아님: Thread.Sleep - 스케줄러에 양보).
+        private static int IdleCpuTest(int seconds)
         {
-            List<ApptInfo> list = new List<ApptInfo>();
-            total = 0;
-            usedRestrict = false;
-
-            dynamic items = Track(folder.Items);
-            total = Convert.ToInt32(items.Count);
-
-            string fromStr = from.ToString("MM/dd/yyyy hh:mm tt", CultureInfo.InvariantCulture);
-            string toStr = from.AddYears(2).ToString("MM/dd/yyyy hh:mm tt", CultureInfo.InvariantCulture);
-            string filter = "[Start] >= '" + fromStr + "' AND [Start] <= '" + toStr + "'";
-
-            dynamic source = items;
-            try
-            {
-                dynamic restricted = Track(items.Restrict(filter));
-                int rc;
-                try { rc = Convert.ToInt32(restricted.Count); }
-                catch { rc = 0; }
-                if (rc > 0)
-                {
-                    source = restricted;
-                    usedRestrict = true;
-                }
-                else
-                {
-                    Console.WriteLine("    - Items.Restrict 결과 0건 - 전체 순회 fallback으로 재확인(JET 날짜 형식 오해석 대비)");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("    - Items.Restrict 실패(" + ex.Message + ") - 전체 순회 fallback");
-            }
-
-            int cap = usedRestrict ? 2000 : 10000;
-            int srcCount;
-            try { srcCount = Convert.ToInt32(source.Count); }
-            catch { srcCount = 0; }
-            if (srcCount < 0 || srcCount > cap) srcCount = cap;
-
-            for (int j = 1; j <= srcCount; j++)
-            {
-                dynamic it = null;
-                try
-                {
-                    it = Track(source.Item(j));
-                    if (Convert.ToInt32(it.Class) != OlAppointmentItem) continue;
-                    DateTime st = Convert.ToDateTime(it.Start);
-                    if (st < from) continue;
-
-                    ApptInfo a = new ApptInfo();
-                    a.Start = st;
-                    try { a.End = Convert.ToDateTime(it.End); } catch { }
-                    try { a.Subject = S(it.Subject); } catch { }
-                    try { a.Location = S(it.Location); } catch { }
-                    try { a.AllDay = Convert.ToBoolean(it.AllDayEvent); } catch { }
-                    try { a.EntryId = S(it.EntryID); } catch { }
-                    try { a.GlobalId = S(it.GlobalAppointmentID); } catch { }
-                    try { a.LastMod = Convert.ToDateTime(it.LastModificationTime); } catch { }
-                    try { a.IsRecurring = Convert.ToBoolean(it.IsRecurring); } catch { }
-                    try { a.RecurrenceState = Convert.ToInt32(it.RecurrenceState); } catch { }
-                    list.Add(a);
-                }
-                catch { }
-            }
-            list.Sort((x, y) => DateTime.Compare(x.Start, y.Start));
-            return list;
+            Console.WriteLine("[idle-test] " + seconds + "초 Thread.Sleep 대기 중 CPU 사용량 측정");
+            Process p = Process.GetCurrentProcess();
+            TimeSpan cpuStart = p.TotalProcessorTime;
+            long memStart = p.WorkingSet64;
+            Thread.Sleep(TimeSpan.FromSeconds(seconds));
+            TimeSpan cpuUsed = p.TotalProcessorTime - cpuStart;
+            double avgPercent = cpuUsed.TotalSeconds / seconds * 100.0;
+            Console.WriteLine("[idle-test] 대기 " + seconds + "초 동안 누적 CPU time: " + cpuUsed.TotalMilliseconds.ToString("F1", CultureInfo.InvariantCulture) + "ms");
+            Console.WriteLine("[idle-test] 평균 CPU 사용률: " + avgPercent.ToString("F4", CultureInfo.InvariantCulture) + "%  (≈0이면 합격)");
+            Console.WriteLine("[idle-test] memory: " + Mb(memStart) + " -> " + Mb(p.WorkingSet64) + " MB");
+            return 0;
         }
 
-        // 폴더 트리 재귀 탐색: 캘린더 폴더(DefaultItemType==olAppointmentItem) 수집 + 'MERI' 후보 수집.
-        private static void WalkFolder(dynamic folder, string path, int depth, List<string> calendarPaths, List<FoundFolder> meriCandidates, ref int visited)
+        private static string Mb(long bytes)
         {
-            if (depth > MaxWalkDepth || visited > MaxVisitedFolders) return;
-            visited++;
-            dynamic folds = null;
-            try
-            {
-                folds = Track(folder.Folders);
-                int n = Convert.ToInt32(folds.Count);
-                for (int j = 1; j <= n; j++)
-                {
-                    dynamic f = null;
-                    try
-                    {
-                        f = Track(folds.Item(j));
-                        string name = S(f.Name);
-                        int type = -1;
-                        try { type = Convert.ToInt32(f.DefaultItemType); } catch { }
-                        string fpath = path + "\\" + name;
-                        if (type == OlDefaultItemAppointment)
-                        {
-                            calendarPaths.Add(fpath);
-                            string trimmed = name.Trim();
-                            if (trimmed.Equals("MERI", StringComparison.Ordinal))
-                                meriCandidates.Add(new FoundFolder { Folder = f, Path = fpath, Exact = true });
-                            else if (trimmed.Equals("MERI", StringComparison.OrdinalIgnoreCase))
-                                meriCandidates.Add(new FoundFolder { Folder = f, Path = fpath, Exact = false });
-                        }
-                        WalkFolder(f, fpath, depth + 1, calendarPaths, meriCandidates, ref visited);
-                    }
-                    catch { }
-                }
-            }
-            catch { }
+            return (bytes / 1024.0 / 1024.0).ToString("F1", CultureInfo.InvariantCulture) + "MB";
         }
-
-        private static void PrintAppt(int no, ApptInfo a)
-        {
-            Console.WriteLine("    #" + no + "  Start: " + a.Start.ToString("yyyy-MM-dd ddd HH:mm") + "  End: " + a.End.ToString("yyyy-MM-dd ddd HH:mm") + "  AllDayEvent: " + a.AllDay);
-            Console.WriteLine("        Subject              : " + a.Subject);
-            Console.WriteLine("        Location             : " + a.Location);
-            Console.WriteLine("        EntryID              : " + a.EntryId);
-            Console.WriteLine("        GlobalAppointmentID  : " + a.GlobalId);
-            Console.WriteLine("        LastModificationTime : " + a.LastMod.ToString("yyyy-MM-dd HH:mm:ss"));
-            Console.WriteLine("        IsRecurring: " + a.IsRecurring + "  RecurrenceState: " + a.RecurrenceState + " (" + RecStateName(a.RecurrenceState) + ")");
-        }
-
-        // [조사] 반복 일정 occurrence 확장 방식(이번 단계에서는 조사만, 전체 동기화 구현은 범위 밖).
-        // IncludeRecurrences=true + Sort("[Start]") + 시간 범위 Restrict로 occurrence를 열거하고,
-        // 마스터와 occurrence의 EntryID/GlobalAppointmentID를 비교한다.
-        private static void InvestigateRecurrence(dynamic folder, List<ApptInfo> knownUpcoming)
-        {
-            Console.WriteLine();
-            Console.WriteLine("[조사] 반복 일정 occurrence 확장 방식");
-            try
-            {
-                // 1) 반복 마스터 후보 찾기: 이미 읽은 다가오는 일정에서 먼저,
-                //    없으면 폴더 전체(최대 200건)에서 탐색한다.
-                ApptInfo master = null;
-                foreach (ApptInfo a in knownUpcoming)
-                {
-                    if (!a.IsRecurring) continue;
-                    if (a.Subject.StartsWith("Canceled:", StringComparison.OrdinalIgnoreCase)) continue; // 취소 반복 일정 제외
-                    master = a;
-                    break;
-                }
-                if (master == null)
-                {
-                    dynamic items = Track(folder.Items);
-                    int n;
-                    try { n = Convert.ToInt32(items.Count); }
-                    catch { n = 0; }
-                    if (n > 200) n = 200;
-                    for (int j = 1; j <= n; j++)
-                    {
-                        dynamic it = null;
-                        try
-                        {
-                            it = Track(items.Item(j));
-                            if (Convert.ToInt32(it.Class) != OlAppointmentItem) continue;
-                            bool rec = false;
-                            try { rec = Convert.ToBoolean(it.IsRecurring); } catch { }
-                            if (!rec) continue;
-                            string msubj = "";
-                            try { msubj = S(it.Subject); } catch { }
-                            if (msubj.StartsWith("Canceled:", StringComparison.OrdinalIgnoreCase)) continue; // 취소 반복 일정 제외
-                            master = new ApptInfo();
-                            try { master.Subject = S(it.Subject); } catch { }
-                            try { master.Start = Convert.ToDateTime(it.Start); } catch { }
-                            try { master.EntryId = S(it.EntryID); } catch { }
-                            try { master.GlobalId = S(it.GlobalAppointmentID); } catch { }
-                            break;
-                        }
-                        catch { }
-                    }
-                }
-
-                if (master == null)
-                {
-                    Console.WriteLine("    - 반복 일정(IsRecurring=true) 항목이 없어 occurrence 실측 불가.");
-                    Console.WriteLine("      참고: IncludeRecurrences=true + Sort('[Start]') + 시간 범위 Restrict로 occurrence 열거 가능.");
-                    Console.WriteLine("      MERI 캘린더에 반복 일정이 생기면 재실행하여 실측 필요.");
-                    return;
-                }
-
-                Console.WriteLine("    - 반복 마스터 발견: '" + master.Subject + "' (첫 Start: " + master.Start.ToString("yyyy-MM-dd HH:mm") + ")");
-                Console.WriteLine("      마스터 EntryID             : " + master.EntryId);
-                Console.WriteLine("      마스터 GlobalAppointmentID : " + master.GlobalId);
-
-                // 2) IncludeRecurrences=true로 앞으로 60일 범위의 occurrence 열거.
-                //    (이 상태의 Count는 신뢰 불가이므로 하드캡 사용)
-                dynamic items2 = Track(folder.Items);
-                items2.Sort("[Start]");
-                items2.IncludeRecurrences = true;
-                string fromStr = DateTime.Now.ToString("MM/dd/yyyy hh:mm tt", CultureInfo.InvariantCulture);
-                string toStr = DateTime.Now.AddDays(60).ToString("MM/dd/yyyy hh:mm tt", CultureInfo.InvariantCulture);
-                dynamic occItems = Track(items2.Restrict("[Start] >= '" + fromStr + "' AND [Start] <= '" + toStr + "'"));
-
-                int cnt;
-                try { cnt = Convert.ToInt32(occItems.Count); }
-                catch { cnt = -1; }
-                if (cnt < 0 || cnt > 1000) cnt = 1000;
-
-                int shown = 0;
-                for (int j = 1; j <= cnt && shown < 3; j++)
-                {
-                    dynamic o = null;
-                    try { o = Track(occItems.Item(j)); }
-                    catch { break; }
-                    try
-                    {
-                        if (Convert.ToInt32(o.Class) != OlAppointmentItem) continue;
-                        string g = S(o.GlobalAppointmentID);
-                        if (!string.Equals(g, master.GlobalId, StringComparison.Ordinal)) continue;
-                        DateTime st = Convert.ToDateTime(o.Start);
-                        string oEntry = S(o.EntryID);
-                        int rstate = -1;
-                        try { rstate = Convert.ToInt32(o.RecurrenceState); } catch { }
-                        Console.WriteLine("    - occurrence #" + (shown + 1) + ": Start=" + st.ToString("yyyy-MM-dd ddd HH:mm") + "  RecurrenceState=" + rstate + " (" + RecStateName(rstate) + ")");
-                        Console.WriteLine("        occurrence EntryID             : " + oEntry);
-                        Console.WriteLine("        occurrence GlobalAppointmentID : " + g);
-                        Console.WriteLine("        - occurrence EntryID != 마스터 EntryID : " + (!string.Equals(oEntry, master.EntryId, StringComparison.Ordinal)));
-                        Console.WriteLine("        - GlobalAppointmentID 마스터와 동일     : " + string.Equals(g, master.GlobalId, StringComparison.Ordinal));
-                        shown++;
-                    }
-                    catch { }
-                }
-                Console.WriteLine("    - 60일 범위에서 확인한 occurrence: " + shown + "건");
-                Console.WriteLine("    - 결론 후보: 반복 일정 식별자로는 GlobalAppointmentID(+occurrence Start 조합)가 안정 후보.");
-                Console.WriteLine("      occurrence EntryID는 마스터와 다르며 열거 시에만 얻을 수 있다. 향후 동기화 설계에 반영.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("    - recurrence 조사 중 예외: " + ex.Message);
-            }
-        }
-
     }
 }
