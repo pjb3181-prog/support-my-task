@@ -28,7 +28,10 @@
   - `CalendarSyncSource`는 선택된 Calendar 하나의 Event만 반환한다(§3 참조).
 - MVVM: ViewModel이 UseCase를 호출, Room Flow를 UI에 노출.
 
-## 2. Microsoft Graph Calendar Sync 구조
+## 2. Microsoft Graph Calendar Sync 구조 (보존/fallback 경로 — Phase 4)
+
+> 2026-08-31 기준: 회사 Microsoft 365 테넌트의 MFA/Entra 관리 정책으로 App Registration·실기 검증 진행 불가.
+> 코드는 fallback/보존 경로로 유지하며, 운영 경로는 §2-A(Classic Outlook COM)로 전환했다.
 
 - **인증**: MSAL (Microsoft Authentication Library)로 OAuth2 토큰 획득.
 - **Calendar 선택**: 이름이 `MERI`인 캘린더만 선택(§3 참조). 선택된 Calendar ID로만 동기화.
@@ -71,6 +74,35 @@ MERI Calendar Event 조회 (Gate C)
 
 - 세 Gate가 모두 실제 회사 Microsoft 365 환경에서 확인되어야 Phase 4 성공.
 - Graph Event → EventTitleParser → EventEntity → ChecklistRepository 연결은 다음 Phase에서 진행.
+
+## 2-A. Classic Outlook COM 경로 (Phase 4A — 현재 운영 경로)
+
+```
+Classic Outlook (Outlook Object Model/COM)
+    ↓  OutlookCompanion (Windows 콘솔, desktop/OutlookCompanion)
+[향후] Firebase 전달  ← 이 단계는 미구현 (MERI 실측 완료 후 설계)
+    ↓
+Android 앱
+```
+
+- **접근 경로(MERI 그룹 캘린더)**: MERI는 Microsoft 365 Group 캘린더로 `Session.Stores`에
+  탑재되지 않는다(폴더 트리 탐색으로는 발견 불가). `ActiveExplorer().NavigationPane →
+  CalendarModule → NavigationGroups('모든 그룹 일정') → NavigationFolders → .Folder` 경로로
+  Folder 객체를 직접 획득한다(2026-08-31 실측).
+- **일정 읽기**: `Folder.Items` + `Items.Restrict("[Start] >= '...'")`(JET). 날짜 형식은
+  `MM/dd/yyyy hh:mm tt`(AM/PM) — 24시간제 `HH:mm`은 ko-KR JET에서 0건으로 오해석되므로
+  사용하지 않는다. Restrict 결과 0건/실패 시 전체 순회 fallback으로 재확인한다.
+- **읽는 필드**: EntryID, StoreID, GlobalAppointmentID, Subject, Start, End, AllDayEvent,
+  Location, LastModificationTime, IsRecurring, RecurrenceState.
+- **식별자 후보**: `GlobalAppointmentID`(+occurrence의 Start 조합). occurrence의 EntryID는
+  마스터와 다르게 생성될 수 있으며 확장 열거 시에만 얻을 수 있다(§11의 Graph 식별자
+  정책과의 대응은 Phase 4B에서 정리).
+- **COM 수명**: 읽기 전용(항목 생성/수정/삭제 없음). 확보한 모든 RCW를
+  `Marshal.FinalReleaseComObject`로 명시 해제 후 GC 2회. Outlook이 이미 실행 중이면
+  `Quit()`하지 않고, 프로그램이 Outlook을 시작한 경우에만 `Quit()`한다.
+- **검증 결과(2026-08-31)**: Gate 1 연결 / Gate 2 Store·Folder 탐색 / Gate 3 MERI 발견 /
+  Gate 4 MERI 일정 읽기(다가오는 일정 10건 필드 실측) 전부 PASS. 실제 일정 값은 로컬
+  콘솔 출력으로만 확인했고 문서/Git에는 기록하지 않는다.
 
 ## 3. Outlook Calendar 선택 정책 (MERI 전용)
 

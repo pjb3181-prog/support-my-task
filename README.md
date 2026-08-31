@@ -1,7 +1,13 @@
 # 실수없으셨죠
 
-개인 일정 실수 방지 앱. Outlook 캘린더를 Microsoft Graph API로 읽고, 일정 유형에 따라
+개인 일정 실수 방지 앱. Outlook 캘린더(MERI 그룹 캘린더)를 읽고, 일정 유형에 따라
 기본 체크리스트를 자동 생성한 뒤, 일정이 가까워질수록 Android 알림으로 반복 상기시킨다.
+
+일정 데이터 획득 경로는 2중화되어 있다. 현재 우선 경로는 Windows PC의 Classic Outlook을
+COM(Outlook Object Model)으로 직접 읽는 **PC Companion**(`desktop/OutlookCompanion`)이며,
+Microsoft Graph API + MSAL 경로는 회사 Microsoft 365 테넌트 인증 정책으로 실기 검증이
+보류된 보존(fallback) 경로다. PC Companion이 일정을 읽어 향후 Firebase로 Android에
+전달하는 구조를 목표로 한다.
 
 ## 프로젝트 목적
 
@@ -19,6 +25,7 @@
 
 ## 기술 스택
 
+- **PC Companion(Phase 4A)**: Windows 콘솔 C#/.NET (Classic Outlook Object Model/COM, dynamic late-binding)
 - Kotlin 2.0.21, Jetpack Compose (BOM 2024.12.01), Material 3
 - Room 2.6.1 (KSP), MVVM
 - Microsoft Graph API (MSAL 인증)
@@ -32,7 +39,8 @@
 | 1 | 프로젝트 스캐폴드 + Room DB/Entity/DAO | ✅ 완료 |
 | 2 | 제목 Parser + 단위 테스트 | ✅ 완료 |
 | 3 | 템플릿 → 체크리스트 복사/병합 | ✅ 완료 |
-| 4 | MSAL 인증 + Graph 동기화 | 🔄 진행 중 (코드 구현, 실제 검증 대기) |
+| 4 | MSAL 인증 + Graph 동기화 | ⏸ 보존 (구현 완료, 회사 테넌트 인증 정책으로 실기 검증 보류 → fallback 경로) |
+| 4A | PC Companion: Classic Outlook COM으로 MERI 그룹 캘린더 읽기 검증 | ✅ 완료 (2026-08-31) |
 | 5 | 일정 목록/상세 UI | ⏳ 예정 |
 | 6 | 체크리스트 추가/삭제 | ⏳ 예정 |
 | 7 | Notification 스케줄링 | ⏳ 예정 |

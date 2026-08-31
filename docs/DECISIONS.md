@@ -263,3 +263,59 @@ Reason:
 Alternatives:
 - `Calendars.ReadWrite` → 쓰기 불필요로 기각.
 - `Calendars.ReadBasic` → `location` 필드 미제공으로 기각.
+
+---
+
+## 2026-08-31 - 회사 테넌트 인증 제약으로 운영 경로를 Classic Outlook COM(PC Companion)으로 전환, Graph/MSAL은 보존
+
+Decision:
+Microsoft 365 테넌트의 MFA/Entra 관리 정책으로 App Registration과 MSAL 실기 검증이 막혀
+있으므로, 일정 데이터 획득의 우선 운영 경로를 Windows Classic Outlook COM(Outlook Object
+Model) 기반 PC Companion으로 전환한다. 기존 Graph/MSAL Android 코드는 삭제/revert하지
+않고 fallback/보존 경로로 유지한다.
+
+Reason:
+Classic Outlook은 이미 사용자 세션에 로그인되어 있어 별도 인증/App Registration 없이
+회사 일정을 읽을 수 있다(2026-08-31 실측으로 MERI 그룹 캘린더 읽기 성공). Graph/MSAL은
+기술적으로 완성되어 있어 테넌트 정책이 풀리면 즉시 재개할 수 있어야 한다.
+
+Alternatives:
+- Graph/MSAL 검증을 무기한 대기 → 일정 데이터 확보가 막혀 진행 불가로 기각.
+- Graph/MSAL 코드 삭제 → 완성된 fallback 자산 폐기로 기각.
+
+---
+
+## 2026-08-31 - MERI(M365 Group 캘린더) 접근은 NavigationPane 경로 사용
+
+Decision:
+MERI 캘린더는 Session.Stores에 탑재되지 않는 Microsoft 365 Group 캘린더다.
+PC Companion은 `ActiveExplorer().NavigationPane → CalendarModule → NavigationGroups
+('모든 그룹 일정') → NavigationFolders → .Folder` 경로로 MERI Folder 객체를 획득한다.
+Store/Folder 재귀 탐색과 GetSharedDefaultFolder는 MERI 발견에 실패하는 경로다.
+
+Reason:
+실측(2026-08-31)에서 Stores 1개(개인 사서함)·폴더 144개 트리에 MERI가 없었고,
+NavigationPane의 '모든 그룹 일정' 그룹에서만 Folder 객체 획득에 성공했다.
+StoreID/EntryID가 함께 확보되므로 향후 GetFolderFromID 직접 재오픈도 검토할 수 있다.
+
+Alternatives:
+- Store/폴더 트리 재귀 순회 → MERI 미탑재로 발견 불가(실측 기각).
+- GetSharedDefaultFolder('MERI') → Recipient resolve 실패로 기각.
+
+---
+
+## 2026-08-31 - Phase 4A 검증 도구는 Windows 내장 .NET Framework로 빌드 (추가 설치 없음)
+
+Decision:
+Phase 4A 검증 콘솔(desktop/OutlookCompanion)은 별도 SDK 설치 없이 Windows 내장
+csc.exe(.NET Framework 4.x)로 빌드한다. COM 접근은 interop 어셈블리/COMReference 없이
+dynamic late-binding(ProgID 활성화)으로 한다. SDK 스타일 csproj(net8.0)를 함께 두어
+향후 .NET SDK 설치 시 `dotnet build`로 동일 소스를 빌드할 수 있게 한다.
+
+Reason:
+개발 PC에 .NET SDK가 없어 검증 단계에서 설치 부담(회사 PC)을 줄여야 한다.
+dynamic late-binding은 Outlook/typelib 버전과 무관하게 동작한다.
+
+Alternatives:
+- winget으로 .NET 8 SDK 설치 → 검증 전 소프트웨어 설치를 피하는 원칙으로 기각(향후 검토).
+- COMReference(tlbimp) → typelib 버전 의존·빌드 환경 요구로 기각.

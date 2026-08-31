@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-08-31 - Phase 4A: Classic Outlook(COM) 연결 타당성 검증 (MERI 그룹 캘린더 읽기 성공)
+
+Completed:
+- Phase 4A 검증용 Windows 콘솔 앱 `desktop/OutlookCompanion` 추가 (C#, Windows 내장 csc.exe/.NET Framework 4.x로 빌드, 추가 설치 불필요)
+  - COM 접근: dynamic late-binding(ProgID 'Outlook.Application') — interop 어셈블리/COMReference 불필요
+  - 읽기 전용(생성/수정/삭제 없음), 확보한 COM RCW 전부 FinalReleaseComObject 명시 해제 + GC 2회, 프로그램이 Outlook을 시작한 경우에만 Quit()
+- Gate 1 Classic Outlook 연결: PASS — 실행 중 Outlook에 attach (Outlook 16.0.0.20326)
+- Gate 2 Store/Folder 구조 탐색: PASS — Session.Stores 1개(개인 사서함), 폴더 144개 방문, 캘린더 폴더 4개 발견
+- Gate 3 MERI 캘린더 발견: PASS — NavigationPane('모든 그룹 일정') → NavigationFolder 'MERI' → Folder 객체 획득
+  - MERI는 Session.Stores/폴더 트리에 탑재되지 않는 Microsoft 365 Group 캘린더 → UI NavigationPane 경로로만 Folder 접근 가능 (Store/Folder 재귀 탐색, GetSharedDefaultFolder는 모두 실패 — 실측)
+- Gate 4 MERI 일정 읽기: PASS — MERI 전체 4,273건, 다가오는 일정 14건, 그중 상위 10건에 대해
+  EntryID/GlobalAppointmentID/Subject/Start/End/AllDayEvent/Location/LastModificationTime/IsRecurring/RecurrenceState 전 필드 실측
+- 반복 일정 occurrence 조사(IncludeRecurrences 확장):
+  - occurrence의 GlobalAppointmentID는 마스터와 동일 (실측 확인)
+  - 확장 열거 시 occurrence의 RecurrenceState=2 관측 (olApptOccurrence)
+  - 연 1회 반복 첫 occurrence의 EntryID가 마스터 EntryID와 동일하게 관측 → 마스터/occurrence EntryID 차이는 2번째 이후 occurrence에서 재실측 필요
+- JET Items.Restrict 날짜 형식 실측: 24시간제 'HH:mm' 형식은 ko-KR JET에서 0건을 반환(오해석) → 'hh:mm tt'(AM/PM) 형식 사용 + Restrict 결과 0건/실패 시 전체 순회 fallback 재확인 구조 채택
+
+Changed:
+- 신규: desktop/OutlookCompanion/{Program.cs, OutlookCompanion.csproj, build.ps1, README.md}
+- 수정: .gitignore (desktop bin/obj 무시 추가), README.md, docs/{ARCHITECTURE,DECISIONS,DEVELOPMENT_LOG}.md
+- 기존 Android 코드(Phase 1~3) 및 Graph/MSAL(Phase 4)은 수정/삭제 없음 — Phase 4는 별도 커밋으로 보존
+
+Build/Test:
+- csc.exe(.NET Framework 4.8, Windows 내장) 빌드 성공 → desktop/OutlookCompanion/bin/OutlookCompanion.exe
+- 실행: Gate 1~4 전부 PASS, exit code 0
+- 실제 일정 제목/장소/ID 값은 로컬 콘솔 출력으로만 확인했고, Git/문서에는 기록하지 않음
+
+Known Issues:
+- MERI Folder 접근이 Outlook UI(ActiveExplorer/NavigationPane)를 경유 → Classic Outlook이 실행 중이어야 MERI 발견 가능. 프로그램이 Outlook을 직접 시작한 경우 Explorer가 없어 MERI 미발견이 될 수 있음 (폴더 StoreID/EntryID 확보 후 GetFolderFromID(entryId, storeId) 직접 재오픈 경로를 Phase 4B에서 검토)
+- '공유 일정' 그룹의 미탑재 공유 캘린더 대부분은 NavigationFolder.Folder가 null (탑재된 캘린더만 Folder 획득 가능)
+- 개인 기본 캘린더('일정')에는 다가오는 일정 0건 — 업무 일정은 MERI 그룹 캘린더에만 존재
+- occurrence EntryID/마스터 EntryID 차이 실측은 2번째 이후 occurrence 필요 (MERI에 연 1회 반복만 존재해 미실측)
+- Restrict의 날짜 형식 로케일 의존성 → fallback 순회로 보완했으나 폴더 규모가 커지면 성능 검토 필요
+
+Next:
+- Phase 4B: MERI Folder 안정적 재접근(GetFolderFromID) + 일정 식별자 정책(Graph stableKey 정책과 대응: GlobalAppointmentID 기반) 설계
+- PC Companion 본격 구조(실행 시 1회 + 1시간 polling + 수동 동기화, 평소 CPU ≈ 0)와 Firebase 전달 설계는 사용자와 합의 후 진행
+
+---
+
 ## 2026-08-19 16:00 - Phase 4: MSAL + Graph 연결 검증 (코드 구현 완료, 실제 검증 대기)
 
 Completed:

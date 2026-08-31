@@ -40,6 +40,10 @@ confidential/
 *.pst
 *.ost
 
+# ===== Desktop / .NET (Phase 4A OutlookCompanion) =====
+desktop/**/bin/
+desktop/**/obj/
+
 # ===== OS =====
 .DS_Store
 Thumbs.db
