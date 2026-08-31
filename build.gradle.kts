@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android) apply false
     alias(libs.plugins.kotlin.compose) apply false
     alias(libs.plugins.ksp) apply false
+    alias(libs.plugins.google.services) apply false
 }
 
 // Dropbox 동기화가 build 디렉터리를 잠그는 문제를 피하기 위해

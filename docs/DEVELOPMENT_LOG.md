@@ -4,6 +4,62 @@
 
 ---
 
+## 2026-08-31 - Phase 5: Android ↔ Firestore 수신 연동 (Firestore → Room → 체크리스트 파이프라인 통합, 단위 테스트 59/59)
+
+Completed:
+- **CalendarSyncSource 추상화**: `CalendarSyncSource` 인터페이스 + `FirestoreCalendarSyncSource`
+  (운영 — Firebase Auth + Firestore 읽기 전용 window 쿼리, 과거 7일~미래 90일) +
+  `GraphCalendarSyncSource`(기존 MSAL/Graph 경로 보존 fallback). 도메인 로직
+  (EventTitleParser/ChecklistGenerator/ChecklistRepository)은 소스 무관 재사용.
+- **source-neutral EventEntity (Room v1→v2)**: unique identity = (sourceType, sourceEventId).
+  Firestore 문서 ID는 sourceEventId에 저장(graphImmutableId에 대입하지 않음 — 소스 혼동 방지).
+  graphImmutableId/eventType nullable화, Firestore 전용 seriesKeyHash/occurrenceKeyHash 추가.
+  MIGRATION_1_2 — 기존 Graph 행은 sourceType='GRAPH', sourceEventId=graphImmutableId로 이동하고
+  PK(id) 유지 → 기존 Checklist eventId 참조 보존. fallbackToDestructiveMigration 미사용.
+- **FirestoreDtoParser**: §2-B 문서 스키마(v1) map → DTO → Instant(UTC). KST 현지 시각
+  문자열 해석(Asia/Seoul), allDay 날짜 경계 처리, 필수 필드 누락/형식 오류 방어.
+- **FirebaseAuthManager**: Email/Password 로그인/로그아웃. 비밀번호 저장/로깅 금지(사용 즉시 폐기).
+- **CalendarSyncRepository**: fetchAndStore — tombstone(deleted=true)→isDeleted, 재관측 Revive,
+  기존 Checklist 재생성 금지(completed/사용자 항목 보존), fetch 실패 시 Room 미변경·lastSyncAt
+  미갱신, SyncStats 카운트 반환. clock 주입으로 시간 의존성 테스트 가능.
+- **Debug UI 재작성**: Firebase 섹션(로그인 폼/로그아웃/Sync now/카운트/lastSyncAt) + Graph
+  fallback 섹션 보존. 실제 일정 제목/내용 미출력(카운트만).
+- **빌드 설정**: google-services.json 있을 때만 google-services 플러그인 apply(없어도 빌드
+  성공, Firebase OFF). Room schema JSON(app/schemas)을 debug sourceSet assets에 포함 —
+  MigrationTestHelper + Robolectric(debug merged assets 사용) 표준 해법, release APK 미포함.
+
+Measured:
+- 단위 테스트 **59/59 PASS** (failures=0 errors=0 skipped=0, 8개 클래스):
+  EventTitleParserTest 15, ChecklistGeneratorTest 8, ChecklistRepositoryTest 8(조정),
+  CalendarSelectorTest 6, GraphJsonParsingTest 4, FirestoreDtoParserTest 7(신규),
+  CalendarSyncRepositoryTest 10(신규), MigrationTest 1(신규)
+- testDebugUnitTest BUILD SUCCESSFUL / assembleDebug BUILD SUCCESSFUL
+
+Changed:
+- 신규: app/src/main/java/com/nomistake/app/{domain/CalendarSyncSource.kt,
+  data/remote/{FirebaseAuthManager,FirestoreCalendarSyncSource,FirestoreModels}.kt,
+  data/remote/GraphCalendarSyncSource.kt, data/repository/CalendarSyncRepository.kt}
+- 수정: data/local/{entity/EventEntity.kt(v2), dao/EventDao.kt, db/AppDatabase.kt(v2+MIGRATION_1_2)},
+  MainActivity.kt(DI), ui/{DebugScreen,DebugViewModel}.kt(Firebase 섹션), app/build.gradle.kts
+  (Firebase 의존성 + debug assets schema), build.gradle.kts, gradle/libs.versions.toml, .gitignore
+- 신규 테스트: data/local/db/MigrationTest.kt, data/remote/FirestoreDtoParserTest.kt,
+  data/repository/CalendarSyncRepositoryTest.kt / 수정: ChecklistRepositoryTest.kt
+- 신규: app/schemas/com.nomistake.app.data.local.db.AppDatabase/2.json
+- 문서: ARCHITECTURE.md(§1/§2-C/§10/§11), DECISIONS.md(ADR 4건), README.md(기술 스택/Phase 표)
+
+Known Issues:
+- MigrationTest 초기 실패 해결 과정: Robolectric은 debug variant merged assets을 사용한다.
+  test sourceSet assets(AGP unit test 미지원)과 src/test/resources 복사 방식 모두 동작하지
+  않았다 → debug sourceSet assets.srcDirs(schemas)로 해결. 단, testReleaseUnitTest에서는
+  migration 테스트가 schema 미포함으로 실패할 수 있음(검증은 testDebugUnitTest 기준).
+- 실기기 실측(Gate A~E) 미완료 — Firebase Console 작업(앱 등록, google-services.json 배치,
+  Auth Email/Password 활성화, Security Rules 배포)이 남아 있다.
+
+Next:
+- 사용자 Firebase Console 작업 → 실기기 Gate A~E 실측
+
+---
+
 ## 2026-08-31 - Phase 4C: PC Companion → Firebase Firestore 전달 계층 (MERI window 61건 업로드 성공)
 
 Completed:

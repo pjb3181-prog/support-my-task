@@ -40,6 +40,8 @@ service-account*.json
 companion-config.txt
 firebase-missing.txt
 firebase-state.txt
+# Firebase Android 구성 (Phase 5) - Console에서 직접 다운로드, 로컬 빌드에서만 사용
+google-services.json
 
 # ===== 회사 대외비 / 개인 데이터 (절대 커밋 금지) =====
 *.ics

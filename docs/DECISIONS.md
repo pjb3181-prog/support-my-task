@@ -481,3 +481,62 @@ Reason:
 Alternatives:
 - 1회 missing에 즉시 tombstone — window 밖 이동 오분류 위험으로 기각.
 - 시간 기준만(예: 2시간) 사용 — 회수 기준이 poll 간격과 무관하게 예측 가능해 채택(60분 polling에서 두 정책이 사실상 동일).
+
+---
+
+## 2026-08-31 - Android 일정 읽기 소스는 Firestore, 저장 source of truth는 Room (Phase 5)
+
+Decision:
+Android는 Firestore `events` 컬렉션을 읽기 전용 소스로 사용하고 Room을 source of truth로 유지한다(Android에서 일정 write 금지). `CalendarSyncSource` 추상화 아래 `FirestoreCalendarSyncSource`(운영)와 `GraphCalendarSyncSource`(보존 fallback)를 두고, 도메인 로직(EventTitleParser/ChecklistGenerator/ChecklistRepository)은 소스 무관하게 재사용한다. Firestore fetch 실패 시 Room은 변경하지 않고 lastSyncAt도 갱신하지 않는다.
+
+Reason:
+PC 측(4C)이 검증된 upsert/tombstone 파이프라인으로 MERI window를 이미 Firestore에 유지한다. Android가 Outlook/Graph에 직접 접근하는 것보다 전달 계층 하나를 읽는 편이 단순·안정적이고, 회사 Microsoft 365 테넌트 인증 정책(Phase 4 보류 사유)도 우회된다. Room을 source of truth로 두면 네트워크 단절에도 기존 일정/체크리스트가 유지된다.
+
+Alternatives:
+- Android에서 Graph API 직접 호출 — 테넌트 인증 정책으로 실기 검증 불가로 기각.
+- Firestore 없이 PC→Android 직접 전송(USB/LAN) — 무인 운영 불가로 기각(4C 결정 동일).
+
+---
+
+## 2026-08-31 - EventEntity는 source-neutral identity (sourceType + sourceEventId) — Room v1→v2 (Phase 5)
+
+Decision:
+`events` 테이블 unique identity를 (`sourceType`, `sourceEventId`)로 일반화한다(v1 graphImmutableId UNIQUE → v2). Firestore 문서 ID는 sourceEventId에 두고 graphImmutableId에 대입하지 않는다. MIGRATION_1_2로 기존 Graph 행은 sourceType='GRAPH', sourceEventId=graphImmutableId로 이동하고 PK(id)를 유지한다(fallbackToDestructiveMigration 미사용).
+
+Reason:
+Graph fallback 경로를 보존하면서 소스 혼동을 막는다. PK 유지로 기존 Checklist의 eventId 참조가 끊어지지 않는다. 마이그레이션은 Room MigrationTestHelper + Robolectric 단위 테스트로 검증했다(MigrationTest).
+
+Alternatives:
+- Firestore용 별도 테이블 — 조인/쿼리 부담으로 기각.
+- graphImmutableId에 Firestore ID 대입 — Graph 전용 필드라 소스 혼동으로 기각.
+- destructive migration(전체 재생성) — 데이터/체크리스트 유실로 기각.
+
+---
+
+## 2026-08-31 - Room schema JSON은 debug sourceSet assets에 포함 (Phase 5)
+
+Decision:
+Room 스키마 export(`app/schemas`)를 debug sourceSet assets에 포함한다. release APK에는 번들하지 않는다.
+
+Reason:
+MigrationTestHelper는 schema JSON을 Android assets(DB canonical name 폴더)에서 읽고, Robolectric은 debug variant의 merged assets을 사용한다. test sourceSet assets은 AGP unit test에 merge되지 않고, `src/test/resources` 복사 방식도 Robolectric이 merged assets을 사용하므로 동작하지 않았다(실측). debug sourceSet이 표준 해법이며, schema에는 테이블 구조만 있어 민감정보가 없다.
+
+Alternatives:
+- test sourceSet assets — AGP가 unit test에 merge하지 않아 기각.
+- copy 태스크로 src/test/resources/assets 복사 — Robolectric이 merged assets을 사용하므로 기각.
+- release에도 포함 — release APK 오염으로 기각.
+
+---
+
+## 2026-08-31 - Android Firebase 인증은 Email/Password, google-services.json은 조건부 빌드 (Phase 5)
+
+Decision:
+Firebase Auth Email/Password(개인용, 사용자 1명)로 로그인한다. `app/google-services.json`이 있을 때만 google-services 플러그인을 apply하고, 없으면 빌드는 성공하되 Firebase 기능이 OFF(런타임 미초기화)로 동작한다. 파일은 Git 미커밋(.gitignore). Debug UI에서 비밀번호는 사용 즉시 폐기·저장/로깅 금지한다.
+
+Reason:
+파일 없이도 빌드·단위 테스트가 항상 성공해야 CI/다른 PC 환경에서 안정적이고 실기 검증 전 단계에서 개발이 막히지 않는다. 개인용 앱이므로 소셜/익명 Auth는 불필요하다. Firestore Security Rules는 이 로그인 사용자 read-only 기준으로 배포한다(실기 검증 단계의 Console 작업).
+
+Alternatives:
+- 익명 Auth — Rules에서 식별 불가·남용 위험으로 기각.
+- 서비스 계정 — Android에 시크릿 번들 금지로 기각.
+- google-services.json 필수화 — 파일 없는 환경에서 빌드 실패로 기각.

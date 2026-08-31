@@ -18,14 +18,19 @@
                │                          │
 ┌──────────────▼──────────────┐  ┌────────▼───────────────┐
 │   CalendarSyncSource (추상)  │  │   Room Database         │
-│   └ GraphCalendarSyncSource │  │   (Entity/DAO)          │
-│     (MSAL + Graph API)      │  └────────────────────────┘
+│   ├ FirestoreCalendarSync   │  │   (Entity/DAO, v2)       │
+│   │  (Phase 5, 운영 경로)    │  └────────────────────────┘
+│   └ GraphCalendarSyncSource │
+│     (MSAL + Graph, fallback) │
 └─────────────────────────────┘
 ```
 
 - **서버 없음**, **AI 없음**. 규칙 기반(제목 파서 + 템플릿 매핑)만 사용.
+  (Phase 5의 Firebase Firestore는 PC→Android 일정 전달 통로일 뿐, 앱 기능 서버가 아니다.)
 - 동기화는 `CalendarSyncSource` 인터페이스로 추상화 → 테스트/교체 용이.
-  - `CalendarSyncSource`는 선택된 Calendar 하나의 Event만 반환한다(§3 참조).
+  - Graph 구현은 선택된 Calendar 하나의 Event만 반환한다(§3 참조).
+  - Firestore 구현(§2-C)은 PC가 이미 MERI window만 업로드한 `events` 컬렉션을
+    window 쿼리로 읽는다(컬렉션 자체가 "선택된 MERI 캘린더"에 대응).
 - MVVM: ViewModel이 UseCase를 호출, Room Flow를 UI에 노출.
 
 ## 2. Microsoft Graph Calendar Sync 구조 (보존/fallback 경로 — Phase 4)
@@ -185,6 +190,56 @@ Android 앱
   2차(두 번째 PC 시나리오) skipSame=61 write=0 / 3차(diff 기반) targets=0. 전체 과거 데이터는
   업로드하지 않았다(window 정책 준수).
 
+## 2-C. Android Firestore 수신 경로 (Phase 5 — 현재 구현)
+
+```
+Firebase Firestore  events/{stableDocumentId} (§2-B, flat schema v1)
+    ↓  FirebaseAuthManager (Email/Password) → FirestoreCalendarSyncSource
+    │   window 쿼리(start/end 기준, 과거 7일~미래 90일) → 문서 map 수신
+    ↓  FirestoreDtoParser.fromMap → DTO → Instant(UTC) 변환(KST 현지 문자열 해석)
+    ↓  CalendarSyncRepository.fetchAndStore()
+    │   EventTitleParser(기존 재사용) → source-neutral EventEntity upsert (§10)
+    │   tombstone(deleted=true) → isDeleted=true / 재관측 시 Revive
+    │   기존 Checklist 보존(재생성 금지) / fetch 실패 시 Room 미변경·lastSyncAt 미갱신
+    ↓  Room (source of truth, v2) → ChecklistGenerator → ChecklistRepository (기존 재사용)
+```
+
+- **SDK/빌드**: Firebase BOM(Auth + Firestore Android 공식 클라이언트) +
+  kotlinx-coroutines-play-services(`Task.await()`). `app/google-services.json`이 있을 때만
+  google-services 플러그인을 apply한다 — 파일이 없어도 빌드는 항상 성공하고 Firebase 기능은
+  OFF(런타임 미초기화, Graph fallback 유지). 파일은 Git 미커밋(.gitignore).
+- **인증**: Firebase Auth Email/Password. 개인용 앱(사용자 1명)이라 소셜/익명 Auth 미사용.
+  로그인·로그아웃은 Debug 화면에서만. Firestore Security Rules는 로그인 사용자 read-only
+  기준으로 실기 검증 단계에서 배포한다(현재 Production mode deny-all → Console 작업 필요).
+- **파싱 (FirestoreDtoParser)**: §2-B 문서 스키마(v1)의 map을 DTO로 읽고, PC가 KST 현지
+  시각 문자열(`yyyy-MM-ddTHH:mm:ss`)로 저장한 start/end를 Asia/Seoul 기준 Instant(UTC)로
+  변환. allDay 일정은 KST 날짜 경계로 취급. 필수 필드 누락/형식 오류 문서는 건너뛰고
+  카운트로만 보고한다(합성 데이터 테스트로 방어 검증).
+- **identity (source-neutral)**: `events` 테이블 unique key = (`sourceType`, `sourceEventId`).
+  - FIRESTORE_OUTLOOK: sourceEventId = Firestore 문서 ID(stableDocumentId). Firestore ID를
+    graphImmutableId에 대입하지 않는다(소스 혼동 방지).
+  - GRAPH: sourceEventId = Graph immutable id(fallback 경로 보존, §11).
+  - Graph 전용 필드(graphImmutableId, iCalUId, eventType, changeKey)는 nullable —
+    Firestore 이벤트에서는 null. Firestore 전용 seriesKeyHash/occurrenceKeyHash는
+    매칭·진단용(identity 아님). 원본 raw ID(GlobalAppointmentID/EntryID)는 저장하지 않는다.
+- **삭제/부활 (PC §2-B와 대칭)**: Firestore tombstone(deleted=true) → Room `isDeleted=true`
+  (soft delete, hard delete 안 함). 재관측(deleted=false) 시 Revive. checklist는 삭제하지
+  않고 isTarget/isDeleted 필터로 노출만 제어한다.
+- **Room v1→v2 (MIGRATION_1_2)**: source-neutral identity 컬럼 추가 +
+  graphImmutableId/eventType nullable화 + seriesKeyHash/occurrenceKeyHash 추가. 기존(v1,
+  Graph) 행은 sourceType='GRAPH', sourceEventId=graphImmutableId로 마이그레이션되고 PK(id)를
+  유지한다 → 기존 Checklist의 eventId 참조 보존. fallbackToDestructiveMigration 미사용.
+- **schema JSON → debug assets**: Room이 export한 `app/schemas`를 debug sourceSet assets에
+  포함한다 — MigrationTestHelper(assets에서 schema JSON 읽음) + Robolectric(debug variant
+  merged assets 사용) 조합의 표준 해법. release APK에는 번들되지 않는다. schema에는 테이블
+  구조만 있어 민감정보가 없다.
+- **체크리스트**: 기존 EventTitleParser/ChecklistGenerator/ChecklistRepository를 그대로
+  재사용. 재Sync 시 기존 Checklist 재생성 금지, completed/사용자 항목 보존(기존 Idempotency
+  정책 그대로, §8).
+- **Debug UI**: Firebase 섹션(로그인 폼/로그아웃/Sync now/SyncStats 카운트/lastSyncAt) +
+  기존 Graph 섹션 보존. 실제 일정 제목/내용은 화면·로그에 출력하지 않는다(카운트만),
+  비밀번호는 사용 즉시 폐기한다.
+
 ## 3. Outlook Calendar 선택 정책 (MERI 전용)
 
 - v1은 사용자의 모든 Outlook 캘린더를 읽지 않는다. **이름이 정확히 `MERI`인 캘린더 하나만** 처리한다.
@@ -323,7 +378,7 @@ settings (독립, key-value)
 
 | Entity | 테이블 | 주요 필드 |
 |--------|--------|-----------|
-| EventEntity | events | graphImmutableId(UNIQUE), iCalUId, seriesMasterId, changeKey, title, cleanTitle, roomType, attendeeCode, isMine, scheduleType, isTarget, isAllDay, startTime, endTime, isDeleted |
+| EventEntity | events (v2) | id(PK), **sourceType + sourceEventId (UNIQUE, source-neutral identity)**, graphImmutableId(UNIQUE, Graph 전용 nullable), iCalUId, seriesMasterId, eventType, changeKey, seriesKeyHash, occurrenceKeyHash(Firestore 전용), title, cleanTitle, roomType, attendeeCode, isMine, scheduleType, isTarget, isAllDay, startTime, endTime, location, isDeleted, lastSyncedAt |
 | ChecklistEntity | checklists | eventId(UNIQUE), scheduleType, createdAt |
 | ChecklistItemEntity | checklist_items | checklistId, text, sortOrder, isCompleted, completedAt, origin, templateItemId |
 | ChecklistTemplateEntity | checklist_templates | kind(ROOM/TYPE), key, name, isBuiltIn |
@@ -333,7 +388,11 @@ settings (독립, key-value)
 | SettingEntity | settings | key(PK), value |
 
 - `Instant` ↔ `Long`(epoch millis) 변환은 `Converters`가 담당.
-- enum(`TemplateKind`, `ItemOrigin`, `RuleAppliesTo`)은 Room 2.6.1 기본 지원(String name 저장).
+- enum은 Room 2.6.1 기본 지원(String name 저장): `TemplateKind`, `ItemOrigin`, `RuleAppliesTo`, `EventSource`.
+- **v1→v2 마이그레이션 (Phase 5, MIGRATION_1_2)**: source-neutral identity 컬럼 추가,
+  graphImmutableId/eventType nullable화, seriesKeyHash/occurrenceKeyHash 추가. 기존 행은
+  PK(id) 유지로 이동 → Checklist의 eventId 참조 보존. 스키마는 `app/schemas`에 export하고
+  debug sourceSet assets에 포함해 Robolectric migration 테스트가 사용한다(§2-C).
 
 ## 11. Event identification / Immutable ID 정책
 
@@ -355,6 +414,7 @@ settings (독립, key-value)
 | `seriesMasterId + startTime` | `occurrenceKey` = `seriesKey + "\|" + Start(UTC Ticks)` (반복만) | 개별 occurrence(회차) 식별 |
 | `changeKey` | `LastModificationTime` | 변경 감지 보조값(identity 아님) |
 | (없음) | `EntryID` | 보조·진단 참조(폴더/store 이동, 재내보내기 등에서 변동 가능 — identity 금지) |
+| (Phase 5) `sourceEventId` (FIRESTORE_OUTLOOK) | Firestore 문서 ID = `stableDocumentId` (§2-B) | Android Room `events` 테이블의 소스별 identity(sourceType + sourceEventId UNIQUE, §2-C) |
 
 - 시간 변경(예: 회의 10:00 → 11:00)은 "기존 occurrence 삭제 + 신규 생성"이 아니라
   **기존 일정의 시간 수정**으로 처리한다(diff 엔진의 seriesKey 기반 time-moved 재매칭).

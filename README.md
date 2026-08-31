@@ -6,8 +6,9 @@
 일정 데이터 획득 경로는 2중화되어 있다. 현재 우선 경로는 Windows PC의 Classic Outlook을
 COM(Outlook Object Model)으로 직접 읽는 **PC Companion**(`desktop/OutlookCompanion`)이며,
 Microsoft Graph API + MSAL 경로는 회사 Microsoft 365 테넌트 인증 정책으로 실기 검증이
-보류된 보존(fallback) 경로다. PC Companion이 일정을 읽어 향후 Firebase로 Android에
-전달하는 구조를 목표로 한다.
+보류된 보존(fallback) 경로다. PC Companion이 일정을 읽어 Firebase Firestore로 전달하고,
+Android는 Firestore를 읽어 Room에 저장한 뒤 기존 파서/체크리스트 파이프라인으로 처리한다
+(Phase 5 구현 완료, 실기기 실측 대기).
 
 ## 프로젝트 목적
 
@@ -27,6 +28,7 @@ Microsoft Graph API + MSAL 경로는 회사 Microsoft 365 테넌트 인증 정�
 
 - **PC Companion(Phase 4A~4C)**: Windows 콘솔 C#/.NET 8 (Classic Outlook Object Model/COM, dynamic late-binding) — MERI Folder 재접근(저장 ID 직접 재오픈), 1시간 polling, snapshot diff
 - **Firebase Firestore(Phase 4C)**: Google.Cloud.Firestore 4.4.0(공식 .NET 클라이언트) — 서비스 계정 JSON 인증, MERI window 일정을 `events/{docId}` flat 컬렉션에 diff 기반 최소 write로 전달(tombstone 정책 포함)
+- **Firebase Android 수신(Phase 5)**: Firebase BOM(Auth Email/Password + Firestore 읽기 전용) — Firestore → FirestoreDtoParser → CalendarSyncRepository → Room v2(source-neutral EventEntity) → 기존 파서/체크리스트 재사용. google-services.json 없으면 Firebase OFF + Graph fallback(빌드는 항상 성공)
 - Kotlin 2.0.21, Jetpack Compose (BOM 2024.12.01), Material 3
 - Room 2.6.1 (KSP), MVVM
 - Microsoft Graph API (MSAL 인증)
@@ -44,12 +46,14 @@ Microsoft Graph API + MSAL 경로는 회사 Microsoft 365 테넌트 인증 정�
 | 4A | PC Companion: Classic Outlook COM으로 MERI 그룹 캘린더 읽기 검증 | ✅ 완료 (2026-08-31) |
 | 4B | PC Companion: MERI 재접근 안정화 + 식별자 정책 + polling/diff 검증 | ✅ 완료 (2026-08-31) |
 | 4C | PC Companion → Firebase Firestore 전달 (문서 ID/upsert/tombstone/두 PC 정책) | ✅ 완료 (2026-08-31, 실제 MERI window 61건 업로드 검증) |
-| 5 | 일정 목록/상세 UI | ⏳ 예정 |
-| 6 | 체크리스트 추가/삭제 | ⏳ 예정 |
-| 7 | Notification 스케줄링 | ⏳ 예정 |
-| 8 | 설정 화면 | ⏳ 예정 |
-| 9 | WorkManager 주기 동기화 | ⏳ 예정 |
-| 10 | 통합 테스트/실기기 검증 | ⏳ 예정 |
+| 5 | Android ↔ Firestore 수신 연동 (Firebase Auth, Room v1→v2 source-neutral, CalendarSyncRepository, Debug UI) | ✅ 완료 (2026-08-31, 구현 + 단위 테스트 59/59 통과) |
+| 5A | 실기기 Gate A~E 실측 (Auth 로그인 → MERI 일정 sync → 체크리스트 생성·보존·idempotency) | ⏳ 대기 (Firebase Console: 앱 등록·google-services.json·Auth 활성화·Security Rules 배포 필요) |
+| 6 | 일정 목록/상세 UI | ⏳ 예정 |
+| 7 | 체크리스트 추가/삭제 | ⏳ 예정 |
+| 8 | Notification 스케줄링 | ⏳ 예정 |
+| 9 | 설정 화면 | ⏳ 예정 |
+| 10 | WorkManager 주기 동기화 | ⏳ 예정 |
+| 11 | 통합 테스트/실기기 검증 | ⏳ 예정 |
 
 ## 실행 방법
 

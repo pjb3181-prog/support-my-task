@@ -7,6 +7,7 @@ import com.nomistake.app.data.local.entity.ChecklistTemplateEntity
 import com.nomistake.app.data.local.entity.EventEntity
 import com.nomistake.app.data.local.entity.TemplateItemEntity
 import com.nomistake.app.data.local.entity.TemplateKind
+import com.nomistake.app.domain.EventSource
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -57,7 +58,11 @@ class ChecklistRepositoryTest {
         val n = idCounter.incrementAndGet()
         return db.eventDao().upsert(
             EventEntity(
+                sourceType = EventSource.GRAPH,
+                sourceEventId = "immutable-$n",
                 graphImmutableId = "immutable-$n",
+                seriesKeyHash = null,
+                occurrenceKeyHash = null,
                 iCalUId = null,
                 seriesMasterId = null,
                 eventType = "singleInstance",
