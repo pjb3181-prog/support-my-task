@@ -28,6 +28,7 @@ namespace OutlookCompanion
                 TestDiffBasics();
                 TestDiffTimeMovedAndRecurrence();
                 TestSnapshotStore();
+                TestFirestoreLogic();
             }
             catch (Exception ex)
             {
@@ -262,6 +263,147 @@ namespace OutlookCompanion
                 SnapshotStore.SetDirectoryOverrideForTest(null); // override 해제(운영 경로 보호)
                 try { if (Directory.Exists(tmp)) Directory.Delete(tmp, true); } catch { }
             }
+        }
+
+        // ===== Phase 4C: Firestore 전달 로직(문서 ID / upsert 판단 / missing tracker - SDK 미의존) =====
+
+        private static EventRecord CloneRecord(EventRecord e)
+        {
+            EventRecord c = new EventRecord();
+            c.SeriesKey = e.SeriesKey;
+            c.OccurrenceKey = e.OccurrenceKey;
+            c.SourceEntryId = e.SourceEntryId;
+            c.StartIso = e.StartIso;
+            c.EndIso = e.EndIso;
+            c.Subject = e.Subject;
+            c.Location = e.Location;
+            c.AllDayEvent = e.AllDayEvent;
+            c.LastModIso = e.LastModIso;
+            c.IsRecurring = e.IsRecurring;
+            c.RecurrenceState = e.RecurrenceState;
+            return c;
+        }
+
+        private static ExistingDocSnapshot DocFrom(EventRecord e)
+        {
+            ExistingDocSnapshot d = new ExistingDocSnapshot();
+            d.Exists = true;
+            d.SeriesKey = e.SeriesKey;
+            d.OccurrenceKey = e.OccurrenceKey;
+            d.Subject = e.Subject;
+            d.Location = e.Location;
+            d.StartIso = e.StartIso;
+            d.EndIso = e.EndIso;
+            d.AllDay = e.AllDayEvent;
+            d.IsRecurring = e.IsRecurring;
+            d.RecurrenceState = e.RecurrenceState;
+            d.LastModified = e.LastModIso;
+            return d;
+        }
+
+        private static void TestFirestoreLogic()
+        {
+            Console.WriteLine("[SelfTest] Firestore 전달 로직(문서 ID / upsert 판단 / missing tracker)");
+            DateTime st = new DateTime(2026, 9, 1, 10, 0, 0);
+            EventRecord r1 = MakeRecord("G-F1", st, false, "subject-1", "loc-1", st.AddHours(1),
+                new DateTime(2026, 8, 31, 9, 0, 0));
+
+            // T22: 문서 ID - 형식(hex 32자) + 결정성
+            string id1 = KeyPolicy.ComputeDocumentId(r1);
+            bool hexOk = id1.Length == 32;
+            foreach (char c in id1)
+            {
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) { hexOk = false; break; }
+            }
+            Check("T22 문서 ID = SHA-256 hex 32자 + 재계산 동일(결정적)", hexOk && id1 == KeyPolicy.ComputeDocumentId(r1));
+
+            // T23: 다른 PC 관측 시뮬레이션(독립 재구성 + EntryID 변동) -> 동일 문서 ID
+            EventRecord r1b = MakeRecord("G-F1", st, false, "subject-1", "loc-1", st.AddHours(1),
+                new DateTime(2026, 8, 31, 9, 0, 0));
+            r1b.SourceEntryId = "ENTRY-CHANGED";   // EntryID는 변동 가능하며 identity 아님
+            Check("T23 두 PC 동일 일정 -> 동일 문서 ID(EntryID 변동 무관)",
+                KeyPolicy.ComputeDocumentId(r1b) == id1);
+
+            // T24: upsert 판정 전이(Create/SkipSame/Update/SkipStale/Revive)
+            Check("T24a Create(문서 없음)", UpsertPlanner.Decide(r1, null) == UpsertAction.Create);
+            ExistingDocSnapshot dSame = DocFrom(r1);
+            Check("T24b SkipSame(내용 동일)", UpsertPlanner.Decide(r1, dSame) == UpsertAction.SkipSame);
+            EventRecord rNew = MakeRecord("G-F1", st, false, "subject-2", "loc-1", st.AddHours(1),
+                new DateTime(2026, 8, 31, 12, 0, 0));
+            Check("T24c Update(내용 다름 + 신규 LMT 최신)",
+                UpsertPlanner.Decide(rNew, dSame) == UpsertAction.Update);
+            EventRecord rOld = MakeRecord("G-F1", st, false, "subject-3", "loc-1", st.AddHours(1),
+                new DateTime(2026, 8, 30, 0, 0, 0));
+            Check("T24d SkipStale(내용 다름 + 신규 LMT 과거)",
+                UpsertPlanner.Decide(rOld, dSame) == UpsertAction.SkipStale);
+            ExistingDocSnapshot dDel = DocFrom(r1);
+            dDel.Deleted = true;
+            Check("T24e Revive(tombstone 재관측)", UpsertPlanner.Decide(r1, dDel) == UpsertAction.Revive);
+
+            // T25: MissingTracker 연속성(poll1 removed -> poll2부터 snapshot에 없어도 추적 유지)
+            string xId = KeyPolicy.Hash32Hex("X");
+            string yId = KeyPolicy.Hash32Hex("Y");
+            MissingTracker mt = new MissingTracker();
+            mt.UpdateCycle(new HashSet<string> { xId }, new List<string> { xId, yId });   // poll1: Y removed
+            Check("T25a 1회 missing -> tombstone 미달", mt.GetCount(yId) == 1 && !mt.IsTombstoneDue(yId));
+            mt.UpdateCycle(new HashSet<string> { xId }, new List<string> { xId });        // poll2: snapshot에도 없음
+            Check("T25b 2회 연속 missing -> 임계 도달", mt.GetCount(yId) == 2 && mt.IsTombstoneDue(yId));
+            mt.UpdateCycle(new HashSet<string> { xId, yId }, new List<string> { xId });    // poll3: 재관측
+            Check("T25c 재관측 -> 즉시 해제", !mt.IsTombstoneDue(yId) && mt.GetCount(yId) == 0);
+            mt.UpdateCycle(new HashSet<string> { xId }, new List<string> { xId, yId });   // 다시 missing 1회
+            Check("T25d 해제 후 재추적 -> 카운트 리셋 후 1회(미달)",
+                mt.GetCount(yId) == 1 && !mt.IsTombstoneDue(yId));
+
+            // T25e: tracker save/load roundtrip(로컬 파일 - SelfTest 격리 디렉토리)
+            string tmp = Path.Combine(Path.GetTempPath(), "nm-mt-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                Directory.CreateDirectory(tmp);
+                string mp = Path.Combine(tmp, "firebase-missing.txt");
+                MissingTracker mt2 = new MissingTracker();
+                mt2.UpdateCycle(new HashSet<string>(), new List<string> { xId });
+                mt2.UpdateCycle(new HashSet<string>(), new List<string>());
+                mt2.Save(mp);
+                MissingTracker mt3 = MissingTracker.Load(mp);
+                Check("T25e tracker save/load roundtrip(연속 2회 보존)",
+                    mt3.GetCount(xId) == 2 && mt3.TombstoneDueIds().Count == 1);
+            }
+            finally
+            {
+                try { if (Directory.Exists(tmp)) Directory.Delete(tmp, true); } catch { }
+            }
+
+            // T26: time-moved 문서 ID - seriesKey 유지 + occurrenceKey(문서 ID) 상이
+            EventRecord mvOld = MakeRecord("G-MV", st, true, "subject-M", "loc-M", st.AddHours(1),
+                new DateTime(2026, 8, 31, 9, 0, 0));
+            EventRecord mvNew = MakeRecord("G-MV", st.AddHours(2), true, "subject-M", "loc-M", st.AddHours(3),
+                new DateTime(2026, 8, 31, 9, 0, 0));
+            Check("T26 time-moved: seriesKey 유지(identity 보존) + 문서 ID 상이(move 대상 구분)",
+                mvOld.SeriesKey == mvNew.SeriesKey
+                && KeyPolicy.ComputeDocumentId(mvOld) != KeyPolicy.ComputeDocumentId(mvNew));
+
+            // T27: ContentEquals 필드별 변경 감지(8종 - subject/location/start/end/allDay/isRecurring/recState/lastMod)
+            EventRecord cBase = MakeRecord("G-CE", st, false, "s", "l", st.AddHours(1),
+                new DateTime(2026, 8, 31, 9, 0, 0));
+            ExistingDocSnapshot dBase = DocFrom(cBase);
+            bool allDetected = true;
+            EventRecord c1 = CloneRecord(cBase); c1.Subject = "s2";
+            allDetected &= !UpsertPlanner.ContentEquals(dBase, c1);
+            EventRecord c2 = CloneRecord(cBase); c2.Location = "l2";
+            allDetected &= !UpsertPlanner.ContentEquals(dBase, c2);
+            EventRecord c3 = CloneRecord(cBase); c3.StartIso = KeyPolicy.ToIso(st.AddMinutes(30));
+            allDetected &= !UpsertPlanner.ContentEquals(dBase, c3);
+            EventRecord c4 = CloneRecord(cBase); c4.EndIso = KeyPolicy.ToIso(st.AddHours(2));
+            allDetected &= !UpsertPlanner.ContentEquals(dBase, c4);
+            EventRecord c5 = CloneRecord(cBase); c5.AllDayEvent = !c5.AllDayEvent;
+            allDetected &= !UpsertPlanner.ContentEquals(dBase, c5);
+            EventRecord c6 = CloneRecord(cBase); c6.IsRecurring = !c6.IsRecurring; c6.RecurrenceState = 2;
+            allDetected &= !UpsertPlanner.ContentEquals(dBase, c6);
+            EventRecord c7 = CloneRecord(cBase); c7.RecurrenceState = 4;
+            allDetected &= !UpsertPlanner.ContentEquals(dBase, c7);
+            EventRecord c8 = CloneRecord(cBase); c8.LastModIso = KeyPolicy.ToIso(new DateTime(2026, 8, 31, 10, 0, 0));
+            allDetected &= !UpsertPlanner.ContentEquals(dBase, c8);
+            Check("T27 ContentEquals 필드별 변경 감지(8종 전부)", allDetected);
         }
     }
 }

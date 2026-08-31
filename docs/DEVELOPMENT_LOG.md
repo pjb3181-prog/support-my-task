@@ -4,6 +4,91 @@
 
 ---
 
+## 2026-08-31 - Phase 4C: PC Companion → Firebase Firestore 전달 계층 (MERI window 61건 업로드 성공)
+
+Completed:
+- **Firestore 전달 계층 구현** (`desktop/OutlookCompanion`에 3파일 추가 — 순수 로직/실행/테스트 분리):
+  - `FirestoreModels.cs` — 순수 로직(SDK 미의존, SelfTest 대상): `UpsertPlanner`(Create/Update/SkipSame/SkipStale/Revive 판정), `MissingTracker`(연속 missing 추적), `ExistingDocSnapshot`
+  - `FirestoreSync.cs` — 연결/실행: 서비스 계정 JSON 인증(`GoogleCredential.FromFile`), `FirestoreConfig`(익명 기기 ID 자동 생성), `FirestoreSyncState`(synthetic 게이트), `SyncEvents`(배치 Get→Decide→write, time-moved move, tombstone), 배치 청크 300
+  - `FirestoreTest.cs` — synthetic 검증 `--firebase-test`(TS1~TS9, 실제 Firestore 연결, 합성 데이터만)
+- **문서 ID 정책 확정**: `stableDocumentId` = SHA-256(seriesKey + "|" + occurrenceKey) hex 32자(128비트).
+  결정적 — 사무실/집 두 PC에서 동일 계산으로 같은 일정 = 같은 문서 1개. raw GlobalAppointmentID를
+  문서 ID로 직접 쓰지 않는다(정책 지시). sourcePc는 identity 미포함(진단 필드).
+- **upsert 정책**: 대상은 diff(added/changed) 또는 첫 업로드 전체 window → 배치 Get → 판정 →
+  Create/Update/Revive만 write. 내용 동일 SkipSame(unchanged no-op), stale snapshot SkipStale
+  (Outlook LastModificationTime 비교 — 오래된 PC가 최신 Firestore를 덮어쓰는 것 방지),
+  tombstone 재관측 Revive(MERI 관측이 source-of-truth). 비교 필드에서 sourcePc/sourceEntryId 제외.
+- **삭제/tombstone 정책(보수적)**: removed를 즉시 hard delete 하지 않는다. `MissingTracker`로
+  연속 2회(기본 polling 60분 → 약 2시간) missing 시 `deleted=true` + `deletedAt`(서버 타임스탬프).
+  window 밖 이동/Outlook 동기화 지연/반복 일정 변화/두 PC polling 시점 차이 대비. 재관측 시 즉시
+  해제 후 Revive. hard delete는 Phase 5+ 별도 정책.
+- **시간 이동 처리**: 4B diff 엔진의 time-moved(seriesKey 기반 재매칭) 결과를 그대로 사용 —
+  새 occurrenceKey 문서 upsert + 기존 문서 delete(move). "삭제+신규" 오분류 없음(GID 불변 실측 근거).
+- **두 PC 충돌 정책**: 첫 업로드(로컬 state `lastSyncAt` 없음)는 diff 대신 전체 window 모드 —
+  로컬 snapshot에 unchanged인 일정도 Firestore에는 없을 수 있으므로. 두 번째 PC 첫 실행 시에도
+  전체 재확인하되 Firestore 비교로 전부 SkipSame(no-op).
+- **게이트 체계**: `--firebase-test` synthetic 통과 기록(firebase-state.txt `syntheticPassedAt`)이
+  있어야 `--upload` 실행. 업로드 실패 시 snapshot 미저장 → 다음 poll이 같은 diff로 재시도(변경 유실 방지).
+- **빌드 체계 전환**: .NET SDK 8.0.424 설치(기존 런타임만 존재 → winget 설치) + Google.Cloud.Firestore
+  4.4.0(NuGet) + build.ps1 `dotnet build` 전환(net8.0). csc.exe 단독 빌드는 NuGet 불가로 지원 종료.
+- **credential 처리(보안)**: `%LOCALAPPDATA%\NoMistakeCompanion\firebase-service-account.json`
+  (Git 밖) + Windows ACL(상속 제거, 현재 사용자만 R/W). .gitignore에 서비스 계정 패턴 추가.
+  코드는 JSON에서 project_id만 읽고 private_key/client_email/token은 절대 출력하지 않는다.
+- **로컬 상태**: `companion-config.txt`(익명 sourcePc "pc-xxxxxxxx" + credential 경로),
+  `firebase-state.txt`(lastSyncAt/syntheticPassedAt/lastUpload), `firebase-missing.txt`(연속 missing) —
+  전부 %LOCALAPPDATA%, .gitignore 방어.
+
+Measured:
+- SelfTest(순수 로직, COM/Firestore 미사용): **35/35 PASS** — 기존 21 + Phase 4C 14
+  (문서 ID 형식/결정성, 두 PC 동일 ID, upsert 판정 5종, missing tracker 연속성/해제/roundtrip,
+  time-moved docId 분리, ContentEquals 필드별 8종 감지)
+- **Firestore synthetic 검증 `--firebase-test`: 12/12 PASS** (실제 연결, project `don-t-have-mistake`,
+  events 컬렉션, 합성 TEST-\<hex8\> 문서): TS1 create+필드 일치 / TS2 same-record SkipSame /
+  TS3 changed Update / TS4 stale SkipStale / TS5 두 PC(sourcePc 상이) 문서 1개 유지 /
+  TS6 time-moved 기존 delete+신규 upsert / TS7 tombstone(deleted+deletedAt 서버) / TS8 revive /
+  TS9 정리(테스트 문서 4건 전부 삭제)
+- **실제 MERI window 업로드 성공** (2026-08-31, window 과거 1일~미래 30일, MERI 전체 4,438건 중
+  window 내 61건 — 전체 과거 데이터 미업로드, 정책 준수):
+  - 1차(first-full): targets=61 **create=61** (docsRead=61, batches=1)
+  - 2차(first-full 재실행 = 두 번째 PC 시나리오): targets=61 **skipSame=61, write 0(batches=0)**
+    — 동일 데이터 중복 write 없음 + 문서 1개 유지 실증
+  - 3차(diff 기반 poll): **targets=0, docsRead=0, write 0** — unchanged는 read/write 전혀 없음
+- 업로드 성능: 배치 300 청크로 61건 1배치 처리. scan은 4B와 동일(restrict 29ms + enumerate 594ms).
+
+Changed:
+- 신규: desktop/OutlookCompanion/{FirestoreModels,FirestoreSync,FirestoreTest}.cs
+- 수정: EventModels.cs(Hash32Hex/ComputeDocumentId), Program.cs(--firebase-test/--upload 모드,
+  UploadToFirestore + 첫 업로드 전체 모드), SelfTest.cs(T22~T27), build.ps1(dotnet build 전환),
+  OutlookCompanion.csproj(PackageReference + 주석), .gitignore(credential 패턴), README.md,
+  desktop README, docs/{ARCHITECTURE,DECISIONS}.md
+- Graph/MSAL(Phase 4) 및 Android(Phase 1~3)은 수정 없음 — 보존
+
+Build/Test:
+- .NET SDK 8.0.424 + net8.0 + Google.Cloud.Firestore 4.4.0 빌드 성공(경고 3건은 CA1416
+  Windows-only API 경고로 무해 — Windows 전용 앱)
+- `--test` 35/35, `--firebase-test` 12/12, `--upload --once` 3회 실측 전부 exit 0
+- 서비스 계정 JSON은 Git 밖(LOCALAPPDATA + 사용자 ACL) — repository에 포함 안 됨(secret scan 완료)
+
+Known Issues:
+- csc.exe(.NET Framework) 단독 빌드는 Firestore SDK(NuGet)로 인해 더 이상 지원하지 않음 —
+  .NET SDK 필요(build.ps1이 안내). 실행 배포는 빌드된 bin 폴더 복사로 충분.
+- Firestore Production mode 기본 rules는 deny-all이지만 Admin SDK(서비스 계정)는 rules 영향 밖 —
+  Android(Phase 5)용 Security Rules/Auth는 별도 설계 필요.
+- 서비스 계정 권한 최소화(예: Cloud Datastore User 역할로 축소)는 Firebase Console/IAM에서
+  수동 조정 필요 — 키 생성 시 기본 역할이 부여됨.
+- GlobalAppointmentID가 없는 항목의 EntryID fallback("EID:") seriesKey는 docId가 EntryID 변동 시
+  불안정 — 실측상 극히 드묾(4B Known Issue와 동일 근원).
+- moved race window: PC A가 time-moved 반영 후 아직 이전 스캔을 올리는 PC B가 있으면 구 문서가
+  일시 재생성될 수 있으나 다음 poll에서 자가수복(최대 1 poll).
+- window 밖으로 나간 일정은 missing 2회 후 tombstone(deleted=true)으로 남음 — hard delete/GC는 Phase 5+.
+
+Next:
+- Phase 5(사용자 합의 후): Android → Firestore 연동 설계(Security Rules/Auth, events 컬렉션 read
+  방식, offline cache, Android 주기 동기화)
+- 본 보고 후 사용자 검토를 거쳐 Phase 4C 커밋 push(강제 push 금지)
+
+---
+
 ## 2026-08-31 - Phase 4B: MERI Folder 재접근 안정성 + 일정 식별자 정책 + Polling/diff 검증
 
 Completed:

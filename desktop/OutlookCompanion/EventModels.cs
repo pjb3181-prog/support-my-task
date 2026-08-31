@@ -23,6 +23,8 @@
 
 using System;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace OutlookCompanion
 {
@@ -106,6 +108,34 @@ namespace OutlookCompanion
             return string.Equals(a.Subject, b.Subject, StringComparison.Ordinal)
                 && string.Equals(a.Location, b.Location, StringComparison.Ordinal)
                 && a.AllDayEvent == b.AllDayEvent;
+        }
+
+        // SHA-256 hex 상위 32자(128비트) - 결정적 hash. Firestore 문서 ID/해시 필드용.
+        // (raw GlobalAppointmentID를 그대로 쓰지 않는 정책 - 짧고 경로 안전한 hex 형태)
+        public static string Hash32Hex(string s)
+        {
+            if (s == null) s = "";
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] h = sha.ComputeHash(Encoding.UTF8.GetBytes(s));
+                StringBuilder sb = new StringBuilder(32);
+                for (int i = 0; i < 16; i++) sb.Append(h[i].ToString("x2", CultureInfo.InvariantCulture));
+                return sb.ToString();
+            }
+        }
+
+        // Firestore 문서 ID(stableDocumentId) = SHA-256(seriesKey + "|" + occurrenceKey) hex 32자.
+        // [Phase 4C 설계 근거]
+        //   - 결정적: 같은 일정이면 사무실 PC/집 PC 어디서 계산해도 동일 ID(문서 1개 보장).
+        //     sourcePc(PC 환경/Windows 사용자명)는 identity에 포함하지 않는다(진단 필드일 뿐).
+        //   - 128비트 hash: 현재 규모(수천 건)에서 충돌 확률 사실상 0 + ID가 짧고 hex라 경로 세이프.
+        //   - 시간 이동(Start 변경 -> occurrenceKey 변화)은 ID를 새로 만들지만, diff 엔진의
+        //     time-moved 매칭(seriesKey 기반)이 "기존 문서 delete + 신규 문서 upsert" move 연산을
+        //     내므로 삭제+신규 오분류가 일어나지 않는다(전달 계층이 이 매칭 결과를 그대로 사용).
+        public static string ComputeDocumentId(EventRecord e)
+        {
+            if (e == null) return "";
+            return Hash32Hex(e.SeriesKey + "|" + e.OccurrenceKey);
         }
     }
 }

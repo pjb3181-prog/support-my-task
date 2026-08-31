@@ -25,7 +25,8 @@ Microsoft Graph API + MSAL 경로는 회사 Microsoft 365 테넌트 인증 정�
 
 ## 기술 스택
 
-- **PC Companion(Phase 4A/4B)**: Windows 콘솔 C#/.NET (Classic Outlook Object Model/COM, dynamic late-binding) — MERI Folder 재접근(저장 ID 직접 재오픈), 1시간 polling, snapshot diff
+- **PC Companion(Phase 4A~4C)**: Windows 콘솔 C#/.NET 8 (Classic Outlook Object Model/COM, dynamic late-binding) — MERI Folder 재접근(저장 ID 직접 재오픈), 1시간 polling, snapshot diff
+- **Firebase Firestore(Phase 4C)**: Google.Cloud.Firestore 4.4.0(공식 .NET 클라이언트) — 서비스 계정 JSON 인증, MERI window 일정을 `events/{docId}` flat 컬렉션에 diff 기반 최소 write로 전달(tombstone 정책 포함)
 - Kotlin 2.0.21, Jetpack Compose (BOM 2024.12.01), Material 3
 - Room 2.6.1 (KSP), MVVM
 - Microsoft Graph API (MSAL 인증)
@@ -42,7 +43,7 @@ Microsoft Graph API + MSAL 경로는 회사 Microsoft 365 테넌트 인증 정�
 | 4 | MSAL 인증 + Graph 동기화 | ⏸ 보존 (구현 완료, 회사 테넌트 인증 정책으로 실기 검증 보류 → fallback 경로) |
 | 4A | PC Companion: Classic Outlook COM으로 MERI 그룹 캘린더 읽기 검증 | ✅ 완료 (2026-08-31) |
 | 4B | PC Companion: MERI 재접근 안정화 + 식별자 정책 + polling/diff 검증 | ✅ 완료 (2026-08-31) |
-| 4C | PC Companion → Firebase 전달 (설계/구현) | ⏳ 예정 (사용자 합의 후) |
+| 4C | PC Companion → Firebase Firestore 전달 (문서 ID/upsert/tombstone/두 PC 정책) | ✅ 완료 (2026-08-31, 실제 MERI window 61건 업로드 검증) |
 | 5 | 일정 목록/상세 UI | ⏳ 예정 |
 | 6 | 체크리스트 추가/삭제 | ⏳ 예정 |
 | 7 | Notification 스케줄링 | ⏳ 예정 |

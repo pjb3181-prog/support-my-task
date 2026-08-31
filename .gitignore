@@ -31,6 +31,15 @@ credentials.json
 *.jwt
 msal_config.json
 auth_config.json
+# Firebase service account (Phase 4C - 서비스 계정 키는 %LOCALAPPDATA%에만 둔다)
+firebase-service-account*.json
+*firebase-adminsdk*.json
+service-account*.json
+*service_account*.json
+# NoMistake Companion 로컬 상태(기기 ID/업로드 상태 - 환경별 파일, 리포지토리 밖이지만 안전망)
+companion-config.txt
+firebase-missing.txt
+firebase-state.txt
 
 # ===== 회사 대외비 / 개인 데이터 (절대 커밋 금지) =====
 *.ics

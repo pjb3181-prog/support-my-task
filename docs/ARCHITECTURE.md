@@ -82,8 +82,9 @@ Classic Outlook (Outlook Object Model/COM)
     ↓  OutlookCompanion (Windows 콘솔, desktop/OutlookCompanion)
     │   매 poll cycle: 짧은 attach → MERI 해석 → window 읽기 → snapshot diff → release
     │   로컬 저장: %LOCALAPPDATA%\NoMistakeCompanion\{meri-folder.txt, meri-snapshot.txt}
-[향후] Firebase 전달  ← 이 단계는 미구현 (Phase 4B 검증 완료 후 설계)
-    ↓
+    ↓  FirestoreSync.SyncEvents (Phase 4C — §2-B: diff 기반 upsert/tombstone)
+Firebase Firestore  events/{stableDocumentId} (Phase 4C 구현 — 실측 완료)
+    ↓  Phase 5: Android 연동 설계 예정
 Android 앱
 ```
 
@@ -126,6 +127,63 @@ Android 앱
   재접근 실측, 시간 변경 identity 실측, 2회 연속 sync diff 실측(`Unchanged 61`),
   idle CPU 0.156%, SelfTest 21/21 PASS. 실제 일정 값은 로컬 콘솔/%LOCALAPPDATA%에만 존재하고
   문서/Git에는 기록하지 않는다.
+
+## 2-B. Firestore 전달 계층 (Phase 4C — 현재 운영 경로)
+
+```
+§2-A scan 결과(현재 window 레코드) + snapshot diff
+    ↓  FirestoreSync.SyncEvents
+    │   upsert 대상 = diff(added/changed) 또는 첫 업로드 전체 window
+    │   배치 Get(300 청크) → UpsertPlanner 판정 → Create/Update/Revive만 write
+    │   time-moved: 새 문서 upsert + 기존 문서 delete(move) / missing 2회: tombstone
+Firebase Firestore  events/{stableDocumentId} (flat, schema v1)
+    ↓  Phase 5: Android 연동 설계 예정
+Android 앱
+```
+
+- **SDK/인증**: Google.Cloud.Firestore 4.4.0(공식 Firestore .NET 클라이언트, NuGet) +
+  Google.Apis.Auth 서비스 계정 JSON(`GoogleCredential.FromFile`). FirebaseAdmin 전체는 미사용
+  (Firestore 문서 전송만 필요 — FCM/Auth 필요 시 Phase 5+에서 확장). credential은
+  `%LOCALAPPDATA%\NoMistakeCompanion\firebase-service-account.json`(Git 밖) + Windows ACL
+  (상속 제거, 현재 사용자만 R/W). 코드는 project_id만 읽고 private_key/client_email/token은
+  절대 출력하지 않는다. Admin SDK(서비스 계정)는 Security Rules 영향 밖이므로 현재 Production
+  mode(deny-all)에서도 동작하며, Android(Phase 5)용 rules/Auth는 별도 설계한다.
+- **문서 ID (Phase 4C 확정)**: `stableDocumentId` = SHA-256(seriesKey + "|" + occurrenceKey)
+  hex 32자(128비트). 결정적 — 사무실/집 두 PC에서 동일 계산으로 같은 일정 = 문서 1개로 수렴.
+  raw GlobalAppointmentID를 문서 ID로 직접 쓰지 않는다. sourcePc는 identity 미포함(진단 필드).
+- **문서 스키마(v1)** — `events/{docId}`: schemaVersion, seriesKey, occurrenceKey, seriesKeyHash,
+  occurrenceKeyHash, subject, location, start, end, allDay, isRecurring, recurrenceState,
+  sourceEntryId, lastModified, deleted, deletedAt(tombstone 시 서버 타임스탬프), sourcePc,
+  sourceUpdatedAt. **Calendar 일정 필드만** 포함 — Mail/본문/첨부/참석자 이메일/주소록 없음.
+- **upsert 판단 (배치 Get → 판정 → 최소 write)**:
+  - Create: Firestore에 문서 없음 / Update: 내용 다름 + 새 LastModificationTime이 최신 /
+    SkipSame: 내용 동일(write 생략) / SkipStale: 새 LMT가 과거(오래된 PC snapshot이 최신 Firestore를
+    덮어쓰는 것 방지) / Revive: tombstone 재관측(MERI 관측이 source-of-truth).
+  - 비교 필드: seriesKey/occurrenceKey/subject/location/start/end/allDay/isRecurring/
+    recurrenceState/lastModified. sourcePc(진단)/sourceEntryId(변동 가능)는 비교 제외.
+  - 첫 업로드(로컬 state `lastSyncAt` 없음)는 diff 대신 전체 window를 upsert 대상으로 한다 —
+    두 번째 PC 첫 실행 시 전체 재확인하되 전부 SkipSame(no-op) 처리된다.
+- **삭제(tombstone, 보수적)**: removed를 즉시 hard delete 하지 않는다(window 밖 이동/Outlook
+  동기화 지연/반복 변화/두 PC polling 시점 차이 대비). `MissingTracker`가 연속 2회(기본 polling
+  60분 ≈ 2시간) missing을 추적한다 — poll1에서 removed된 문서는 poll2부터 snapshot에 없으므로
+  diff Removed에 다시 나오지 않기 때문에 tracker가 연속성을 담당한다(후보 = tracker 기존 항목 ∪
+  이전 snapshot 문서 ID). 임계 도달 시 `deleted=true` + `deletedAt`(서버 타임스탬프)만 갱신하고
+  재관측 시 즉시 해제 + Revive. hard delete는 Phase 5+ 별도 정책.
+- **시간 이동**: 4B diff 엔진의 time-moved 매칭 결과를 그대로 사용 — 새 occurrenceKey 문서 upsert +
+  기존 문서 delete(move). "삭제+신규" 오분류가 없다(GID 불변 실측 근거).
+- **게이트/실패 안전**: `--firebase-test`(합성 데이터 synthetic 12종) 통과 기록이 있어야 `--upload`
+  실행. 업로드 실패 시 snapshot 미저장 → 다음 poll이 같은 diff로 재시도(변경 유실 방지). 부분 성공은
+  다음 poll에서 SkipSame으로 자가수복된다.
+- **로컬 상태(%LOCALAPPDATA%\NoMistakeCompanion, Git 밖)**: `companion-config.txt`(익명
+  sourcePc "pc-xxxxxxxx" + credential 경로 — 실제 Windows 사용자명/컴퓨터명 미사용),
+  `firebase-state.txt`(lastSyncAt/syntheticPassedAt/lastUpload), `firebase-missing.txt`(연속
+  missing 카운트).
+- **빌드 체계**: .NET SDK 8(net8.0) + NuGet(Google.Cloud.Firestore). Phase 4C부터 Firestore
+  SDK가 NuGet 의존성으로 필요해 csc.exe 단독 빌드는 지원 종료했다(build.ps1이 안내).
+- **검증 결과(2026-08-31)**: SelfTest 35/35(순수 로직), Firestore synthetic 12/12(실제 연결),
+  실제 MERI window(과거 1일~미래 30일, MERI 전체 4,438건 중 61건) 업로드 — 1차 create=61 /
+  2차(두 번째 PC 시나리오) skipSame=61 write=0 / 3차(diff 기반) targets=0. 전체 과거 데이터는
+  업로드하지 않았다(window 정책 준수).
 
 ## 3. Outlook Calendar 선택 정책 (MERI 전용)
 

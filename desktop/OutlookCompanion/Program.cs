@@ -1,8 +1,10 @@
-// NoMistake Phase 4B - PC Companion 메인(entry point + polling 구조).
+// NoMistake Phase 4C - PC Companion 메인(entry point + polling + Firestore 업로드).
 //
 // 모드:
 //   (기본)      1회 sync 직후 실행 + polling 반복(기본 1시간) - 운영 형태
 //   --once      1회 sync만 수행 후 종료
+//   --upload    매 sync의 diff 결과를 Firestore에 업로드(Phase 4C. --firebase-test 통과 후에만 동작)
+//   --firebase-test  Firestore synthetic 검증(합성 데이터 - 실제 MERI 올리기 전 완료조건 게이트)
 //   --probe     MERI 재접근 실측(Case A/B/C/D): 저장된 ID 직접 재오픈 성공 여부 중심 보고
 //   --test      순수 로직 SelfTest(COM 미사용)
 //   --gates     Phase 4A Gate 검증(보존)
@@ -18,6 +20,9 @@
 //   (2) cycle 단위 COM leak 검증 가능(해제 수 매번 출력), (3) attach 비용은 ms 단위로 polling 비용에 비해 무시 가능.
 // [안전] 읽기 전용. Companion이 시작한 Outlook만 종료 시 Quit()한다. Ctrl+C로 정상 종료 가능.
 // [보안] Subject/Location 원문은 절대 콘솔/로그에 출력하지 않는다(diff는 카운트만).
+// [Phase 4C] 업로드는 Calendar 일정 데이터만(제목/시간/장소/종일/반복여부 + 식별 필드).
+//   Mail/본문/첨부/참석자 이메일/주소록은 다루지 않는다. 업로드 실패 시 snapshot을 저장하지
+//   않는다(다음 poll이 같은 diff로 재시도 - 변경 유실 방지).
 
 using System;
 using System.Collections.Generic;
@@ -34,6 +39,7 @@ namespace OutlookCompanion
         {
             Console.OutputEncoding = Encoding.UTF8;
             bool test = false, gates = false, probe = false, once = false, idle = false, startOutlook = false;
+            bool firebaseTest = false, upload = false;
             int pollMinutes = AppSettings.DefaultPollMinutes;
             int windowPast = AppSettings.DefaultWindowPastDays;
             int windowFuture = AppSettings.DefaultWindowFutureDays;
@@ -48,6 +54,8 @@ namespace OutlookCompanion
                 else if (a == "--once") once = true;
                 else if (a == "--idle-test") idle = true;
                 else if (a == "--start-outlook") startOutlook = true;
+                else if (a == "--firebase-test") firebaseTest = true;
+                else if (a == "--upload") upload = true;
                 else if (a == "--poll-minutes" && i + 1 < args.Length) { int v; if (int.TryParse(args[++i], out v) && v > 0) pollMinutes = v; }
                 else if (a == "--window-past" && i + 1 < args.Length) { int v; if (int.TryParse(args[++i], out v) && v >= 0) windowPast = v; }
                 else if (a == "--window-future" && i + 1 < args.Length) { int v; if (int.TryParse(args[++i], out v) && v > 0) windowFuture = v; }
@@ -55,27 +63,29 @@ namespace OutlookCompanion
             }
 
             Console.WriteLine("====================================================================");
-            Console.WriteLine(" NoMistake Phase 4B : PC Companion(MERI polling 기반 검증)");
+            Console.WriteLine(" NoMistake Phase 4C : PC Companion(MERI polling + Firestore 전달)");
             Console.WriteLine("====================================================================");
             Console.WriteLine("* 읽기 전용: Outlook 항목을 생성/수정/삭제하지 않습니다.");
             Console.WriteLine("* 보안: 실제 일정 제목/장소는 콘솔에 출력하지 않습니다(diff는 카운트만).");
             Console.WriteLine("* COM 수명: 매 cycle 짧은 attach -> read -> 전량 release.");
+            Console.WriteLine("* Firebase(4C): Calendar 일정만 업로드(제목/시간/장소/반복여부). Mail/본문/참석자 없음.");
             Console.WriteLine();
 
             if (test) return SelfTest.Run();
             if (idle) return IdleCpuTest(idleSeconds);
             if (gates) return Gates.Run();
+            if (firebaseTest) return FirestoreTest.Run();
 
             if (probe)
             {
-                int p = RunSync(1, windowPast, windowFuture, startOutlook, true);
+                int p = RunSync(1, windowPast, windowFuture, startOutlook, true, false);
                 Console.WriteLine();
                 Console.WriteLine("[probe] 완료 (exit=" + p + ")");
                 return p;
             }
 
             // 기본: 실행 직후 1회 sync -> polling 반복(busy loop 없음: Thread.Sleep)
-            int exit = RunSync(1, windowPast, windowFuture, startOutlook, false);
+            int exit = RunSync(1, windowPast, windowFuture, startOutlook, false, upload);
             if (exit != 0) return exit;
             if (once)
             {
@@ -90,13 +100,13 @@ namespace OutlookCompanion
             {
                 Thread.Sleep(TimeSpan.FromMinutes(pollMinutes)); // CPU 0 대기(busy loop 아님)
                 seq++;
-                try { RunSync(seq, windowPast, windowFuture, startOutlook, false); }
+                try { RunSync(seq, windowPast, windowFuture, startOutlook, false, upload); }
                 catch (Exception ex) { Console.WriteLine("[sync #" + seq + "] 오류(다음 poll에 재시도): " + ex.Message); }
             }
         }
 
-        // 1회 sync: attach -> MERI 해석(재접근 정책) -> window 읽기 -> diff -> snapshot 저장 -> 전량 release.
-        private static int RunSync(int seq, int windowPastDays, int windowFutureDays, bool allowStartOutlook, bool probeMode)
+        // 1회 sync: attach -> MERI 해석(재접근 정책) -> window 읽기 -> diff -> (업로드) -> snapshot 저장 -> 전량 release.
+        private static int RunSync(int seq, int windowPastDays, int windowFutureDays, bool allowStartOutlook, bool probeMode, bool uploadMode)
         {
             Console.WriteLine();
             Console.WriteLine("[sync #" + seq + "] " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
@@ -177,11 +187,13 @@ namespace OutlookCompanion
                 }
                 // (4) diff(이전 snapshot vs 이번 scan - Subject 원문 미출력, 카운트만)
                 SnapshotData prev = SnapshotStore.LoadSnapshot();
-                if (prev != null && prev.Events.Count > 0)
+                bool hasPrev = (prev != null && prev.Events.Count > 0);
+                DiffResult diff = null;
+                if (hasPrev)
                 {
                     DateTime pws = KeyPolicy.FromIso(prev.WindowStartIso);
                     DateTime pwe = KeyPolicy.FromIso(prev.WindowEndIso);
-                    DiffResult diff = SnapshotDiff.Compute(prev.Events, read.Events, pws, pwe);
+                    diff = SnapshotDiff.Compute(prev.Events, read.Events, pws, pwe);
                     string dupNote = (diff.DuplicatePrev + diff.DuplicateCurr > 0)
                         ? "  (주의: duplicate prev=" + diff.DuplicatePrev + " curr=" + diff.DuplicateCurr + ")"
                         : "";
@@ -190,6 +202,13 @@ namespace OutlookCompanion
                 else
                 {
                     Console.WriteLine("[diff] 첫 sync(이전 snapshot 없음) - diff 미수행, 기준 snapshot 저장");
+                }
+
+                // (4.5) Firebase 업로드(Phase 4C --upload). 실패 시 snapshot을 저장하지 않고 이번
+                //       cycle을 중단한다 -> 다음 poll이 같은 diff로 재시도(변경 유실 방지).
+                if (uploadMode && !UploadToFirestore(read.Events, diff, hasPrev ? prev.Events : null))
+                {
+                    return 5;
                 }
 
                 // (5) snapshot 저장(다음 poll의 diff 기준)
@@ -216,6 +235,37 @@ namespace OutlookCompanion
                 int released = ComHost.ReleaseAllCom();
                 Console.WriteLine("[release] COM RCW " + released + "개 해제 + GC 2회"
                     + (startedByMe ? " + Companion이 시작한 Outlook Quit()" : ""));
+            }
+        }
+
+        // Firestore 업로드(Phase 4C). 성공해야 호출자가 snapshot을 저장한다(실패 시 다음 poll 재시도).
+        // 게이트: synthetic 검증(--firebase-test) 통과 기록이 있어야 실제 MERI 데이터를 올린다.
+        // 첫 업로드(로컬 state에 lastSyncAt 없음)는 diff 대신 전체 window를 upsert 대상으로 한다:
+        //   - 로컬 snapshot에 unchanged로 있는 일정도 Firestore에는 없을 수 있기 때문(최초 관측 기준).
+        //   - 두 번째 PC도 첫 실행 시 전체 모드로 재확인하되 Firestore 비교로 전부 SkipSame(no-op)된다.
+        private static bool UploadToFirestore(List<EventRecord> current, DiffResult diff, List<EventRecord> prevEvents)
+        {
+            FirestoreSyncState st = FirestoreSyncState.Load();
+            if (st.SyntheticPassedAtIso.Length == 0)
+            {
+                Console.WriteLine("[firebase] --upload 게이트: synthetic 검증(--firebase-test) 미통과 - 업로드 중단");
+                return false;
+            }
+            FirestoreSync sync = FirestoreSync.Create(FirestoreConfig.Load());
+            if (sync == null) return false;
+            try
+            {
+                bool firstUpload = st.LastSyncAtIso.Length == 0;
+                // 첫 업로드 시 prevEvents도 null로(tracker 오염 방지 - window 밖 이동 문서를 missing으로 오계산하지 않게).
+                SyncReport rpt = sync.SyncEvents(current, firstUpload ? null : diff, firstUpload ? null : prevEvents);
+                Console.WriteLine("[firebase] upload" + (firstUpload ? "(first-full)" : "") + ": " + rpt.Summary()
+                    + " / syntheticPassed=" + st.SyntheticPassedAtIso);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[firebase] 업로드 오류 - snapshot 미저장(다음 poll에 같은 diff로 재시도): " + ex.Message);
+                return false;
             }
         }
 

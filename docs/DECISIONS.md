@@ -1,4 +1,4 @@
-# 실수없으셨죠 — 설계 결정 기록
+﻿# 실수없으셨죠 — 설계 결정 기록
 
 중요한 설계 결정을 날짜순으로 누적 기록한다.
 
@@ -384,3 +384,100 @@ Reason(실측 기반):
 Alternatives:
 - 장기 session 유지 → stale RCW 위험, 사용자 세션 간섭, leak 검증 곤란으로 기각.
 - Windows Service / Tray 상시 구동 → 아직 범위 밖(Phase 4B는 콘솔 검증).
+
+---
+
+## 2026-08-31 - PC Companion → Android 전달 계층으로 Firebase Firestore 선택 (Phase 4C)
+
+Decision:
+Classic Outlook에서 읽은 MERI 일정을 Firebase Firestore(서버리스 문서 DB)에 저장하고 Android가 이를 읽는 구조로 전달 계층을 구성한다.
+
+Reason:
+- 서버 운영 없이 두 PC(사무실/집) → 다수 클라이언트(Android) 전달이 필요하다.
+- 일정 데이터는 문서 구조(key-value)에 잘 맞고, 실시간 리스너/오프라인 캐시를 Phase 5에서 활용할 수 있다.
+- 개인용 앱 규모에서 비용/운영 부담이 가장 적다.
+
+Alternatives:
+- Google Sheets API — 실시간/쿼리 제약으로 기각.
+- 자체 서버 + REST API — 운영 부담 + v1 원칙(서버 없음) 위반으로 기각.
+- PC→Android 직접 LAN 전송 — 사무실/집 네트워크 제약으로 기각.
+
+---
+
+## 2026-08-31 - PC Companion의 Firebase 인증은 서비스 계정 JSON (Phase 4C)
+
+Decision:
+PC Companion은 Firebase 서비스 계정 JSON 키로 인증한다(Google.Cloud.Firestore + Google.Apis.Auth, FirebaseAdmin 전체는 미사용). 키는 %LOCALAPPDATA%\NoMistakeCompanion\firebase-service-account.json(Git 밖)에 두고 Windows ACL(icacls 상속 제거 + 현재 사용자만 R/W)로 잠근다.
+
+Reason:
+- 개인용 앱, 사무실/집 두 대의 Windows PC에서 무인 polling 실행 — 사용자 OAuth 흐름이 불필요하다.
+- credential 파일 하나로 배포가 간단하고, 직접 REST/JWT 서명 구현 없이 공식 SDK 인증을 쓴다(정책 지시).
+- Firestore 문서 전송만 필요하므로 FirebaseAdmin(FCM/Auth 포함)보다 의존성이 적은 Firestore 클라이언트가 충분하다.
+
+Alternatives:
+- 사용자 OAuth — PC 무인 실행에 부적합(Android는 Phase 5에서 별도 설계).
+- REST API + 자체 JWT 서명 — 공식 SDK 사용 지시에 따라 기각.
+- FirebaseAdmin 전체 패키지 — 불필요 의존성으로 보류(FCM 필요 시 확장).
+
+---
+
+## 2026-08-31 - Firebase 업로드 범위는 Calendar 일정 데이터만 (Phase 4C)
+
+Decision:
+Firestore에 올리는 데이터는 Calendar 일정 필드로 한정한다: subject, start, end, allDay, location, isRecurring, recurrenceState, 식별/추적 필드(seriesKey/occurrenceKey/hash/docId, lastModified, deleted/deletedAt, sourcePc, sourceUpdatedAt, sourceEntryId), schemaVersion. 올리지 않는 것: Outlook Mail, 메일 본문, 첨부파일, 주소록/Contacts, 참석자 이메일, 회의 본문/Description 등 mailbox 데이터 전부.
+
+Reason:
+앱 목적(내 일정 체크리스트 알림)에 Calendar 데이터만 필요하다. 최소 수집 원칙(4A) 유지 + 공유 캘린더 특성상 타인 정보 노출 최소화.
+
+Alternatives:
+- 회의 본문/참석자 포함 — 목적 불필요 + 노출 증가로 기각.
+
+---
+
+## 2026-08-31 - 두 PC 충돌 정책: 동일 문서 ID + LMT 비교 + 첫 업로드 전체 모드 (Phase 4C)
+
+Decision:
+- 사무실/집 두 PC가 같은 MERI 일정을 읽으면 같은 Firestore 문서 ID로 upsert한다(stableDocumentId 계산에 sourcePc 미포함).
+- 기존 문서와 새 레코드의 내용이 다르면 Outlook LastModificationTime을 비교해 새 것이 최신일 때만 덮어쓴다(SkipStale — 오래된 PC snapshot이 최신 Firestore를 덮어쓰는 것 방지).
+- 내용이 동일하면 write하지 않는다(SkipSame — 두 PC 반복 업로드 시 불필요 write 0).
+- 첫 업로드(로컬 state의 lastSyncAt 없음)는 diff 대신 전체 window를 upsert 대상으로 한다 — 두 번째 PC 첫 실행 시 전체 재확인하되 Firestore 비교로 전부 SkipSame 처리된다.
+
+Reason:
+두 PC는 서로 다른 시점에 같은 MERI(공유 캘린더)를 관측한다. 문서 ID가 결정적이면 병합이 자동이고, LMT 비교가 최신 관측의 승리를 보장한다. sourcePc는 진단용으로만 기록한다(실제 Windows 사용자명/컴퓨터명 미사용, 로컬 생성 익명 ID "pc-xxxxxxxx").
+
+Alternatives:
+- PC별 문서 분리 — Android 병합 부담 + 중복 문서로 기각.
+- sourcePc를 identity에 포함 — 같은 일정이 2개 문서로 늘어나 기각.
+
+---
+
+## 2026-08-31 - Firestore 문서 ID는 SHA-256(seriesKey|occurrenceKey) hash (Phase 4C)
+
+Decision:
+stableDocumentId = SHA-256(seriesKey + "|" + occurrenceKey) hex 상위 32자(128비트).
+
+Reason:
+- 결정적: 어느 PC에서 계산해도 같은 일정은 같은 ID(두 PC → 문서 1개).
+- 정책상 raw GlobalAppointmentID를 문서 ID로 직접 쓰지 않는다. hash는 짧고 경로 안전(hex)하며 현재 규모에서 충돌 확률이 사실상 0이다.
+- 시간 이동(occurrenceKey 변화) 시 ID가 바뀌지만 diff 엔진의 time-moved 매칭이 기존 문서 delete + 신규 문서 upsert(move)로 처리하므로 삭제+신규 오분류가 일어나지 않는다(4B 실측: 시간 변경에도 GID 불변).
+
+Alternatives:
+- raw GlobalAppointmentID를 그대로 사용 — 정책 지시로 기각.
+- seriesKey만 사용 — 반복 occurrence 구분 불가로 기각.
+- series 하위 컬렉션 — v1 단순 flat 정책 위반으로 기각.
+
+---
+
+## 2026-08-31 - 삭제는 tombstone(연속 2회 missing), 시간 이동은 move (Phase 4C)
+
+Decision:
+- removed로 판단된 일정은 즉시 hard delete하지 않는다. MissingTracker가 연속 2회(기본 polling 60분 → 약 2시간) missing을 추적한 뒤 deleted=true + deletedAt(서버 타임스탬프) tombstone을 남긴다. hard delete는 Phase 5+ 별도 정책.
+- 시간 이동(diff의 time-moved)은 기존 문서 delete + 신규 문서 upsert로 즉시 처리(move — 데이터 손실 없는 확정 이동).
+
+Reason:
+- 단일 poll의 missing만으로 실제 삭제를 확정하면 안 된다: 조회 window 밖 이동, Outlook 동기화 지연, 반복 일정 occurrence 변화, 두 PC polling 시점 차이 때문. tombstone이 보수적 기본값이다.
+- time-moved는 seriesKey 재매칭이 확정적이므로 즉시 move가 안전하다(새 문서가 같은 seriesKey로 존재).
+
+Alternatives:
+- 1회 missing에 즉시 tombstone — window 밖 이동 오분류 위험으로 기각.
+- 시간 기준만(예: 2시간) 사용 — 회수 기준이 poll 간격과 무관하게 예측 가능해 채택(60분 polling에서 두 정책이 사실상 동일).
