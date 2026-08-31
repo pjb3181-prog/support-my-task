@@ -230,3 +230,36 @@ Reason:
 
 Alternatives:
 - 기존 체크리스트 자동 갱신 → 사용자 진행 상태와 충돌로 기각.
+
+---
+
+## 2026-08-19 - Graph 연동 전에 실제 계정 연결을 기술 타당성 Gate로 검증
+
+Decision:
+전체 Event 동기화 파이프라인을 구현하기 전에, 실제 회사 Microsoft 365 계정으로
+① 로그인(Gate A) ② Calendar 목록에서 `MERI` 발견(Gate B) ③ MERI Calendar Event 1건 이상 조회(Gate C)
+세 가지를 먼저 검증한다. 세 Gate가 모두 통과해야 Phase 4를 성공으로 간주한다.
+
+Reason:
+회사 tenant/admin 정책, App Registration, Graph 권한 등 외부 요인으로 연결이 막힐 수 있다.
+기능을 먼저 대량 구현하면 연결 불가 시 낭비가 크다. 연결 가능성을 먼저 확인하는 것이 안전하다.
+
+Alternatives:
+- 전체 파이프라인 선구현 후 연결 검증 → 연결 실패 시 대규모 재작업 위험으로 기각.
+
+---
+
+## 2026-08-19 - Graph 권한은 최소 read 원칙 (Calendars.Read)
+
+Decision:
+Graph delegated permission은 `Calendars.Read` 하나만 요청한다. Calendar write, Mail, Contacts,
+Files, Directory 등은 요청하지 않는다. `location` 필드 확인이 필요해 `Calendars.ReadBasic`보다
+상위지만, 여전히 읽기 전용이다.
+
+Reason:
+이 앱은 Outlook Calendar를 읽기만 하고 생성/수정/삭제하지 않는다. 최소 권한 원칙으로
+개인정보 노출 범위와 admin consent 부담을 줄인다.
+
+Alternatives:
+- `Calendars.ReadWrite` → 쓰기 불필요로 기각.
+- `Calendars.ReadBasic` → `location` 필드 미제공으로 기각.

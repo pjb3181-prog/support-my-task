@@ -4,6 +4,44 @@
 
 ---
 
+## 2026-08-19 16:00 - Phase 4: MSAL + Graph 연결 검증 (코드 구현 완료, 실제 검증 대기)
+
+Completed:
+- MSAL Android 8.4.1 의존성 추가 (`com.microsoft.identity.client:msal`)
+- OkHttp 4.12.0 + Gson 2.11.0 의존성 추가
+- `MsalAuthManager` 구현 (MSAL 로그인, client ID는 local.properties → BuildConfig 주입, Git 미커밋)
+- `GraphClient` 구현 (OkHttp로 `/me/calendars`, `/me/calendars/{id}/calendarView` 호출, `Prefer: IdType="ImmutableId"`)
+- `CalendarSelector` 구현 (이름이 정확히 "MERI"인 Calendar 탐색, 없으면 null — 기본 Calendar 임의 선택 안 함)
+- `CalendarSettingRepository` 구현 (selectedCalendarId/Name을 SettingEntity key-value로 저장)
+- Debug UI 구현 (Sign in / Find MERI calendar / Load test events 버튼, 정식 UI 대체 예정)
+- AndroidManifest에 BrowserTabActivity + INTERNET/ACCESS_NETWORK_STATE 권한 추가
+- 단위 테스트 10개 추가 (CalendarSelectorTest 6 + GraphJsonParsingTest 4)
+
+Changed:
+- 신규: data/remote/{GraphModels,GraphClient,MsalAuthManager}.kt
+- 신규: domain/CalendarSelector.kt
+- 신규: data/repository/CalendarSettingRepository.kt
+- 신규: ui/{DebugViewModel,DebugScreen}.kt
+- 신규: test/.../CalendarSelectorTest.kt, test/.../GraphJsonParsingTest.kt
+- 수정: gradle/libs.versions.toml, app/build.gradle.kts, settings.gradle.kts, AndroidManifest.xml, MainActivity.kt
+
+Test:
+- test: BUILD SUCCESSFUL (41 tests, 0 failures) — 기존 31 + 신규 10
+- assembleDebug: BUILD SUCCESSFUL
+
+Known Issues:
+- MSAL 8.4.1이 `display-mask`(Surface Duo SDK)에 의존 → Microsoft Duo SDK 피드 저장소 추가 필요
+  (https://pkgs.dev.azure.com/MicrosoftDeviceSDK/DuoSDK-Public/_packaging/Duo-SDK-Feed/maven/v1)
+- JAVA_HOME: `jbr-21`(런타임 변형)은 jlink 미포함 → Java 컴파일 실패. `jbrsdk-21`(SDK 변형) 사용 필요
+  (C:/Users/parkj/AppData/Local/jbrsdk-21.0.11-windows-x64-b1163.116)
+- 실제 로그인/Calendar/Event 검증은 미완료 (App Registration + client ID 필요)
+
+Next:
+- 사용자: Azure Portal에서 App Registration 생성 + client ID 제공
+- Gate A/B/C 실제 검증 (로그인 → MERI 발견 → Event 조회)
+
+---
+
 ## 2026-08-19 15:00 - Phase 3: Checklist 생성/병합 엔진 + 단위/통합 테스트
 
 Completed:

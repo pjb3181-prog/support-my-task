@@ -1,9 +1,20 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
 }
+
+// MSAL 설정값은 Git에 commit하지 않는다. local.properties(gitignore됨)에서 읽는다.
+val localProperties = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val msalClientId = localProperties.getProperty("msal.clientId") ?: ""
+val msalAuthority = localProperties.getProperty("msal.authority")
+    ?: "https://login.microsoftonline.com/organizations"
 
 android {
     namespace = "com.nomistake.app"
@@ -15,6 +26,9 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+
+        buildConfigField("String", "MSAL_CLIENT_ID", "\"$msalClientId\"")
+        buildConfigField("String", "MSAL_AUTHORITY", "\"$msalAuthority\"")
     }
 
     buildTypes {
@@ -38,6 +52,13 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+
+    packaging {
+        resources {
+            excludes += "META-INF/DEPENDENCIES"
+        }
     }
 
     testOptions {
@@ -65,6 +86,9 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.msal)
+    implementation(libs.okhttp)
+    implementation(libs.gson)
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)

@@ -43,6 +43,35 @@
   - target → non-target: 알림 취소 / 목록 제거 / soft-delete
   - non-target → target: 활성화 / 체크리스트 생성 / 알림 등록
 
+### MSAL 인증 구조 (Phase 4)
+
+- **라이브러리**: MSAL Android 8.4.1 (`com.microsoft.identity.client:msal`).
+- **client ID**: `local.properties`의 `msal.clientId`에서 읽어 BuildConfig로 주입 (Git 미커밋).
+- **redirect URI**: `msauth://com.nomistake.app/<signature_hash>` (debug keystore SHA-256 base64).
+  - AndroidManifest.xml에는 raw(비인코딩) signature hash, auth_config.json에는 URL 인코딩된 redirect_uri 사용.
+- **authority**: `https://login.microsoftonline.com/organizations` (기본, `msal.authority`로 변경 가능).
+- **Graph 권한**: `Calendars.Read` (delegated) — 읽기 전용. `location` 필드 확인이 필요해
+  `Calendars.ReadBasic`보다 상위지만 write 권한은 요청하지 않음 (최소 read 원칙).
+- **Graph 호출**: OkHttp + Gson으로 `/me/calendars`, `/me/calendars/{id}/calendarView` 직접 호출
+  (MS Graph SDK 미사용, 최소 의존성).
+
+### Phase 4 validation flow
+
+```text
+MSAL 로그인 (Gate A)
+    ↓
+Calendar 목록 조회
+    ↓
+MERI Calendar 탐색 (Gate B)
+    ↓
+selectedCalendarId / selectedCalendarName 저장
+    ↓
+MERI Calendar Event 조회 (Gate C)
+```
+
+- 세 Gate가 모두 실제 회사 Microsoft 365 환경에서 확인되어야 Phase 4 성공.
+- Graph Event → EventTitleParser → EventEntity → ChecklistRepository 연결은 다음 Phase에서 진행.
+
 ## 3. Outlook Calendar 선택 정책 (MERI 전용)
 
 - v1은 사용자의 모든 Outlook 캘린더를 읽지 않는다. **이름이 정확히 `MERI`인 캘린더 하나만** 처리한다.
