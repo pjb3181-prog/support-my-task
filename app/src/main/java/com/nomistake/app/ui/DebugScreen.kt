@@ -112,6 +112,7 @@ private fun FirebaseSection(viewModel: DebugViewModel) {
             Text(
                 text = "fetched=${s.fetched} target=${s.target} " +
                     "inserted=${s.inserted} updated=${s.updated} " +
+                    "skippedSame=${s.skippedSame} " +
                     "checklistCreated=${s.checklistCreated} " +
                     "tombstone=${s.tombstoneSeen} revived=${s.revived}",
                 style = MaterialTheme.typography.bodySmall

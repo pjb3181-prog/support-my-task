@@ -39,6 +39,9 @@ class CalendarSyncRepositoryTest {
     private lateinit var fakeSource: FakeCalendarSyncSource
     private lateinit var repository: CalendarSyncRepository
 
+    /** 주입 clock 값 — SkipSame 검증용으로 개별 테스트에서 변경 가능(기본 = 1차 sync 시각). */
+    private var nowMillis = 1_000L
+
     private val from: Instant = LocalDate.of(2026, 8, 24)
         .atStartOfDay(ZoneId.of("Asia/Seoul")).toInstant()
     private val to: Instant = LocalDate.of(2026, 11, 29)
@@ -58,7 +61,7 @@ class CalendarSyncRepositoryTest {
             checklistRepository = ChecklistRepository(db.checklistDao(), db.templateDao()),
             checklistDao = db.checklistDao(),
             settingDao = db.settingDao(),
-            clock = { Instant.ofEpochMilli(1_000L) } // 테스트 결정성
+            clock = { Instant.ofEpochMilli(nowMillis) } // 테스트 결정성(개별 테스트에서 가변)
         )
         kotlinx.coroutines.runBlocking { seedRulesAndTemplates() } // @Before는 non-suspend
     }
@@ -162,21 +165,72 @@ class CalendarSyncRepositoryTest {
     }
 
     @Test
-    fun `동일 문서 2회 sync - idempotent (event 1개, checklist 1개)`() = runBlocking {
+    fun `동일 문서 2회 sync - idempotent + SkipSame (event 1개, checklist 1개)`() = runBlocking {
         fakeSource.events.add(firestoreEvent("doc-1", "[대]테스트-LOPA[용종]"))
 
         val first = sync()
+        nowMillis = 2_000L // 2차 sync 시각 — 달라도 SkipSame이어야 한다(lastSyncedAt 비교 제외)
         val second = sync()
 
         assertEquals(1, first.inserted)
         assertEquals(0, second.inserted)
-        assertEquals(1, second.updated)
+        assertEquals(0, second.updated)     // 실제 Room UPDATE 없음
+        assertEquals(1, second.skippedSame)  // SkipSame 처리
         assertEquals(0, second.checklistCreated)
 
         assertEquals(1, db.eventDao().countAll())
         val event = db.eventDao().getBySource(EventSource.FIRESTORE_OUTLOOK, "doc-1")
         assertEquals(1, db.checklistDao().countByEventId(event!!.id))
         assertEquals(5, db.checklistDao().getItems(db.checklistDao().getByEventId(event.id)!!.id).size)
+    }
+
+    @Test
+    fun `동일 문서 재sync - source metadata 동일 시 lastSyncedAt 미갱신 (UPDATE 생략)`() = runBlocking {
+        fakeSource.events.add(firestoreEvent("doc-1", "[대]테스트-LOPA[용종]"))
+        sync()
+        nowMillis = 2_000L // sync 시각이 달라져도 비교 대상(lastSyncedAt) 아님
+
+        val second = sync()
+
+        assertEquals(0, second.inserted)
+        assertEquals(0, second.updated)      // 실제 Room UPDATE 없음
+        assertEquals(1, second.skippedSame)
+        assertEquals(0, second.checklistCreated)
+
+        // SkipSame이면 lastSyncedAt도 재기록하지 않는다(전역 lastSyncAt은 별도 갱신).
+        val event = db.eventDao().getBySource(EventSource.FIRESTORE_OUTLOOK, "doc-1")!!
+        assertEquals(Instant.ofEpochMilli(1_000L), event.lastSyncedAt)
+    }
+
+    @Test
+    fun `source 변경 재sync - 변경 문서만 UPDATE, 동일 문서는 SkipSame`() = runBlocking {
+        fakeSource.events.add(firestoreEvent("doc-1", "[대]테스트-LOPA[용종]"))
+        fakeSource.events.add(firestoreEvent("doc-2", "[대]테스트-HAZOP[용종]"))
+        sync()
+        nowMillis = 2_000L
+
+        // doc-1만 시간 변경(09:00 → 10:00 KST), doc-2는 그대로
+        fakeSource.events.clear()
+        fakeSource.events.add(
+            firestoreEvent("doc-1", "[대]테스트-LOPA[용종]").copy(
+                startTime = Instant.parse("2026-09-01T01:00:00Z"),
+                endTime = Instant.parse("2026-09-01T03:00:00Z")
+            )
+        )
+        fakeSource.events.add(firestoreEvent("doc-2", "[대]테스트-HAZOP[용종]"))
+
+        val second = sync()
+
+        assertEquals(0, second.inserted)
+        assertEquals(1, second.updated)      // 변경된 doc-1만
+        assertEquals(1, second.skippedSame)  // 동일한 doc-2
+        assertEquals(0, second.checklistCreated)
+
+        val changed = db.eventDao().getBySource(EventSource.FIRESTORE_OUTLOOK, "doc-1")!!
+        assertEquals(Instant.parse("2026-09-01T01:00:00Z"), changed.startTime)
+        assertEquals(Instant.ofEpochMilli(2_000L), changed.lastSyncedAt) // 변경 시 갱신
+        val skipped = db.eventDao().getBySource(EventSource.FIRESTORE_OUTLOOK, "doc-2")!!
+        assertEquals(Instant.ofEpochMilli(1_000L), skipped.lastSyncedAt) // skip 시 미갱신
     }
 
     @Test
@@ -272,7 +326,7 @@ class CalendarSyncRepositoryTest {
         val firstItem = db.checklistDao().getItems(checklistId).first()
         db.checklistDao().setCompleted(firstItem.id, true, Instant.ofEpochMilli(1_000L))
 
-        // 같은 문서 재sync(내용 동일 → update 경로)
+        // 같은 문서 재sync(내용 동일 → SkipSame 경로, UPDATE 생략)
         sync()
 
         val after = db.eventDao().getBySource(EventSource.FIRESTORE_OUTLOOK, "doc-1")!!

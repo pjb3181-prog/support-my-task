@@ -21,8 +21,10 @@ data class SyncStats(
     val target: Int,
     /** Room에 신규 insert된 Event 수. */
     val inserted: Int,
-    /** Room에 update된 Event 수(내용 동일도 포함 — idempotent 재기록). */
+    /** Room에 실제 변경이 있어 UPDATE된 Event 수(내용 동일 SkipSame 제외). */
     val updated: Int,
+    /** Firestore source metadata가 기존과 완전 동일해 UPDATE를 생략한 Event 수(SkipSame). */
+    val skippedSame: Int,
     /** 이번 sync에서 신규 생성된 Checklist 수. */
     val checklistCreated: Int,
     /** 읽은 문서 중 tombstone(deleted=true) 수. */
@@ -42,6 +44,13 @@ data class SyncStats(
  *
  * 데이터 보존 정책 (Phase 3 정책 유지):
  * - 재동기화로 Event metadata는 갱신하되 Checklist(completed/EVENT_ONLY 항목)는 유지한다.
+ * - 재동기화 시 소스 제어 metadata가 기존과 완전 동일하면 Room UPDATE를 생략한다(SkipSame).
+ *   비교 대상은 Firestore DTO에서 온 필드(seriesKeyHash/occurrenceKeyHash/title/isAllDay/
+ *   startTime/endTime/location/isDeleted) + 제목 재파싱 결과(cleanTitle/roomType/attendeeCode/
+ *   isMine/scheduleType/isTarget — 소스 title과 파싱 규칙의 결정적 함수)뿐이다.
+ *   checklist 상태/EVENT_ONLY 항목/기타 Android local state는 비교·overwrite 대상에 넣지
+ *   않는다(EventEntity에 존재하지도 않는다 — 별도 테이블). lastSyncedAt은 sync bookkeeping이라
+ *   비교에서 제외하고(제외하지 않으면 매 sync마다 update 발생) 실제 변경 시에만 갱신한다.
  * - Checklist 있으면 재생성하지 않는다(ensureChecklist idempotency).
  * - target→non-target: checklist DB는 보존, 활성 UI(observeActiveEvents)에서만 제외.
  * - non-target→target: checklist 없을 때 최초 생성.
@@ -70,6 +79,7 @@ class CalendarSyncRepository(
 
         var inserted = 0
         var updated = 0
+        var skippedSame = 0
         var checklistCreated = 0
         var tombstoneSeen = 0
         var revived = 0
@@ -91,27 +101,36 @@ class CalendarSyncRepository(
                     if (ensureChecklistIfTarget(id)) checklistCreated++
                 }
             } else {
-                eventDao.update(
-                    existing.copy(
-                        seriesKeyHash = event.seriesKeyHash,
-                        occurrenceKeyHash = event.occurrenceKeyHash,
-                        title = event.title,
-                        cleanTitle = parsed.cleanTitle,
-                        roomType = parsed.roomType,
-                        attendeeCode = parsed.attendeeCode,
-                        isMine = parsed.isMine,
-                        scheduleType = parsed.scheduleType,
-                        isTarget = parsed.isTarget,
-                        isAllDay = event.isAllDay,
-                        startTime = event.startTime,
-                        endTime = event.endTime,
-                        location = event.location,
-                        isDeleted = event.isDeleted,
-                        lastSyncedAt = now
-                    )
+                // 소스 제어 metadata(+ 제목 재파싱 결과)로 재작성 candidate를 만든다.
+                // lastSyncedAt은 Android sync bookkeeping이라 비교에서 제외(기존값 유지) —
+                // 이 값을 비교에 넣으면 매 sync마다 달라져 항상 update가 발생한다.
+                // checklist 상태/EVENT_ONLY 항목은 EventEntity에 없으므로(별도 테이블)
+                // 비교·overwrite 대상이 될 수 없다.
+                val candidate = existing.copy(
+                    seriesKeyHash = event.seriesKeyHash,
+                    occurrenceKeyHash = event.occurrenceKeyHash,
+                    title = event.title,
+                    cleanTitle = parsed.cleanTitle,
+                    roomType = parsed.roomType,
+                    attendeeCode = parsed.attendeeCode,
+                    isMine = parsed.isMine,
+                    scheduleType = parsed.scheduleType,
+                    isTarget = parsed.isTarget,
+                    isAllDay = event.isAllDay,
+                    startTime = event.startTime,
+                    endTime = event.endTime,
+                    location = event.location,
+                    isDeleted = event.isDeleted,
+                    lastSyncedAt = existing.lastSyncedAt
                 )
-                updated++
-                if (existing.isDeleted && !event.isDeleted) revived++
+                if (candidate == existing) {
+                    // SkipSame: source metadata 완전 동일 → Room 재기록(UPDATE) 생략.
+                    skippedSame++
+                } else {
+                    eventDao.update(candidate.copy(lastSyncedAt = now))
+                    updated++
+                    if (existing.isDeleted && !event.isDeleted) revived++
+                }
                 if (!event.isDeleted && parsed.isTarget) {
                     if (ensureChecklistIfTarget(existing.id)) checklistCreated++
                 }
@@ -126,6 +145,7 @@ class CalendarSyncRepository(
             target = targetCount,
             inserted = inserted,
             updated = updated,
+            skippedSame = skippedSame,
             checklistCreated = checklistCreated,
             tombstoneSeen = tombstoneSeen,
             revived = revived
