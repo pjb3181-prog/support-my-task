@@ -3,7 +3,14 @@ package com.nomistake.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.room.Room
@@ -21,6 +28,8 @@ import com.nomistake.app.data.repository.CalendarSyncRepository
 import com.nomistake.app.data.repository.ChecklistRepository
 import com.nomistake.app.ui.DebugScreen
 import com.nomistake.app.ui.DebugViewModel
+import com.nomistake.app.ui.MainScreen
+import com.nomistake.app.ui.MainViewModel
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -62,7 +71,13 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                val viewModel: DebugViewModel = viewModel {
+                val mainViewModel: MainViewModel = viewModel {
+                    MainViewModel(
+                        eventDao = db.eventDao(),
+                        checklistDao = db.checklistDao()
+                    )
+                }
+                val debugViewModel: DebugViewModel = viewModel {
                     DebugViewModel(
                         msalAuthManager = authManager,
                         graphClient = graphClient,
@@ -71,9 +86,22 @@ class MainActivity : ComponentActivity() {
                         syncRepository = syncRepository
                     )
                 }
-                DebugScreen(viewModel)
+
+                var showDebug by rememberSaveable { mutableStateOf(false) }
+                if (showDebug) {
+                    Column {
+                        TextButton(onClick = { showDebug = false }) {
+                            Text("← 일정으로")
+                        }
+                        DebugScreen(debugViewModel)
+                    }
+                } else {
+                    MainScreen(
+                        viewModel = mainViewModel,
+                        onOpenDebug = { showDebug = true }
+                    )
+                }
             }
         }
     }
 }
-
