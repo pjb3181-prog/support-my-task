@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
@@ -149,7 +150,7 @@ private fun EventCard(event: EventEntity, onClick: () -> Unit) {
 private fun EventDetailScreen(viewModel: MainViewModel) {
     val event by viewModel.selectedEvent.collectAsState()
     val checklist by viewModel.checklist.collectAsState()
-    val items by viewModel.checklistItems.collectAsState()
+    val checklistItems by viewModel.checklistItems.collectAsState()
     val current = event ?: return
 
     Scaffold(
@@ -192,12 +193,12 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
                 item {
                     Text("체크리스트가 아직 생성되지 않았습니다.")
                 }
-            } else if (items.isEmpty()) {
+            } else if (checklistItems.isEmpty()) {
                 item { Text("체크리스트 항목이 없습니다.") }
             } else {
-                items(items, key = { it.id }) { item ->
-                    ChecklistRow(item = item, onCheckedChange = { checked ->
-                        viewModel.setCompleted(item, checked)
+                items(checklistItems, key = { it.id }) { checklistItem ->
+                    ChecklistRow(item = checklistItem, onCheckedChange = { checked ->
+                        viewModel.setCompleted(checklistItem, checked)
                     })
                 }
             }
