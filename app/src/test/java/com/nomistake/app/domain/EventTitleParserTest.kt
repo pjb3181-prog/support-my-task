@@ -25,8 +25,6 @@ class EventTitleParserTest {
         ScheduleTypeRule("화상회의", "화상회의", 6)
     )
 
-    // ── 정상 사례 ──────────────────────────────────────────────
-
     @Test
     fun `대회의실 LOPA 용종`() {
         val r = parser.parse("[대]롯데정밀-LOPA[용종]", seedRules)
@@ -113,17 +111,15 @@ class EventTitleParserTest {
     }
 
     @Test
-    fun `일반 회의실 HAZOP 타인은 기존대로 대상`() {
+    fun `일반 회의실 HAZOP 타인은 대상 아님`() {
         val r = parser.parse("[대] HAZOP [타인]", seedRules)
         assertEquals("대", r.roomType)
         assertEquals("타인", r.attendeeCode)
         assertFalse(r.isMine)
         assertEquals("HAZOP", r.cleanTitle)
         assertEquals("HAZOP", r.scheduleType)
-        assertTrue(r.isTarget)
+        assertFalse(r.isTarget)
     }
-
-    // ── 추가 edge case ─────────────────────────────────────────
 
     @Test
     fun `마지막 attendee bracket 없음`() {
@@ -137,14 +133,14 @@ class EventTitleParserTest {
     }
 
     @Test
-    fun `roomType만 있는 일정`() {
+    fun `roomType만 있는 일정은 대상 아님`() {
         val r = parser.parse("[대]", seedRules)
         assertEquals("대", r.roomType)
         assertNull(r.attendeeCode)
         assertFalse(r.isMine)
         assertEquals("", r.cleanTitle)
         assertEquals("일반회의", r.scheduleType)
-        assertTrue(r.isTarget)
+        assertFalse(r.isTarget)
     }
 
     @Test
@@ -215,6 +211,6 @@ class EventTitleParserTest {
         assertNull(r.attendeeCode)
         assertEquals("회의", r.cleanTitle)
         assertEquals("일반회의", r.scheduleType)
-        assertTrue(r.isTarget)
+        assertFalse(r.isTarget)
     }
 }
