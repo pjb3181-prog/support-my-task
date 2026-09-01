@@ -19,6 +19,10 @@ interface ChecklistDao {
     @Query("SELECT * FROM checklists WHERE eventId = :eventId LIMIT 1")
     suspend fun getByEventId(eventId: Long): ChecklistEntity?
 
+    /** Phase 6A 상세 화면: Event와 1:1인 Checklist를 관찰한다. */
+    @Query("SELECT * FROM checklists WHERE eventId = :eventId LIMIT 1")
+    fun observeByEventId(eventId: Long): Flow<ChecklistEntity?>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertItems(items: List<ChecklistItemEntity>)
 

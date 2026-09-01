@@ -42,6 +42,10 @@ interface EventDao {
     @Query("SELECT * FROM events WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): EventEntity?
 
+    /** Phase 6A 상세 화면: 선택한 일정의 변경을 Room에서 직접 관찰한다. */
+    @Query("SELECT * FROM events WHERE id = :id LIMIT 1")
+    fun observeById(id: Long): Flow<EventEntity?>
+
     /** 활성 일정 목록(soft-delete 제외, target만). */
     @Query("SELECT * FROM events WHERE isDeleted = 0 AND isTarget = 1 ORDER BY startTime ASC")
     fun observeActiveEvents(): Flow<List<EventEntity>>
