@@ -11,22 +11,31 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.nomistake.app.data.local.entity.ChecklistItemEntity
 import com.nomistake.app.data.local.entity.EventEntity
+import com.nomistake.app.data.local.entity.ItemOrigin
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -151,6 +160,13 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
     val checklist by viewModel.checklist.collectAsState()
     val checklistItems by viewModel.checklistItems.collectAsState()
     val current = event ?: return
+    var newItemText by remember(current.id) { mutableStateOf("") }
+
+    fun addCurrentItem() {
+        if (newItemText.isBlank()) return
+        viewModel.addEventOnlyItem(newItemText)
+        newItemText = ""
+    }
 
     Scaffold(
         topBar = {
@@ -192,13 +208,55 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
                 item {
                     Text("체크리스트가 아직 생성되지 않았습니다.")
                 }
-            } else if (checklistItems.isEmpty()) {
-                item { Text("체크리스트 항목이 없습니다.") }
             } else {
-                items(checklistItems, key = { it.id }) { checklistItem ->
-                    ChecklistRow(item = checklistItem, onCheckedChange = { checked ->
-                        viewModel.setCompleted(checklistItem, checked)
-                    })
+                if (checklistItems.isEmpty()) {
+                    item { Text("체크리스트 항목이 없습니다.") }
+                } else {
+                    items(checklistItems, key = { it.id }) { checklistItem ->
+                        ChecklistRow(
+                            item = checklistItem,
+                            onCheckedChange = { checked ->
+                                viewModel.setCompleted(checklistItem, checked)
+                            },
+                            onDelete = if (checklistItem.origin == ItemOrigin.EVENT_ONLY) {
+                                { viewModel.deleteEventOnlyItem(checklistItem) }
+                            } else null
+                        )
+                    }
+                }
+
+                item {
+                    Spacer(Modifier.height(16.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "이 일정에만 항목 추가",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = newItemText,
+                        onValueChange = { newItemText = it },
+                        label = { Text("새 체크 항목") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = { addCurrentItem() })
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Button(
+                            onClick = { addCurrentItem() },
+                            enabled = newItemText.isNotBlank()
+                        ) {
+                            Text("추가")
+                        }
+                    }
+                    Spacer(Modifier.height(24.dp))
                 }
             }
         }
@@ -236,7 +294,8 @@ private fun EventDetailMeta(event: EventEntity) {
 @Composable
 private fun ChecklistRow(
     item: ChecklistItemEntity,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    onDelete: (() -> Unit)?
 ) {
     Row(
         modifier = Modifier
@@ -251,7 +310,14 @@ private fun ChecklistRow(
         Text(
             text = item.text,
             style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.padding(start = 8.dp)
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 8.dp)
         )
+        if (onDelete != null) {
+            TextButton(onClick = onDelete) {
+                Text("삭제")
+            }
+        }
     }
 }

@@ -32,6 +32,10 @@ interface ChecklistDao {
     @Query("SELECT * FROM checklist_items WHERE checklistId = :checklistId ORDER BY sortOrder ASC")
     suspend fun getItems(checklistId: Long): List<ChecklistItemEntity>
 
+    /** Phase 6B: 현재 일정 체크리스트의 마지막에 EVENT_ONLY 항목을 붙이기 위한 sortOrder. */
+    @Query("SELECT COALESCE(MAX(sortOrder), -1) + 1 FROM checklist_items WHERE checklistId = :checklistId")
+    suspend fun getNextSortOrder(checklistId: Long): Int
+
     @Query("SELECT COUNT(*) FROM checklists WHERE eventId = :eventId")
     suspend fun countByEventId(eventId: Long): Int
 
