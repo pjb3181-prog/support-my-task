@@ -39,6 +39,8 @@ import com.nomistake.app.ui.DebugScreen
 import com.nomistake.app.ui.DebugViewModel
 import com.nomistake.app.ui.MainScreen
 import com.nomistake.app.ui.MainViewModel
+import com.nomistake.app.ui.SettingsScreen
+import com.nomistake.app.ui.SettingsViewModel
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -118,28 +120,48 @@ class MainActivity : ComponentActivity() {
                         notificationScheduler = notificationScheduler
                     )
                 }
+                val settingsViewModel: SettingsViewModel = viewModel {
+                    SettingsViewModel(
+                        settingDao = db.settingDao(),
+                        notificationScheduler = notificationScheduler
+                    )
+                }
 
                 var showDebug by rememberSaveable { mutableStateOf(false) }
+                var showSettings by rememberSaveable { mutableStateOf(false) }
                 LaunchedEffect(requestedEventId) {
                     requestedEventId?.let { eventId ->
                         showDebug = false
+                        showSettings = false
                         mainViewModel.openEvent(eventId)
                         requestedEventId = null
                     }
                 }
 
-                if (showDebug) {
-                    Column {
-                        TextButton(onClick = { showDebug = false }) {
-                            Text("← 일정으로")
+                when {
+                    showDebug -> {
+                        Column {
+                            TextButton(onClick = { showDebug = false }) {
+                                Text("← 일정으로")
+                            }
+                            DebugScreen(debugViewModel)
                         }
-                        DebugScreen(debugViewModel)
                     }
-                } else {
-                    MainScreen(
-                        viewModel = mainViewModel,
-                        onOpenDebug = { showDebug = true }
-                    )
+
+                    showSettings -> {
+                        SettingsScreen(
+                            viewModel = settingsViewModel,
+                            onBack = { showSettings = false }
+                        )
+                    }
+
+                    else -> {
+                        MainScreen(
+                            viewModel = mainViewModel,
+                            onOpenSettings = { showSettings = true },
+                            onOpenDebug = { showDebug = true }
+                        )
+                    }
                 }
             }
         }
