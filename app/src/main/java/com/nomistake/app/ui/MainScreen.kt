@@ -45,12 +45,17 @@ private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 @Composable
 fun MainScreen(
     viewModel: MainViewModel,
+    onOpenSettings: () -> Unit,
     onOpenDebug: () -> Unit
 ) {
     val selectedEvent by viewModel.selectedEvent.collectAsState()
 
     if (selectedEvent == null) {
-        EventListScreen(viewModel = viewModel, onOpenDebug = onOpenDebug)
+        EventListScreen(
+            viewModel = viewModel,
+            onOpenSettings = onOpenSettings,
+            onOpenDebug = onOpenDebug
+        )
     } else {
         EventDetailScreen(viewModel = viewModel)
     }
@@ -59,6 +64,7 @@ fun MainScreen(
 @Composable
 private fun EventListScreen(
     viewModel: MainViewModel,
+    onOpenSettings: () -> Unit,
     onOpenDebug: () -> Unit
 ) {
     val events by viewModel.events.collectAsState()
@@ -77,6 +83,9 @@ private fun EventListScreen(
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f)
                 )
+                TextButton(onClick = onOpenSettings) {
+                    Text("설정")
+                }
                 TextButton(onClick = onOpenDebug) {
                     Text("Debug")
                 }
