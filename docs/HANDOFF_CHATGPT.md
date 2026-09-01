@@ -2,8 +2,10 @@
 
 > **이 문서는 이전 Cline/Ollama 개발 세션의 컨텍스트 없이도 ChatGPT가 프로젝트를 이어서 개발하기 위한 인수인계 문서이다.**
 >
-> 작성 기준 시점: local `main` HEAD = `75f17e485add313455ca4ce9400770bc3c910cbb` (Phase 5A, 2026-08-31 17:54).
-> 문서를 읽기 전에 `git rev-parse HEAD` 결과가 위 SHA와 일치하는지 먼저 검증하라.
+> 작성 기준: 마지막 기능 커밋 = `75f17e485add313455ca4ce9400770bc3c910cbb` (Phase 5A, 2026-08-31 17:54),
+> 이 문서가 처음 commit된 시점의 main HEAD = `bd31aec` (docs: add ChatGPT development handoff).
+> 읽는 시점의 HEAD가 `bd31aec`이면 이 문서의 기준 상태 그대로다. 그보다 최근 커밋이 있으면
+> 해당 커밋 내용을 먼저 파악하라.
 > 문서와 코드가 다르면 **코드가 source of truth**다. 문서를 믿기 전에 코드를 확인하라.
 
 ## 0. 읽기 순서
@@ -577,9 +579,10 @@ GitHub repository pjb3181-prog/support-my-task (실수없으셨죠 / NoMistake �
 먼저 할 일:
 1. repository를 먼저 읽어라. 가장 먼저 docs/HANDOFF_CHATGPT.md를 읽고, 이어서
    README.md, docs/ARCHITECTURE.md, docs/DECISIONS.md, docs/DEVELOPMENT_LOG.md를 확인하라.
-2. HANDOFF 문서에 적힌 기준 commit SHA(75f17e485add313455ca4ce9400770bc3c910cbb, Phase 5A)와
-   현재 main HEAD가 일치하는지 먼저 검증하라(git rev-parse HEAD / git log --oneline -10).
-   일치하지 않으면 더 최근 커밋의 내용을 먼저 파악하고 문서보다 코드/커밋을 우선하라.
+2. HANDOFF 문서에 적힌 기준 commit(마지막 기능 커밋 75f17e4 = Phase 5A, 인수인계 문서
+   커밋 bd31aec)과 현재 main HEAD가 일치하는지 먼저 검증하라(git rev-parse HEAD /
+   git log --oneline -10). HEAD가 bd31aec이면 인수인계 문서 작성 시점 그대로다.
+   그보다 최근 커밋이 있으면 해당 내용을 먼저 파악하고 문서보다 코드/커밋을 우선하라.
 
 작업 규칙:
 - 추측하지 말고 repository code를 source of truth로 사용하라. 문서와 코드가 다르면 코드를 따르고
@@ -607,6 +610,6 @@ Phase 6 계획 초안을 제안하라.
 
 ---
 
-*이 문서 작성 시점의 검증 기준: main HEAD `75f17e4`, testDebugUnitTest 61/61 PASS,
-assembleDebug BUILD SUCCESSFUL, working tree clean(인수인계 문서/README 수정 전),
-secret scan 통과. 문서와 코드 불일치 발견 시 코드 기준으로 이 문서를 갱신할 것.*
+*이 문서 작성 시점의 검증 기준: 마지막 기능 커밋 `75f17e4` / 문서 커밋 후 push 완료
+(HEAD = origin/main), testDebugUnitTest 61/61 PASS, assembleDebug BUILD SUCCESSFUL,
+working tree clean, secret scan 통과. 문서와 코드 불일치 발견 시 코드 기준으로 이 문서를 갱신할 것.*
