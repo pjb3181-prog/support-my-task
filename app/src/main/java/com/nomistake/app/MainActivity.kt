@@ -1,16 +1,23 @@
 package com.nomistake.app
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.room.Room
@@ -26,6 +33,8 @@ import com.nomistake.app.data.remote.MsalAuthManager
 import com.nomistake.app.data.repository.CalendarSettingRepository
 import com.nomistake.app.data.repository.CalendarSyncRepository
 import com.nomistake.app.data.repository.ChecklistRepository
+import com.nomistake.app.notification.NotificationAlarmScheduler
+import com.nomistake.app.notification.NotificationReceiver
 import com.nomistake.app.ui.DebugScreen
 import com.nomistake.app.ui.DebugViewModel
 import com.nomistake.app.ui.MainScreen
@@ -40,11 +49,33 @@ class MainActivity : ComponentActivity() {
             .build()
     }
 
+    /** 알림 탭으로 전달된 일정. onNewIntent에서도 갱신되어 실행 중인 앱에서도 상세로 이동한다. */
+    private var requestedEventId by mutableStateOf<Long?>(null)
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* 권한 거부 시에도 앱/Alarm 등록은 계속 동작하며 Receiver가 안전하게 no-op 한다. */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestedEventId = intent.notificationEventId()
+
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        val notificationScheduler = NotificationAlarmScheduler(
+            context = applicationContext,
+            eventDao = db.eventDao(),
+            settingDao = db.settingDao()
+        )
 
         lifecycleScope.launch {
             SeedData.seed(db)
+            notificationScheduler.rescheduleAll()
         }
 
         val authManager = MsalAuthManager(this)
@@ -83,11 +114,20 @@ class MainActivity : ComponentActivity() {
                         graphClient = graphClient,
                         calendarSettingRepository = calendarSettingRepository,
                         firebaseAuthManager = firebaseAuthManager,
-                        syncRepository = syncRepository
+                        syncRepository = syncRepository,
+                        notificationScheduler = notificationScheduler
                     )
                 }
 
                 var showDebug by rememberSaveable { mutableStateOf(false) }
+                LaunchedEffect(requestedEventId) {
+                    requestedEventId?.let { eventId ->
+                        showDebug = false
+                        mainViewModel.openEvent(eventId)
+                        requestedEventId = null
+                    }
+                }
+
                 if (showDebug) {
                     Column {
                         TextButton(onClick = { showDebug = false }) {
@@ -103,5 +143,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        requestedEventId = intent.notificationEventId()
+    }
+
+    private fun Intent.notificationEventId(): Long? {
+        val value = getLongExtra(NotificationReceiver.EXTRA_EVENT_ID, -1L)
+        return value.takeIf { it > 0L }
     }
 }

@@ -14,6 +14,7 @@ import com.nomistake.app.data.repository.CalendarSettingRepository
 import com.nomistake.app.data.repository.CalendarSyncRepository
 import com.nomistake.app.data.repository.SyncStats
 import com.nomistake.app.domain.CalendarSelector
+import com.nomistake.app.notification.NotificationAlarmScheduler
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.ZoneId
@@ -21,7 +22,8 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 /**
- * Phase 4~5 연결 검증용 Debug ViewModel.
+ * Phase 4~7 연결 검증용 Debug ViewModel.
+ * - Phase 7: sync 성공 후 현재 Room 상태로 알림을 재등록
  * - Phase 5: Firebase Auth(Email/Password) 로그인 + Firestore → Room sync (primary)
  * - Phase 4: MSAL/Graph 경로 (fallback, 보존)
  * 정식 UI로 대체될 때까지 별도로 유지한다.
@@ -34,7 +36,8 @@ class DebugViewModel(
     private val graphClient: GraphClient,
     private val calendarSettingRepository: CalendarSettingRepository,
     private val firebaseAuthManager: FirebaseAuthManager?, // null = google-services.json 없음
-    private val syncRepository: CalendarSyncRepository?      // null = Firebase 초기화 안 됨
+    private val syncRepository: CalendarSyncRepository?,     // null = Firebase 초기화 안 됨
+    private val notificationScheduler: NotificationAlarmScheduler? = null
 ) : ViewModel() {
 
     var status by mutableStateOf("Ready")
@@ -118,7 +121,12 @@ class DebugViewModel(
                 val stats = repo.syncNow(from, to)
                 lastStats = stats
                 lastSyncAt = repo.getLastSyncTime()
-                status = "Sync OK (fetched=${stats.fetched}, target=${stats.target})"
+                val scheduleResult = notificationScheduler?.rescheduleAll()
+                status = if (scheduleResult == null) {
+                    "Sync OK (fetched=${stats.fetched}, target=${stats.target})"
+                } else {
+                    "Sync OK (fetched=${stats.fetched}, target=${stats.target}, alarms=${scheduleResult.alarmCount})"
+                }
             } catch (e: Exception) {
                 // 실패해도 Room은 그대로 유지(offline source of truth).
                 status = "Sync failed: ${e.message}"
