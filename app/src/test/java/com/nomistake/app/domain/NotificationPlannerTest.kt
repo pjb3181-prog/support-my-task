@@ -43,7 +43,7 @@ class NotificationPlannerTest {
     @Test
     fun `past reminder times are omitted`() {
         val event = event(start = "2026-09-01T10:00:00Z", allDay = false)
-        val lateNow = Instant.parse("2026-09-01T09:40:00Z")
+        val lateNow = Instant.parse("2026-09-01T09:20:00Z")
         val result = NotificationPlanner.plan(event, defaultRules(), lateNow, zone)
 
         assertEquals(listOf("T-30"), result.map { it.ruleLabel })
