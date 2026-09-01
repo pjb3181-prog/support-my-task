@@ -245,12 +245,16 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
                         keyboardActions = KeyboardActions(onDone = { addCurrentItem() })
                     )
                     Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = { addCurrentItem() },
-                        enabled = newItemText.isNotBlank(),
-                        modifier = Modifier.align(Alignment.End)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
                     ) {
-                        Text("추가")
+                        Button(
+                            onClick = { addCurrentItem() },
+                            enabled = newItemText.isNotBlank()
+                        ) {
+                            Text("추가")
+                        }
                     }
                     Spacer(Modifier.height(24.dp))
                 }
