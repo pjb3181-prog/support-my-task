@@ -1,74 +1,73 @@
 # 실수없으셨죠
 
-개인 일정 실수 방지 앱. Outlook 캘린더(MERI 그룹 캘린더)를 읽고, 일정 유형에 따라
-기본 체크리스트를 자동 생성한 뒤, 일정이 가까워질수록 Android 알림으로 반복 상기시킨다.
+개인 업무 일정의 준비물 누락을 줄이기 위한 Android 앱이다. MERI 그룹 캘린더를 읽어 **마지막 attendee suffix에 `종`이 포함된 내 일정만** 표시하고, 일정 유형과 회의실 태그를 바탕으로 체크리스트와 반복 알림을 제공한다.
 
-일정 데이터 획득 경로는 2중화되어 있다. 현재 우선 경로는 Windows PC의 Classic Outlook을
-COM(Outlook Object Model)으로 직접 읽는 **PC Companion**(`desktop/OutlookCompanion`)이며,
-Microsoft Graph API + MSAL 경로는 회사 Microsoft 365 테넌트 인증 정책으로 실기 검증이
-보류된 보존(fallback) 경로다. PC Companion이 일정을 읽어 Firebase Firestore로 전달하고,
-Android는 Firestore를 읽어 Room에 저장한 뒤 기존 파서/체크리스트 파이프라인으로 처리한다
-(Phase 5 구현 + Phase 5A 실기기 검증 완료).
+## 운영 데이터 경로
 
-## 프로젝트 목적
+```text
+Classic Outlook (MERI)
+  -> OutlookCompanion (Windows/.NET 8, COM read-only)
+  -> Firebase Firestore
+  -> Android Firebase Auth + Firestore read-only
+  -> Room v2
+  -> Parser / Checklist / AlarmManager / WorkManager
+```
 
-회의/현장업무 등 반복되는 일정에서 "준비물을 깜빡하는" 실수를 방지한다.
-일정 제목의 규칙(장소 태그, 참석자 코드)을 파싱해 내 일정을 자동 판별하고,
-일정 유형별 기본 체크리스트를 자동 생성해 알림으로 상기시킨다.
+Microsoft Graph + MSAL 경로는 fallback으로 보존한다.
 
 ## 핵심 기능
 
-- **Microsoft Graph Calendar 동기화**: Outlook 캘린더를 읽어 일정을 로컬 DB에 동기화
-- **제목 파서**: `[대]`/`[세]` 장소 태그, 마지막 `[...]` 참석자 코드, `"종"` 내 일정 판정
-- **일정 유형 분류**: HAZOP, LOPA, 현장업무(FIELD_WORK), 면담, 화상회의, 일반회의
-- **자동 체크리스트**: 장소 템플릿 + 유형 템플릿 병합(중복 제거)
-- **반복 알림**: D-1 오후/퇴근 전, 당일 오전, T-60/T-30 (행동 지시형이 아닌 존재 상기형)
+- 제목 파서: 맨 앞 `[대]`/`[세]`, 마지막 `[...]` attendee code 파싱
+- 내 일정 판정: **마지막 attendee suffix 내부 `종`만 사용 (`isTarget = isMine`)**
+- `[대]`/`[세]`: target 판정용이 아니라 장소/ROOM 체크리스트용
+- 일정 유형: HAZOP, LOPA, FIELD_WORK, 면담, 화상회의, 일반회의
+- 체크리스트: ROOM + TYPE 템플릿 병합, 완료 상태 보존
+- EVENT_ONLY: 일정별 사용자 항목 추가/삭제
+- 알림: D-1 14:00, D-1 17:00, 당일 08:00, T-60, T-30
+- 알림 설정: 규칙 on/off, 고정 시각 및 T-minus 값 수정 후 즉시 재계획
+- 자동 동기화: 앱 실행 즉시 1회 + 30분 unique periodic WorkManager
+- 오프라인: Firestore `Source.SERVER`를 사용해 캐시 성공 오인을 방지하고 retry/backoff
 
 ## 기술 스택
 
-- **PC Companion(Phase 4A~4C)**: Windows 콘솔 C#/.NET 8 (Classic Outlook Object Model/COM, dynamic late-binding) — MERI Folder 재접근(저장 ID 직접 재오픈), 1시간 polling, snapshot diff
-- **Firebase Firestore(Phase 4C)**: Google.Cloud.Firestore 4.4.0(공식 .NET 클라이언트) — 서비스 계정 JSON 인증, MERI window 일정을 `events/{docId}` flat 컬렉션에 diff 기반 최소 write로 전달(tombstone 정책 포함)
-- **Firebase Android 수신(Phase 5)**: Firebase BOM(Auth Email/Password + Firestore 읽기 전용) — Firestore → FirestoreDtoParser → CalendarSyncRepository → Room v2(source-neutral EventEntity) → 기존 파서/체크리스트 재사용. google-services.json 없으면 Firebase OFF + Graph fallback(빌드는 항상 성공)
-- Kotlin 2.0.21, Jetpack Compose (BOM 2024.12.01), Material 3
-- Room 2.6.1 (KSP), MVVM
-- Microsoft Graph API (MSAL 인증)
-- WorkManager (주기 동기화), AlarmManager (정시 알림)
-- AGP 8.7.3, Gradle 8.9, minSdk 26 / targetSdk 35
+- Kotlin 2.0.21, Jetpack Compose, Material 3
+- Room 2.6.1, KSP, MVVM
+- Firebase Auth + Firestore
+- WorkManager 2.10.0, AlarmManager
+- Microsoft Graph/MSAL fallback
+- PC Companion: C#/.NET 8, Classic Outlook COM, Google.Cloud.Firestore
+- AGP 8.7.3, Gradle 8.9, minSdk 26, targetSdk 35
 
-## 현재 개발 상태
+## 개발 상태
 
 | Phase | 내용 | 상태 |
-|-------|------|------|
-| 1 | 프로젝트 스캐폴드 + Room DB/Entity/DAO | ✅ 완료 |
-| 2 | 제목 Parser + 단위 테스트 | ✅ 완료 |
-| 3 | 템플릿 → 체크리스트 복사/병합 | ✅ 완료 |
-| 4 | MSAL 인증 + Graph 동기화 | ⏸ 보존 (구현 완료, 회사 테넌트 인증 정책으로 실기 검증 보류 → fallback 경로) |
-| 4A | PC Companion: Classic Outlook COM으로 MERI 그룹 캘린더 읽기 검증 | ✅ 완료 (2026-08-31) |
-| 4B | PC Companion: MERI 재접근 안정화 + 식별자 정책 + polling/diff 검증 | ✅ 완료 (2026-08-31) |
-| 4C | PC Companion → Firebase Firestore 전달 (문서 ID/upsert/tombstone/두 PC 정책) | ✅ 완료 (2026-08-31, 실제 MERI window 61건 업로드 검증) |
-| 5 | Android ↔ Firestore 수신 연동 (Firebase Auth, Room v1→v2 source-neutral, CalendarSyncRepository, Debug UI) | ✅ 완료 (2026-08-31, 구현 + 단위 테스트 59/59 통과) |
-| 5A | 실기기 실측 (Auth 로그인 → MERI 일정 sync → 체크리스트 생성·보존) + SkipSame idempotent 재sync | ✅ 완료 (2026-08-31, 실기기 2회 sync 동일 결과: fetched=61 target=11 skippedSame=61, 단위 테스트 61/61) |
-| 6 | 일정 목록/상세 UI | ⏳ 예정 |
-| 7 | 체크리스트 추가/삭제 | ⏳ 예정 |
-| 8 | Notification 스케줄링 | ⏳ 예정 |
-| 9 | 설정 화면 | ⏳ 예정 |
-| 10 | WorkManager 주기 동기화 | ⏳ 예정 |
-| 11 | 통합 테스트/실기기 검증 | ⏳ 예정 |
+|---|---|---|
+| 1 | Android + Room scaffold | ✅ |
+| 2 | EventTitleParser + tests | ✅ |
+| 3 | 체크리스트 생성/병합 | ✅ |
+| 4 | MSAL + Graph fallback | ✅ 구현 / 실운영 fallback |
+| 4A~4C | Outlook COM -> Firestore | ✅ |
+| 5/5A | Firestore -> Room + SkipSame | ✅ |
+| 6A | 일정 목록/상세/체크 | ✅ |
+| 6B | EVENT_ONLY 추가/삭제 | ✅ |
+| 7 | AlarmManager 알림 + deep link | ✅ |
+| 8 | 알림 설정 화면 | ✅ |
+| 9 | WorkManager 자동 동기화 | ✅ |
+| 10 | 최종 문서/통합 smoke test | 🔄 마감 단계 |
 
-## 실행 방법
+Phase 9 최종 검증 기준: `testDebugUnitTest` 71/71 PASS, `assembleDebug` PASS, `lintDebug` 오류 0, AppData APK `adb install -r` 성공. 오프라인에서는 `lastSuccessfulSyncAt`이 유지되고 work가 retry/대기하며, 네트워크 복구 후 동일 work가 성공하는 것을 실기기에서 확인했다.
 
-> ⚠️ JDK 17~21 필요. 최신 Android Studio(2026.x)의 JBR 25는 Gradle 8.9와 비호환.
+## 실행/검증 주의
 
-1. Android Studio 설치 (JBR 포함)
-2. Android SDK 설치 (platforms;android-35, build-tools, platform-tools)
-3. `local.properties`에 SDK 경로 설정 (Git 미커밋)
-4. Android Studio에서 프로젝트 열기 → Sync
-5. `./gradlew assembleDebug` 또는 Run
+- `google-services.json`, Firebase 자격 증명, MSAL 설정은 Git에 commit하지 않는다.
+- Android 실기기 상태 검증 시 앱 uninstall 금지. 기존 Room 상태를 보존하려면 `adb install -r` 사용.
+- 실제 debug APK는 환경에 따라 프로젝트 `app/build/outputs`가 아니라 AppData 쪽 redirected build 경로에 생성될 수 있으므로 설치 전 최신 APK를 확인한다.
 
-## 향후 개발 계획
+## 문서
 
-상세 설계는 [DESIGN.md](DESIGN.md), 아키텍처는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
-설계 결정 기록은 [docs/DECISIONS.md](docs/DECISIONS.md), 진행 로그는 [docs/DEVELOPMENT_LOG.md](docs/DEVELOPMENT_LOG.md) 참고.
-
-**Development handoff for ChatGPT**: [docs/HANDOFF_CHATGPT.md](docs/HANDOFF_CHATGPT.md) —
-과거 개발 세션 컨텍스트 없이 개발을 이어받기 위한 인수인계 문서 (가장 먼저 읽을 것).
+- [DESIGN.md](DESIGN.md): 현재 설계 원칙
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): 상세 아키텍처
+- [docs/DECISIONS.md](docs/DECISIONS.md): ADR
+- [docs/DEVELOPMENT_LOG.md](docs/DEVELOPMENT_LOG.md): Phase 1~5A 역사 로그
+- [docs/DEVELOPMENT_LOG_PHASE6_10.md](docs/DEVELOPMENT_LOG_PHASE6_10.md): Phase 6~10 최신 진행 로그
+- [docs/HANDOFF_CHATGPT.md](docs/HANDOFF_CHATGPT.md): 현재 source-of-truth 인수인계 문서

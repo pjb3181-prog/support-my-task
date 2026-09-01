@@ -1,58 +1,95 @@
-# 실수없으셨죠 — 설계 문서 (v1.0 확정)
+# 실수없으셨죠 — 설계 문서 (v1.1, Phase 9 완료 기준)
 
-개인 일정 실수 방지 앱. Outlook 캘린더를 Microsoft Graph API로 읽고, 일정 유형에 따라
-기본 체크리스트를 자동 생성한 뒤, 일정이 가까워질수록 Android 알림으로 반복 상기시킨다.
-규칙 기반(제목 파서 + 템플릿 매핑)만 사용. AI 없음. 서버 없음.
+개인 일정 실수 방지 Android 앱. MERI 캘린더 일정을 받아 내 일정만 선별하고, 일정 유형과 회의실 태그에 따라 체크리스트를 구성한 뒤 반복 알림으로 준비 누락을 줄인다. 규칙 기반이며 AI/LLM은 사용하지 않는다.
 
-## 기술 스택
-- Kotlin, Jetpack Compose, Room, Microsoft Graph API, WorkManager(동기화), AlarmManager(정시 알림), MVVM
+## 운영 Architecture
 
-## 핵심 규칙
-1. "종" 판별: 제목 **마지막 대괄호 `[...]`만** 참석자 코드로 파싱 → 그 내부에서만 `"종"` 검색.
-   본문/다른 괄호의 "종"은 절대 사용 안 함. 확정 규칙.
-2. `[대]`/`[세]`는 장소 태그(대회의실/세미나실), 일정 유형과 독립·동시 적용.
-3. 처리 대상 판정식: `isTarget = isMine || (roomType != null)`
-   - isMine=false && roomType=null → 완전 무시(목록에도 표시 안 함)
-4. 체크리스트 = roomType 템플릿 + scheduleType 템플릿 병합(중복 제거).
-5. 알림은 지시형 아님. "다가온다"는 사실만 반복 상기. 탭 시 체크리스트 화면 이동.
-6. All-day: T-60/T-30 미생성, 임의 시작 시각 표시 안 함.
-7. 템플릿 수정은 신규 일정에만 적용. 기존 체크리스트 독립.
-
-## 제목 파서
-```
-1) roomType: ^\[(대|세)\] → "대"|"세"|null
-2) attendeeCode: \[([^\]]*)\]$ (마지막 대괄호) → 문자열|null
-3) isMine = attendeeCode?.contains("종") == true
-4) cleanTitle = 앞/뒤 태그 제거한 나머지
-5) scheduleType = cleanTitle에 대해서만 ScheduleTypeRule.keyword 매칭(priority 순), 없으면 null → "일반회의" fallback
+```text
+Classic Outlook (MERI Group Calendar)
+  -> PC OutlookCompanion (COM, read-only)
+  -> Firebase Firestore events/{stableDocumentId}
+  -> Android Firebase Auth + Firestore read-only
+  -> Room v2 (source of truth)
+  -> EventTitleParser
+  -> ChecklistRepository / AlarmManager / WorkManager
 ```
 
-## 식별자 정책 (Graph v1.0 공식 문서 기준)
-- 모든 Graph 요청에 `Prefer: IdType="ImmutableId"` 헤더 적용.
-- stableKey 우선순위: 1) graphImmutableId  2) iCalUId  3) seriesMasterId + startTime
-- iCalUId는 occurrence별로 서로 다른 값(시리즈 식별 부적합, 개별 occurrence 식별 유용).
-- changeKey는 변경 감지 보조값(identity 아님).
+Microsoft Graph + MSAL 경로는 fallback으로 보존한다.
+
+## 핵심 제목 규칙
+
+1. 제목 맨 앞의 `[대]`/`[세]`만 roomType으로 인식한다.
+2. 제목의 마지막 `[...]`만 attendeeCode로 인식한다.
+3. `isMine = attendeeCode?.contains("종") == true`.
+4. 본문, Location, 제목 일반 문자열의 `종`은 내 일정 판정에 절대 사용하지 않는다.
+5. **최종 target 판정은 `isTarget = isMine`이다.**
+6. `[대]`/`[세]`는 내 일정 여부를 결정하지 않는다. target으로 판정된 일정의 장소 정보 및 ROOM 체크리스트 병합에만 사용한다.
+
+예시:
+- `[대] 공간대여 [타인]` -> non-target
+- `[대] 공간대여` -> non-target
+- `[대] 공간대여 [종]` -> target
+- `[대] HAZOP [타인]` -> non-target
+- `[대] HAZOP [종]` -> target
+- `HAZOP [종]` -> target
+- `[대]`, `[세]`만 존재 -> non-target
+
+## Parser 순서
+
+```text
+1) roomType: ^\[(대|세)\]
+2) attendeeCode: 마지막 \[([^\]]*)\]$
+3) isMine: attendeeCode 내부 "종"
+4) cleanTitle: room prefix + 마지막 attendee suffix 제거 후 trim
+5) scheduleType: cleanTitle에 대해 DB ScheduleTypeRule priority 순 매칭
+6) isTarget = isMine
+```
+
+## 일정 유형 / 체크리스트
+
+Schedule type rule은 DB 기반이다. seed는 HAZOP, LOPA, 현장조사/현장방문 -> FIELD_WORK, 면담, 화상회의이며 실패 시 일반회의로 fallback한다.
+
+ROOM `[대]`/`[세]` 템플릿은 참석자 명단 받기, 관련자료 출력, 입구 팻말 준비이다. TYPE 템플릿은 HAZOP/LOPA: 관련자료 확인·노트북·충전기, FIELD_WORK: 관련자료·노트북·충전기·안전화·안전모, 면담/화상회의/일반회의: 관련자료 확인이다.
+
+병합은 ROOM -> TYPE 순서이며 trim + 대소문자 무시 exact 텍스트 중복만 제거한다. 기존 체크리스트는 sync로 재생성하지 않는다. `EVENT_ONLY` 항목은 사용자가 일정별로 추가/삭제할 수 있고 sync가 건드리지 않는다.
+
+## 알림
+
+AlarmManager 기반 정시 알림:
+- D-1 14:00
+- D-1 17:00
+- 당일 08:00
+- T-60
+- T-30
+
+종일 일정은 T-60/T-30을 제외한다. 설정 화면에서 각 규칙 enabled와 시각/분 단위를 수정할 수 있고 저장 즉시 전체 알람을 재계획한다. 알림 탭은 해당 일정 체크리스트로 deep link한다.
 
 ## 동기화
-- 30분 주기(기본) + 앱 실행 시 즉시 + 수동 새로고침. `CalendarSyncSource` 인터페이스로 추상화.
-- 수정: stableKey 기준 upsert. 시간 변경→알림 재등록, 제목 변경→재파싱, completed 상태 유지.
-- 삭제: 알림 취소, 활성 목록 제거, soft-delete 보존.
-- target 전이: target→non-target(알림 취소/목록 제거/soft-delete), non-target→target(활성화/체크리스트 생성/알림 등록).
 
-## Seed data (DB에만 존재, 코드 고정 없음)
-- ROOM: 대(대회의실), 세(세미나실) — 참석자 명단 받기/관련자료 출력/입구 팻말 준비
-- TYPE: HAZOP, LOPA, FIELD_WORK(현장업무), 면담, 화상회의, 일반회의(fallback)
-- ScheduleTypeRule: HAZOP→HAZOP, LOPA→LOPA, 현장조사→FIELD_WORK, 현장방문→FIELD_WORK, 면담→면담, 화상회의→화상회의
-- NotificationRule: D-1 오후(14:00), D-1 퇴근 전(17:00), 당일 오전(08:00) [ALL], T-60, T-30 [TIMED_ONLY]
+Android는 WorkManager를 사용한다.
+- 앱 실행 시 unique immediate sync 1회
+- unique periodic sync 30분
+- `NetworkType.CONNECTED`
+- transient 실패는 exponential backoff retry
+- 주기 work는 하나만 유지
 
-## 구현 순서
-1. 프로젝트 스캐폴드 + Room DB/Entity/DAO  ← Phase 1
-2. 제목 Parser + 단위 테스트
-3. MSAL 인증 + Graph 동기화(추상 인터페이스)
-4. 템플릿 → 체크리스트 복사/병합 로직
-5. 일정 목록/상세(체크리스트) UI
-6. 체크리스트 추가/삭제(이번만/템플릿에도)
-7. Notification 스케줄링(AlarmManager) + 딥링크
-8. 설정 화면
-9. WorkManager 주기 동기화
-10. 통합 테스트/실기기 검증
+Firestore 읽기는 `Source.SERVER`를 사용한다. 오프라인에서 Firestore 로컬 캐시를 성공으로 오인하지 않으며, 서버 읽기 실패는 Worker의 retry 경로로 전달된다. 성공한 sync에서만 `lastSuccessfulSyncAt`을 갱신하고 AlarmManager를 재계획한다.
+
+Room은 Android의 source of truth다. 변경 없는 이벤트는 SkipSame 처리하여 불필요한 Room update를 하지 않고 체크리스트 completed/EVENT_ONLY 상태를 보존한다.
+
+## 현재 구현 상태
+
+- Phase 1~5A: 데이터 모델, parser, 체크리스트, Outlook/Firestore/Android sync 완료
+- Phase 6A: 일정 목록/상세/체크 완료
+- Phase 6B: EVENT_ONLY 체크리스트 추가/삭제 완료
+- Phase 7: AlarmManager 알림 + deep link 완료
+- Phase 8: 알림 설정 화면 완료
+- Phase 9: WorkManager background sync 완료
+- Phase 9 최종 검증: `testDebugUnitTest` 71/71 PASS, `assembleDebug` PASS, `lintDebug` 오류 0, AppData APK `adb install -r` 성공, 오프라인 retry/복구 성공
+
+## Known limitations / 후속 후보
+
+- 재부팅/시간대 변경 직후 AlarmManager 재등록 전용 receiver는 아직 없음. 현재 앱 실행 또는 성공 sync 시 재계획한다.
+- 체크리스트 템플릿/일정 유형 편집 UI는 아직 없음. Phase 8은 알림 설정만 구현했다.
+- Graph/MSAL은 보존 fallback이며 운영 primary는 Outlook COM -> Firestore다.
+- 최종 릴리스 전에 통합 smoke test 및 문서/릴리스 정리만 남는다.
