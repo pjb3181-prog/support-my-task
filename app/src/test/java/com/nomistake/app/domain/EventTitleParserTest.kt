@@ -82,6 +82,47 @@ class EventTitleParserTest {
         assertTrue(r.isTarget)
     }
 
+    @Test
+    fun `공간대여 타인은 회의실 태그가 있어도 대상 아님`() {
+        val r = parser.parse("[대] 공간대여 [타인]", seedRules)
+        assertEquals("대", r.roomType)
+        assertEquals("타인", r.attendeeCode)
+        assertFalse(r.isMine)
+        assertEquals("공간대여", r.cleanTitle)
+        assertFalse(r.isTarget)
+    }
+
+    @Test
+    fun `공간대여 attendee 없음도 대상 아님`() {
+        val r = parser.parse("[대] 공간대여", seedRules)
+        assertEquals("대", r.roomType)
+        assertNull(r.attendeeCode)
+        assertFalse(r.isMine)
+        assertEquals("공간대여", r.cleanTitle)
+        assertFalse(r.isTarget)
+    }
+
+    @Test
+    fun `공간대여 종이면 대상`() {
+        val r = parser.parse("[대] 공간대여 [종]", seedRules)
+        assertEquals("대", r.roomType)
+        assertEquals("종", r.attendeeCode)
+        assertTrue(r.isMine)
+        assertEquals("공간대여", r.cleanTitle)
+        assertTrue(r.isTarget)
+    }
+
+    @Test
+    fun `일반 회의실 HAZOP 타인은 기존대로 대상`() {
+        val r = parser.parse("[대] HAZOP [타인]", seedRules)
+        assertEquals("대", r.roomType)
+        assertEquals("타인", r.attendeeCode)
+        assertFalse(r.isMine)
+        assertEquals("HAZOP", r.cleanTitle)
+        assertEquals("HAZOP", r.scheduleType)
+        assertTrue(r.isTarget)
+    }
+
     // ── 추가 edge case ─────────────────────────────────────────
 
     @Test
