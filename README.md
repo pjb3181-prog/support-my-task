@@ -8,7 +8,7 @@ COM(Outlook Object Model)으로 직접 읽는 **PC Companion**(`desktop/OutlookC
 Microsoft Graph API + MSAL 경로는 회사 Microsoft 365 테넌트 인증 정책으로 실기 검증이
 보류된 보존(fallback) 경로다. PC Companion이 일정을 읽어 Firebase Firestore로 전달하고,
 Android는 Firestore를 읽어 Room에 저장한 뒤 기존 파서/체크리스트 파이프라인으로 처리한다
-(Phase 5 구현 완료, 실기기 실측 대기).
+(Phase 5 구현 + Phase 5A 실기기 검증 완료).
 
 ## 프로젝트 목적
 
@@ -47,7 +47,7 @@ Android는 Firestore를 읽어 Room에 저장한 뒤 기존 파서/체크리스�
 | 4B | PC Companion: MERI 재접근 안정화 + 식별자 정책 + polling/diff 검증 | ✅ 완료 (2026-08-31) |
 | 4C | PC Companion → Firebase Firestore 전달 (문서 ID/upsert/tombstone/두 PC 정책) | ✅ 완료 (2026-08-31, 실제 MERI window 61건 업로드 검증) |
 | 5 | Android ↔ Firestore 수신 연동 (Firebase Auth, Room v1→v2 source-neutral, CalendarSyncRepository, Debug UI) | ✅ 완료 (2026-08-31, 구현 + 단위 테스트 59/59 통과) |
-| 5A | 실기기 Gate A~E 실측 (Auth 로그인 → MERI 일정 sync → 체크리스트 생성·보존·idempotency) | ⏳ 대기 (Firebase Console: 앱 등록·google-services.json·Auth 활성화·Security Rules 배포 필요) |
+| 5A | 실기기 실측 (Auth 로그인 → MERI 일정 sync → 체크리스트 생성·보존) + SkipSame idempotent 재sync | ✅ 완료 (2026-08-31, 실기기 2회 sync 동일 결과: fetched=61 target=11 skippedSame=61, 단위 테스트 61/61) |
 | 6 | 일정 목록/상세 UI | ⏳ 예정 |
 | 7 | 체크리스트 추가/삭제 | ⏳ 예정 |
 | 8 | Notification 스케줄링 | ⏳ 예정 |
@@ -69,3 +69,6 @@ Android는 Firestore를 읽어 Room에 저장한 뒤 기존 파서/체크리스�
 
 상세 설계는 [DESIGN.md](DESIGN.md), 아키텍처는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 설계 결정 기록은 [docs/DECISIONS.md](docs/DECISIONS.md), 진행 로그는 [docs/DEVELOPMENT_LOG.md](docs/DEVELOPMENT_LOG.md) 참고.
+
+**Development handoff for ChatGPT**: [docs/HANDOFF_CHATGPT.md](docs/HANDOFF_CHATGPT.md) —
+과거 개발 세션 컨텍스트 없이 개발을 이어받기 위한 인수인계 문서 (가장 먼저 읽을 것).

@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-08-31 - Phase 5A: SkipSame idempotent 재sync + 실기기 검증 (단위 테스트 61/61, 실기기 2회 sync 동일 결과)
+
+Completed:
+- **SkipSame 구현 (CalendarSyncRepository)**: 기존 event를 항상 @Update + lastSyncedAt
+  갱신해 변경 없는 재sync에서도 updated=61이 발생하던 문제 해결. source-controlled
+  candidate metadata(Firestore DTO 필드 + 제목 재파싱 결과)와 existing Room 행을 비교해
+  동일하면 skippedSame++ 처리, Room UPDATE/lastSyncedAt 재기록 생략. checklist 상태/
+  EVENT_ONLY 항목은 비교·overwrite 대상이 아니다(별도 테이블).
+- **실기기 검증 (Debug UI)**: Firebase Auth 로그인 → Firestore sync → 체크리스트 생성·보존
+  → 재sync idempotency 실측 완료. 2회 연속 sync 결과 완전 동일:
+  fetched=61 target=11 inserted=0 updated=0 skippedSame=61 checklistCreated=0 tombstone=0 revived=0.
+- **APK 설치 사고 해결**: 폰에 남아 있던 구 APK 사이드로드로 예전 binary가 설치돼
+  skippedSame이 UI에 없던 문제 진단(installer/SHA-256/DEX 비교 — 빌드 시스템 문제 아님) 후
+  `adb install -r`로 재설치(Room DB 보존). 교칙: 개발/검증 APK는 adb install -r 설치,
+  검증 중 앱 uninstall 금지(uninstall은 DB 삭제).
+
+Measured:
+- 단위 테스트 **61/61 PASS** (CalendarSyncRepositoryTest 12 — SkipSame 2건 추가)
+- testDebugUnitTest / assembleDebug BUILD SUCCESSFUL
+
+Changed:
+- 수정: data/repository/CalendarSyncRepository.kt(SkipSame 비교·skip 처리),
+  ui/DebugScreen.kt(skippedSame 통계 표시), data/repository/CalendarSyncRepositoryTest.kt(+2)
+- 커밋 75f17e4 (3 files, +100/−25)
+
+Known Issues:
+- testReleaseUnitTest에서 migration 테스트는 schema 미포함으로 실패 가능(검증은 debug 기준).
+
+Next:
+- Phase 6: 실사용자용 일정 목록/체크리스트 UI + 체크 조작 + notification scheduling
+- ChatGPT 개발 인수인계 문서: docs/HANDOFF_CHATGPT.md
+
+---
+
 ## 2026-08-31 - Phase 5: Android ↔ Firestore 수신 연동 (Firestore → Room → 체크리스트 파이프라인 통합, 단위 테스트 59/59)
 
 Completed:
