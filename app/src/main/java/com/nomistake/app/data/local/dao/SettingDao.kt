@@ -20,6 +20,9 @@ interface SettingDao {
     @Query("SELECT * FROM notification_rules ORDER BY id ASC")
     fun observeNotificationRules(): Flow<List<NotificationRuleEntity>>
 
+    @Query("SELECT * FROM notification_rules WHERE enabled = 1 ORDER BY id ASC")
+    suspend fun getEnabledNotificationRules(): List<NotificationRuleEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertNotificationRule(rule: NotificationRuleEntity): Long
 
