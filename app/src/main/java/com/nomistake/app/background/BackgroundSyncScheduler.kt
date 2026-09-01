@@ -47,10 +47,11 @@ object BackgroundSyncScheduler {
             )
             .build()
 
-        // 앱을 다시 열면 최신 일정 확인을 새로 요청하되, 주기 work 자체는 하나만 유지한다.
+        // Activity 재생성으로 실행 중인 즉시 sync를 취소/재시작하지 않는다.
+        // 기존 one-time work가 끝난 뒤 다음 앱 실행에서는 새 work가 다시 enqueue된다.
         workManager.enqueueUniqueWork(
             IMMEDIATE_WORK_NAME,
-            ExistingWorkPolicy.REPLACE,
+            ExistingWorkPolicy.KEEP,
             immediate
         )
     }
