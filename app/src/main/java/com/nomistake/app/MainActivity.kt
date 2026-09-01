@@ -24,6 +24,7 @@ import androidx.room.Room
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.nomistake.app.background.BackgroundSyncScheduler
 import com.nomistake.app.data.local.db.AppDatabase
 import com.nomistake.app.data.local.db.SeedData
 import com.nomistake.app.data.remote.FirebaseAuthManager
@@ -68,6 +69,10 @@ class MainActivity : ComponentActivity() {
         ) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+
+        // Phase 9: 앱 실행 시 즉시 sync를 요청하고 30분 unique periodic work를 유지한다.
+        // Worker 내부에서도 SeedData를 보장하므로 앱 시작 seed coroutine과 race가 나지 않는다.
+        BackgroundSyncScheduler.schedule(applicationContext)
 
         val notificationScheduler = NotificationAlarmScheduler(
             context = applicationContext,
