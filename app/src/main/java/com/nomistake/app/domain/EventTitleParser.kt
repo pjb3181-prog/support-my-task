@@ -10,7 +10,9 @@ package com.nomistake.app.domain
  * 4) cleanTitle: room tag와 마지막 attendeeCode를 제거한 나머지(앞뒤 공백 제거)
  * 5) scheduleType: cleanTitle에 대해서만 ScheduleTypeRule.keyword 매칭(priority 오름차순, 대소문자 무시)
  *    → 매칭 실패 시 "일반회의" fallback
- * 6) isTarget = isMine || (roomType != null)
+ * 6) isTarget = isMine
+ *    - `[대]`/`[세]`는 회의실 메타데이터 및 체크리스트 템플릿 선택에만 사용한다.
+ *    - 사용자는 회의실 관리자가 아니므로 room tag만으로 개인 대상 일정이 되지 않는다.
  */
 class EventTitleParser {
 
@@ -29,7 +31,7 @@ class EventTitleParser {
 
         val isMine = attendeeCode?.contains(MINE_MARKER) == true
         val scheduleType = matchScheduleType(cleanTitle, rules)
-        val isTarget = isMine || roomType != null
+        val isTarget = isMine
 
         return ParsedTitle(
             roomType = roomType,

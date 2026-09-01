@@ -1,6 +1,7 @@
 package com.nomistake.app.data.remote
 
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Source
 import com.nomistake.app.domain.CalendarSyncSource
 import com.nomistake.app.domain.SyncedEvent
 import kotlinx.coroutines.tasks.await
@@ -21,9 +22,11 @@ import java.time.temporal.ChronoUnit
  * - deleted(tombstone) 필터를 쿼리에 넣지 않는다: tombstone 문서를 읽어야 Room soft-delete로
  *   반영할 수 있기 때문이다. 이로써 복합 인덱스(단일 문서 수 기준 premature optimization)도 불필요하다.
  * - [to] 상한은 쿼리에 쓰지 않는다(PC Companion 업로드 window가 이미 상한 역할).
+ * - 서버 동기화는 반드시 `Source.SERVER`를 사용한다. 기본 `get()`의 cache fallback을 허용하면
+ *   오프라인 상태에서도 오래된 캐시를 최신 동기화 성공으로 오인하여 lastSuccessfulSyncAt이 갱신될 수 있다.
  *
  * 인증: Firebase Auth(Email/Password) 로그인 상태에서만 Security Rules가 read를 허용한다.
- * 실패 시 예외를 그대로 던져 호출자(DebugViewModel)가 상태를 표시하게 한다.
+ * 실패 시 예외를 그대로 던져 호출자(DebugViewModel/WorkManager)가 상태를 처리하게 한다.
  */
 class FirestoreCalendarSyncSource(
     private val db: FirebaseFirestore,
@@ -34,7 +37,7 @@ class FirestoreCalendarSyncSource(
         val fromIso = toLocalIso(from)
         val snapshot = db.collection(COLLECTION)
             .whereGreaterThanOrEqualTo(FIELD_START, fromIso)
-            .get()
+            .get(Source.SERVER)
             .await()
         return snapshot.documents.mapNotNull { doc ->
             val data = doc.data ?: return@mapNotNull null
