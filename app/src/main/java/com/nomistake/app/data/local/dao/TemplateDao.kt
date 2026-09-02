@@ -16,8 +16,8 @@ interface TemplateDao {
     @Query("SELECT * FROM checklist_templates ORDER BY kind, key")
     fun observeTemplates(): Flow<List<ChecklistTemplateEntity>>
 
-    @Query("SELECT * FROM checklist_templates WHERE kind = 'TYPE' ORDER BY name COLLATE NOCASE")
-    fun observeTypeTemplates(): Flow<List<ChecklistTemplateEntity>>
+    @Query("SELECT * FROM checklist_templates WHERE kind = :kind ORDER BY name COLLATE NOCASE")
+    fun observeTemplatesByKind(kind: TemplateKind): Flow<List<ChecklistTemplateEntity>>
 
     @Query("SELECT * FROM checklist_templates WHERE kind = :kind AND key = :key LIMIT 1")
     suspend fun getTemplate(kind: TemplateKind, key: String): ChecklistTemplateEntity?
