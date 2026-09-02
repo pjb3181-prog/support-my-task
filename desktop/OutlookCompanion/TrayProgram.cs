@@ -51,6 +51,10 @@ namespace OutlookCompanion
             failed += Assert(ActiveHours.IsAutomaticSyncAllowed(new DateTime(2026, 9, 2, 8, 0, 0)), "08:00 allowed");
             failed += Assert(ActiveHours.IsAutomaticSyncAllowed(new DateTime(2026, 9, 2, 23, 59, 59)), "23:59 allowed");
 
+            SyncGroup g1 = SyncSchedule.AssignedGroupForSourcePc("pc-test-alpha");
+            SyncGroup g2 = SyncSchedule.AssignedGroupForSourcePc("pc-test-alpha");
+            failed += Assert(g1 == g2, "same sourcePc -> same permanent group");
+
             failed += Assert(
                 SyncSchedule.NextSlot(new DateTime(2026, 9, 2, 7, 30, 0), SyncGroup.EvenHours) == new DateTime(2026, 9, 2, 8, 0, 0),
                 "A before active -> 08:00");
@@ -89,31 +93,20 @@ namespace OutlookCompanion
         private readonly NotifyIcon _notifyIcon;
         private readonly ToolStripMenuItem _statusItem;
         private readonly ToolStripMenuItem _startupItem;
-        private readonly ToolStripMenuItem _groupAItem;
-        private readonly ToolStripMenuItem _groupBItem;
         private readonly System.Windows.Forms.Timer _timer;
         private int _syncRunning;
         private DateTime? _lastSuccess;
         private DateTime _nextAutomatic;
-        private SyncGroup _syncGroup;
+        private readonly SyncGroup _syncGroup;
         private bool _exiting;
 
         public TrayContext()
         {
-            _syncGroup = SyncSchedule.LoadGroup();
+            _syncGroup = SyncSchedule.AssignedGroup();
 
             _statusItem = new ToolStripMenuItem("시작 중...") { Enabled = false };
             ToolStripMenuItem syncNow = new ToolStripMenuItem("지금 동기화");
             syncNow.Click += async (_, __) => await RunSyncAsync(manual: true);
-
-            ToolStripMenuItem groupMenu = new ToolStripMenuItem("동기화 그룹");
-            _groupAItem = new ToolStripMenuItem("A · 짝수시 (08,10,...,22)") { CheckOnClick = true };
-            _groupBItem = new ToolStripMenuItem("B · 홀수시 (09,11,...,23)") { CheckOnClick = true };
-            _groupAItem.Click += (_, __) => SetSyncGroup(SyncGroup.EvenHours);
-            _groupBItem.Click += (_, __) => SetSyncGroup(SyncGroup.OddHours);
-            groupMenu.DropDownItems.Add(_groupAItem);
-            groupMenu.DropDownItems.Add(_groupBItem);
-            RefreshGroupChecks();
 
             _startupItem = new ToolStripMenuItem("Windows 시작 시 자동 실행") { CheckOnClick = true };
             _startupItem.Checked = StartupRegistration.IsEnabled();
@@ -126,7 +119,6 @@ namespace OutlookCompanion
             menu.Items.Add(_statusItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(syncNow);
-            menu.Items.Add(groupMenu);
             menu.Items.Add(_startupItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(exit);
@@ -230,22 +222,6 @@ namespace OutlookCompanion
             if (child == null) return 92;
             await child.WaitForExitAsync();
             return child.ExitCode;
-        }
-
-        private void SetSyncGroup(SyncGroup group)
-        {
-            _syncGroup = group;
-            SyncSchedule.SaveGroup(group);
-            RefreshGroupChecks();
-            _nextAutomatic = SyncSchedule.NextSlot(DateTime.Now.AddSeconds(1), _syncGroup);
-            ArmTimer();
-            RefreshStatus("대기");
-        }
-
-        private void RefreshGroupChecks()
-        {
-            _groupAItem.Checked = _syncGroup == SyncGroup.EvenHours;
-            _groupBItem.Checked = _syncGroup == SyncGroup.OddHours;
         }
 
         private void ArmTimer()
