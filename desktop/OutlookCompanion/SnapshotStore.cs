@@ -35,13 +35,13 @@ namespace OutlookCompanion
         public List<EventRecord> Events = new List<EventRecord>();
     }
 
-    // 운영 설정 기본값(Phase 4B) - 상수 하드코딩이 아니라 실행 인자로 override 가능하게 분리.
+    // 운영 설정 기본값 - CLI polling은 2시간. Tray는 SyncSchedule의 A/B 시각 슬롯을 사용한다.
     public static class AppSettings
     {
-        public const int DefaultPollMinutes = 60;     // production 기본 polling 간격
-        public const int DefaultWindowPastDays = 1;   // 조회 window: 과거 1일
-        public const int DefaultWindowFutureDays = 30; // 조회 window: 미래 30일
-        public const int DefaultScanCap = 2000;       // occurrence 열거 안전 상한(IncludeRecurrences Count는 신뢰 불가)
+        public const int DefaultPollMinutes = 120;
+        public const int DefaultWindowPastDays = 1;
+        public const int DefaultWindowFutureDays = 30;
+        public const int DefaultScanCap = 2000;
     }
 
     public static class SnapshotStore
@@ -64,8 +64,6 @@ namespace OutlookCompanion
         public static string FolderIdPath { get { return Path.Combine(AppDataDir, "meri-folder.txt"); } }
         public static string SnapshotPath { get { return Path.Combine(AppDataDir, "meri-snapshot.txt"); } }
 
-        // ===== MERI Folder ID =====
-
         public static void SaveFolderId(FolderIdInfo info)
         {
             EnsureDir();
@@ -83,45 +81,50 @@ namespace OutlookCompanion
             try
             {
                 if (!File.Exists(FolderIdPath)) return null;
-                Dictionary<string, string> kv = ParseKeyValueFile(FolderIdPath);
-                FolderIdInfo info = new FolderIdInfo();
-                Get(kv, "entryId", ref info.EntryId);
-                Get(kv, "storeId", ref info.StoreId);
-                Get(kv, "folderName", ref info.FolderName);
-                Get(kv, "savedAt", ref info.SavedAtIso);
-                if (info.EntryId.Length == 0 || info.StoreId.Length == 0) return null;
-                return info;
+                string[] lines = File.ReadAllLines(FolderIdPath, Encoding.UTF8);
+                FolderIdInfo x = new FolderIdInfo();
+                foreach (string raw in lines)
+                {
+                    string line = raw ?? "";
+                    int eq = line.IndexOf('=');
+                    if (eq <= 0) continue;
+                    string k = line.Substring(0, eq);
+                    string v = Unescape(line.Substring(eq + 1));
+                    if (k == "entryId") x.EntryId = v;
+                    else if (k == "storeId") x.StoreId = v;
+                    else if (k == "folderName") x.FolderName = v;
+                    else if (k == "savedAt") x.SavedAtIso = v;
+                }
+                return x.EntryId.Length > 0 && x.StoreId.Length > 0 ? x : null;
             }
             catch { return null; }
         }
 
-        // ===== snapshot =====
-
-        public static void SaveSnapshot(SnapshotData snap)
+        public static void SaveSnapshot(SnapshotData data)
         {
             EnsureDir();
             StringBuilder sb = new StringBuilder();
             sb.Append("V1").AppendLine();
-            sb.Append("savedAt=").Append(Escape(snap.SavedAtIso)).AppendLine();
-            sb.Append("windowPastDays=").Append(snap.WindowPastDays.ToString(CultureInfo.InvariantCulture)).AppendLine();
-            sb.Append("windowFutureDays=").Append(snap.WindowFutureDays.ToString(CultureInfo.InvariantCulture)).AppendLine();
-            sb.Append("windowStart=").Append(Escape(snap.WindowStartIso)).AppendLine();
-            sb.Append("windowEnd=").Append(Escape(snap.WindowEndIso)).AppendLine();
-            sb.Append("pollSeq=").Append(snap.PollSeq.ToString(CultureInfo.InvariantCulture)).AppendLine();
-            foreach (EventRecord e in snap.Events)
+            sb.Append("savedAt=").Append(Escape(data.SavedAtIso)).AppendLine();
+            sb.Append("windowPastDays=").Append(data.WindowPastDays.ToString(CultureInfo.InvariantCulture)).AppendLine();
+            sb.Append("windowFutureDays=").Append(data.WindowFutureDays.ToString(CultureInfo.InvariantCulture)).AppendLine();
+            sb.Append("windowStart=").Append(Escape(data.WindowStartIso)).AppendLine();
+            sb.Append("windowEnd=").Append(Escape(data.WindowEndIso)).AppendLine();
+            sb.Append("pollSeq=").Append(data.PollSeq.ToString(CultureInfo.InvariantCulture)).AppendLine();
+            foreach (EventRecord e in data.Events)
             {
                 sb.Append("---").AppendLine();
                 sb.Append("seriesKey=").Append(Escape(e.SeriesKey)).AppendLine();
                 sb.Append("occurrenceKey=").Append(Escape(e.OccurrenceKey)).AppendLine();
-                sb.Append("entryId=").Append(Escape(e.SourceEntryId)).AppendLine();
+                sb.Append("subject=").Append(Escape(e.Subject)).AppendLine();
                 sb.Append("start=").Append(Escape(e.StartIso)).AppendLine();
                 sb.Append("end=").Append(Escape(e.EndIso)).AppendLine();
-                sb.Append("subject=").Append(Escape(e.Subject)).AppendLine();
-                sb.Append("location=").Append(Escape(e.Location)).AppendLine();
                 sb.Append("allDay=").Append(e.AllDayEvent ? "1" : "0").AppendLine();
+                sb.Append("location=").Append(Escape(e.Location)).AppendLine();
                 sb.Append("lastMod=").Append(Escape(e.LastModIso)).AppendLine();
+                sb.Append("sourceEntryId=").Append(Escape(e.SourceEntryId)).AppendLine();
                 sb.Append("isRecurring=").Append(e.IsRecurring ? "1" : "0").AppendLine();
-                sb.Append("recState=").Append(e.RecurrenceState.ToString(CultureInfo.InvariantCulture)).AppendLine();
+                sb.Append("recurrenceState=").Append(e.RecurrenceState.ToString(CultureInfo.InvariantCulture)).AppendLine();
             }
             File.WriteAllText(SnapshotPath, sb.ToString(), Encoding.UTF8);
         }
@@ -131,119 +134,74 @@ namespace OutlookCompanion
             try
             {
                 if (!File.Exists(SnapshotPath)) return null;
-                SnapshotData snap = new SnapshotData();
-                EventRecord cur = null;
                 string[] lines = File.ReadAllLines(SnapshotPath, Encoding.UTF8);
-                foreach (string rawLine in lines)
+                SnapshotData d = new SnapshotData();
+                EventRecord cur = null;
+                foreach (string raw in lines)
                 {
-                    string line = rawLine ?? "";
+                    string line = raw ?? "";
                     if (line == "---")
                     {
-                        if (cur != null && cur.OccurrenceKey.Length > 0) snap.Events.Add(cur);
+                        if (cur != null) d.Events.Add(cur);
                         cur = new EventRecord();
                         continue;
                     }
                     int eq = line.IndexOf('=');
                     if (eq <= 0) continue;
-                    string key = line.Substring(0, eq);
-                    string val = Unescape(line.Substring(eq + 1));
-
+                    string k = line.Substring(0, eq);
+                    string v = Unescape(line.Substring(eq + 1));
                     if (cur == null)
                     {
-                        if (key == "savedAt") snap.SavedAtIso = val;
-                        else if (key == "windowPastDays") snap.WindowPastDays = ParseInt(val);
-                        else if (key == "windowFutureDays") snap.WindowFutureDays = ParseInt(val);
-                        else if (key == "windowStart") snap.WindowStartIso = val;
-                        else if (key == "windowEnd") snap.WindowEndIso = val;
-                        else if (key == "pollSeq") snap.PollSeq = ParseInt(val);
+                        if (k == "savedAt") d.SavedAtIso = v;
+                        else if (k == "windowPastDays") int.TryParse(v, out d.WindowPastDays);
+                        else if (k == "windowFutureDays") int.TryParse(v, out d.WindowFutureDays);
+                        else if (k == "windowStart") d.WindowStartIso = v;
+                        else if (k == "windowEnd") d.WindowEndIso = v;
+                        else if (k == "pollSeq") int.TryParse(v, out d.PollSeq);
                     }
                     else
                     {
-                        if (key == "seriesKey") cur.SeriesKey = val;
-                        else if (key == "occurrenceKey") cur.OccurrenceKey = val;
-                        else if (key == "entryId") cur.SourceEntryId = val;
-                        else if (key == "start") cur.StartIso = val;
-                        else if (key == "end") cur.EndIso = val;
-                        else if (key == "subject") cur.Subject = val;
-                        else if (key == "location") cur.Location = val;
-                        else if (key == "allDay") cur.AllDayEvent = (val == "1");
-                        else if (key == "lastMod") cur.LastModIso = val;
-                        else if (key == "isRecurring") cur.IsRecurring = (val == "1");
-                        else if (key == "recState") cur.RecurrenceState = ParseInt(val);
+                        if (k == "seriesKey") cur.SeriesKey = v;
+                        else if (k == "occurrenceKey") cur.OccurrenceKey = v;
+                        else if (k == "subject") cur.Subject = v;
+                        else if (k == "start") cur.StartIso = v;
+                        else if (k == "end") cur.EndIso = v;
+                        else if (k == "allDay") cur.AllDayEvent = v == "1";
+                        else if (k == "location") cur.Location = v;
+                        else if (k == "lastMod") cur.LastModIso = v;
+                        else if (k == "sourceEntryId") cur.SourceEntryId = v;
+                        else if (k == "isRecurring") cur.IsRecurring = v == "1";
+                        else if (k == "recurrenceState") int.TryParse(v, out cur.RecurrenceState);
                     }
                 }
-                if (cur != null && cur.OccurrenceKey.Length > 0) snap.Events.Add(cur);
-                return snap;
+                if (cur != null) d.Events.Add(cur);
+                return d;
             }
             catch { return null; }
         }
 
-        // ===== 내부 =====
+        private static void EnsureDir() { Directory.CreateDirectory(AppDataDir); }
 
-        private static void EnsureDir()
-        {
-            if (!Directory.Exists(AppDataDir)) Directory.CreateDirectory(AppDataDir);
-        }
-
-        private static Dictionary<string, string> ParseKeyValueFile(string path)
-        {
-            Dictionary<string, string> kv = new Dictionary<string, string>(StringComparer.Ordinal);
-            string[] lines = File.ReadAllLines(path, Encoding.UTF8);
-            foreach (string rawLine in lines)
-            {
-                string line = rawLine ?? "";
-                if (line == "---") continue;
-                int eq = line.IndexOf('=');
-                if (eq <= 0) continue;
-                kv[line.Substring(0, eq)] = Unescape(line.Substring(eq + 1));
-            }
-            return kv;
-        }
-
-        private static void Get(Dictionary<string, string> kv, string key, ref string target)
-        {
-            string v;
-            if (kv.TryGetValue(key, out v)) target = v;
-        }
-
-        private static int ParseInt(string s)
-        {
-            int v;
-            if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out v)) return v;
-            return 0;
-        }
-
-        // 값 escape: 역슬래시/개행/복귀(라인 포맷 파싱 안전성).
         public static string Escape(string s)
         {
             if (s == null) return "";
-            StringBuilder sb = new StringBuilder(s.Length + 8);
-            foreach (char c in s)
-            {
-                if (c == '\\') sb.Append("\\\\");
-                else if (c == '\n') sb.Append("\\n");
-                else if (c == '\r') sb.Append("\\r");
-                else sb.Append(c);
-            }
-            return sb.ToString();
+            return s.Replace("\\", "\\\\").Replace("\r", "\\r").Replace("\n", "\\n");
         }
 
         public static string Unescape(string s)
         {
-            if (s == null || s.IndexOf('\\') < 0) return s ?? "";
-            StringBuilder sb = new StringBuilder(s.Length);
+            if (s == null) return "";
+            StringBuilder sb = new StringBuilder();
             for (int i = 0; i < s.Length; i++)
             {
-                char c = s[i];
-                if (c == '\\' && i + 1 < s.Length)
+                if (s[i] == '\\' && i + 1 < s.Length)
                 {
-                    char n = s[i + 1];
-                    if (n == '\\') { sb.Append('\\'); i++; }
-                    else if (n == 'n') { sb.Append('\n'); i++; }
-                    else if (n == 'r') { sb.Append('\r'); i++; }
-                    else sb.Append(c);
+                    char n = s[++i];
+                    if (n == 'n') sb.Append('\n');
+                    else if (n == 'r') sb.Append('\r');
+                    else sb.Append(n);
                 }
-                else sb.Append(c);
+                else sb.Append(s[i]);
             }
             return sb.ToString();
         }
