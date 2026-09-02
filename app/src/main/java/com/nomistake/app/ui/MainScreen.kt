@@ -1,5 +1,6 @@
 package com.nomistake.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -13,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -143,11 +145,44 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
     val checklistItems by viewModel.checklistItems.collectAsState()
     val current = event ?: return
     var newItemText by remember(current.id) { mutableStateOf("") }
+    var showLeaveDialog by remember(current.id) { mutableStateOf(false) }
 
-    fun addCurrentItem() {
-        if (newItemText.isBlank()) return
+    fun addCurrentItem(): Boolean {
+        if (newItemText.isBlank()) return false
         viewModel.addEventOnlyItem(newItemText)
         newItemText = ""
+        return true
+    }
+
+    fun requestBack() {
+        if (newItemText.isNotBlank()) showLeaveDialog = true else viewModel.closeEvent()
+    }
+
+    BackHandler { requestBack() }
+
+    if (showLeaveDialog) {
+        AlertDialog(
+            onDismissRequest = { showLeaveDialog = false },
+            title = { Text("작성 중인 내용이 있습니다") },
+            text = { Text("새 체크 항목을 저장하고 목록으로 이동할까요?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    addCurrentItem()
+                    showLeaveDialog = false
+                    viewModel.closeEvent()
+                }) { Text("저장 후 이동") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { showLeaveDialog = false }) { Text("취소") }
+                    TextButton(onClick = {
+                        newItemText = ""
+                        showLeaveDialog = false
+                        viewModel.closeEvent()
+                    }) { Text("저장 안 함") }
+                }
+            }
+        )
     }
 
     Scaffold(
@@ -156,7 +191,7 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = viewModel::closeEvent) { Text("← 목록") }
+                TextButton(onClick = ::requestBack) { Text("← 목록") }
                 Text("업무 체크", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             }
         }
