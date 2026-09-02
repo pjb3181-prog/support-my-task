@@ -9,6 +9,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.nomistake.app.data.local.db.AppDatabase
 import com.nomistake.app.data.local.db.SeedData
+import com.nomistake.app.data.remote.FirebaseAuthManager
 import com.nomistake.app.data.remote.FirestoreCalendarSyncSource
 import com.nomistake.app.data.repository.CalendarSyncRepository
 import com.nomistake.app.data.repository.ChecklistRepository
@@ -35,10 +36,13 @@ class BackgroundSyncWorker(
 
         val firebaseApp = FirebaseApp.getApps(applicationContext).firstOrNull()
             ?: FirebaseApp.initializeApp(applicationContext)
-            ?: return Result.success()
+            ?: return Result.retry()
 
-        if (FirebaseAuth.getInstance(firebaseApp).currentUser == null) {
-            return Result.success()
+        val auth = FirebaseAuthManager(FirebaseAuth.getInstance(firebaseApp))
+        try {
+            auth.ensureAnonymousSignIn()
+        } catch (_: Exception) {
+            return Result.retry()
         }
 
         val db = Room.databaseBuilder(
