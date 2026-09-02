@@ -37,7 +37,7 @@ class SettingsViewModel(
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val typeTemplates: StateFlow<List<ChecklistTemplateEntity>> =
-        templateDao.observeTypeTemplates()
+        templateDao.observeTemplatesByKind(TemplateKind.TYPE)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val firebaseAvailable: Boolean
@@ -116,11 +116,6 @@ class SettingsViewModel(
         }
     }
 
-    /**
-     * 사용자 정의 업무유형을 추가한다.
-     * 제목 키워드 → scheduleType 규칙과 TYPE checklist template을 함께 만든다.
-     * 체크항목은 한 줄에 하나씩 입력한다.
-     */
     fun addTaskType(nameInput: String, keywordInput: String, checklistInput: String) {
         val name = nameInput.trim()
         val keyword = keywordInput.trim()
