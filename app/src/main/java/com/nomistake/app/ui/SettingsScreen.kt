@@ -30,7 +30,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.nomistake.app.data.local.entity.NotificationRuleEntity
 import com.nomistake.app.data.local.entity.RuleAppliesTo
@@ -42,6 +41,7 @@ fun SettingsScreen(
 ) {
     val rules by viewModel.notificationRules.collectAsState()
     val taskTypes by viewModel.typeTemplates.collectAsState()
+    var displayNameInput by remember(viewModel.displayName) { mutableStateOf(viewModel.displayName) }
     var markerInput by remember(viewModel.mineMarker) { mutableStateOf(viewModel.mineMarker) }
     var typeName by remember { mutableStateOf("") }
     var keyword by remember { mutableStateOf("") }
@@ -63,56 +63,24 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             item {
-                Text("계정", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                if (!viewModel.firebaseAvailable) {
-                    Text("이 빌드에는 Firebase 연결 설정이 없습니다.", style = MaterialTheme.typography.bodySmall)
-                } else if (viewModel.signedInAs != null) {
-                    Text("로그인: ${viewModel.signedInAs}", style = MaterialTheme.typography.bodyMedium)
-                    Text("계정은 일정 읽기 권한에만 사용하며 비밀번호를 앱에 저장하지 않습니다.", style = MaterialTheme.typography.bodySmall)
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(onClick = viewModel::signOut) { Text("로그아웃") }
-                    }
-                } else {
-                    Text("사내 파일럿용으로 발급받은 계정으로 로그인하세요.", style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = viewModel.emailInput,
-                        onValueChange = { viewModel.emailInput = it },
-                        label = { Text("이메일") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = viewModel.passwordInput,
-                        onValueChange = { viewModel.passwordInput = it },
-                        label = { Text("비밀번호") },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        Button(
-                            onClick = viewModel::signIn,
-                            enabled = viewModel.emailInput.isNotBlank() && viewModel.passwordInput.isNotEmpty()
-                        ) { Text("로그인") }
-                    }
-                }
+                Text("내 사용자 설정", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    "Firebase 로그인은 앱이 자동으로 처리합니다. 여기서는 표시할 사용자명과 일정 제목의 마지막 [참석자코드]에서 찾을 내 식별문자만 설정합니다.",
+                    style = MaterialTheme.typography.bodySmall
+                )
                 viewModel.status?.let {
                     Spacer(Modifier.height(8.dp))
                     Text(it, style = MaterialTheme.typography.bodyMedium)
                 }
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider()
-            }
-
-            item {
-                Text("내 일정", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text(
-                    "일정 제목의 마지막 [참석자코드] 안에서 내 식별문자를 찾습니다. 사람마다 자기 값을 설정하면 됩니다.",
-                    style = MaterialTheme.typography.bodySmall
-                )
                 Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = displayNameInput,
+                    onValueChange = { displayNameInput = it },
+                    label = { Text("사용자명") },
+                    placeholder = { Text("예: 박종범") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 OutlinedTextField(
                     value = markerInput,
                     onValueChange = { markerInput = it },
@@ -123,8 +91,9 @@ fun SettingsScreen(
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     Button(
-                        onClick = { viewModel.saveMineMarker(markerInput) },
-                        enabled = markerInput.trim().isNotEmpty() && markerInput.trim() != viewModel.mineMarker
+                        onClick = { viewModel.saveProfile(displayNameInput, markerInput) },
+                        enabled = displayNameInput.trim().isNotEmpty() && markerInput.trim().isNotEmpty() &&
+                            (displayNameInput.trim() != viewModel.displayName || markerInput.trim() != viewModel.mineMarker)
                     ) { Text("저장") }
                 }
                 Spacer(Modifier.height(12.dp))
