@@ -19,10 +19,25 @@ class FirebaseAuthManager(private val auth: FirebaseAuth) {
     val currentUid: String?
         get() = auth.currentUser?.uid
 
-    /** Existing anonymous session is reused; otherwise create one. */
+    /**
+     * Reuse an existing anonymous session. Legacy non-anonymous pilot sessions are signed out once,
+     * then replaced by an anonymous session so normal users never need credentials.
+     *
+     * @return true when a new anonymous session was created, false when an existing anonymous
+     * session was already active.
+     */
     suspend fun ensureAnonymousSignIn(): Boolean {
-        if (auth.currentUser != null) return false
+        val current = auth.currentUser
+        if (current?.isAnonymous == true) return false
+
+        if (current != null) {
+            auth.signOut()
+        }
+
         auth.signInAnonymously().await()
+        check(auth.currentUser?.isAnonymous == true) {
+            "Firebase anonymous authentication did not produce an anonymous user"
+        }
         return true
     }
 
