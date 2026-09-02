@@ -119,7 +119,6 @@ class MainActivity : ComponentActivity() {
                         settingDao = db.settingDao(),
                         templateDao = db.templateDao(),
                         notificationScheduler = notificationScheduler,
-                        firebaseAuthManager = firebaseAuthManager,
                         requestImmediateSync = {
                             BackgroundSyncScheduler.requestImmediate(applicationContext)
                         }
