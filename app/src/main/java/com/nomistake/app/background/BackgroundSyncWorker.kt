@@ -1,11 +1,13 @@
 package com.nomistake.app.background
 
 import android.content.Context
+import android.util.Log
 import androidx.room.Room
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.firestore.FirebaseFirestore
 import com.nomistake.app.data.local.db.AppDatabase
 import com.nomistake.app.data.local.db.SeedData
@@ -41,7 +43,9 @@ class BackgroundSyncWorker(
         val auth = FirebaseAuthManager(FirebaseAuth.getInstance(firebaseApp))
         try {
             auth.ensureAnonymousSignIn()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            val authCode = (e as? FirebaseAuthException)?.errorCode ?: e::class.java.simpleName
+            Log.w(TAG, "Anonymous Firebase auth failed: $authCode")
             return Result.retry()
         }
 
@@ -78,7 +82,8 @@ class BackgroundSyncWorker(
             ).rescheduleAll()
 
             Result.success()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "Background sync failed: ${e::class.java.simpleName}")
             Result.retry()
         } finally {
             db.close()
@@ -86,6 +91,7 @@ class BackgroundSyncWorker(
     }
 
     companion object {
+        private const val TAG = "NoMistakeSync"
         const val SYNC_PAST_DAYS = 7L
         const val SYNC_FUTURE_DAYS = 90L
     }
