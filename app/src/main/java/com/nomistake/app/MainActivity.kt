@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
@@ -88,6 +89,13 @@ class MainActivity : ComponentActivity() {
 
         val firebaseReady = FirebaseApp.getApps(applicationContext).isNotEmpty()
         val firebaseAuthManager = if (firebaseReady) FirebaseAuthManager(FirebaseAuth.getInstance()) else null
+        if (firebaseAuthManager != null) {
+            lifecycleScope.launch {
+                runCatching { firebaseAuthManager.ensureAnonymousSignIn() }
+                    .onSuccess { BackgroundSyncScheduler.requestImmediate(applicationContext) }
+            }
+        }
+
         val syncRepository = if (firebaseReady) {
             CalendarSyncRepository(
                 syncSource = FirestoreCalendarSyncSource(FirebaseFirestore.getInstance()),
@@ -127,6 +135,11 @@ class MainActivity : ComponentActivity() {
 
                 var showDebug by rememberSaveable { mutableStateOf(false) }
                 var showSettings by rememberSaveable { mutableStateOf(false) }
+
+                BackHandler(enabled = showDebug) {
+                    showDebug = false
+                }
+
                 LaunchedEffect(requestedEventId) {
                     requestedEventId?.let { eventId ->
                         showDebug = false
