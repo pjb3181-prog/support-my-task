@@ -18,10 +18,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.Instant
 
-/**
- * 실사용 UI용 ViewModel.
- * Room을 화면의 source of truth로 유지하고, 네트워크/Firebase SDK를 직접 참조하지 않는다.
- */
 @OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModel(
     private val eventDao: EventDao,
@@ -34,9 +30,7 @@ class MainViewModel(
     private val selectedEventId = MutableStateFlow<Long?>(null)
 
     val selectedEvent: StateFlow<EventEntity?> = selectedEventId
-        .flatMapLatest { id ->
-            if (id == null) flowOf(null) else eventDao.observeById(id)
-        }
+        .flatMapLatest { id -> if (id == null) flowOf(null) else eventDao.observeById(id) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val checklist: StateFlow<ChecklistEntity?> = selectedEventId
@@ -51,12 +45,31 @@ class MainViewModel(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    fun openEvent(eventId: Long) {
-        selectedEventId.value = eventId
+    fun openEvent(eventId: Long) { selectedEventId.value = eventId }
+    fun closeEvent() { selectedEventId.value = null }
+
+    /** 관리자/책임자용 업무 단위 완료. 세부항목 상태와 독립적이다. */
+    fun setTaskCompleted(completed: Boolean) {
+        viewModelScope.launch {
+            val current = checklist.value ?: return@launch
+            checklistDao.setChecklistCompleted(
+                checklistId = current.id,
+                completed = completed,
+                completedAt = if (completed) Instant.now() else null
+            )
+        }
     }
 
-    fun closeEvent() {
-        selectedEventId.value = null
+    /** 실무자용 세부항목 일괄 처리. */
+    fun setAllDetailItemsCompleted(completed: Boolean) {
+        viewModelScope.launch {
+            val current = checklist.value ?: return@launch
+            checklistDao.setAllItemsCompleted(
+                checklistId = current.id,
+                completed = completed,
+                completedAt = if (completed) Instant.now() else null
+            )
+        }
     }
 
     fun setCompleted(item: ChecklistItemEntity, completed: Boolean) {
@@ -69,10 +82,6 @@ class MainViewModel(
         }
     }
 
-    /**
-     * Phase 6B: 현재 일정에만 적용되는 EVENT_ONLY 항목을 추가한다.
-     * 템플릿에는 반영하지 않으며, sync가 다시 실행돼도 기존 checklist가 재생성되지 않으므로 보존된다.
-     */
     fun addEventOnlyItem(text: String) {
         val normalized = text.trim()
         if (normalized.isEmpty()) return
@@ -92,14 +101,8 @@ class MainViewModel(
         }
     }
 
-    /**
-     * Phase 6B: 사용자가 직접 추가한 EVENT_ONLY 항목만 삭제한다.
-     * TEMPLATE_COPY 삭제는 템플릿 의미와 혼동될 수 있어 이번 Phase에서는 허용하지 않는다.
-     */
     fun deleteEventOnlyItem(item: ChecklistItemEntity) {
         if (item.origin != ItemOrigin.EVENT_ONLY) return
-        viewModelScope.launch {
-            checklistDao.deleteItem(item.id)
-        }
+        viewModelScope.launch { checklistDao.deleteItem(item.id) }
     }
 }
