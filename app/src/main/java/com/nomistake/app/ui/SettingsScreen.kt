@@ -67,6 +67,10 @@ fun SettingsScreen(
                     "일정 제목의 마지막 [참석자코드] 안에서 내 식별문자를 찾습니다. 사람마다 자기 값을 설정하면 됩니다.",
                     style = MaterialTheme.typography.bodySmall
                 )
+                viewModel.status?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, style = MaterialTheme.typography.bodyMedium)
+                }
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = markerInput,
@@ -124,12 +128,7 @@ fun SettingsScreen(
                 )
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     Button(
-                        onClick = {
-                            viewModel.addTaskType(typeName, keyword, checklistText)
-                            typeName = ""
-                            keyword = ""
-                            checklistText = ""
-                        },
+                        onClick = { viewModel.addTaskType(typeName, keyword, checklistText) },
                         enabled = typeName.isNotBlank() && keyword.isNotBlank() && checklistText.isNotBlank()
                     ) { Text("업무유형 추가") }
                 }
@@ -140,10 +139,6 @@ fun SettingsScreen(
             item {
                 Text("알림 규칙", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 Text("변경하면 현재 일정 기준으로 알람을 즉시 다시 등록합니다.", style = MaterialTheme.typography.bodySmall)
-                viewModel.status?.let {
-                    Spacer(Modifier.height(8.dp))
-                    Text(it, style = MaterialTheme.typography.bodyMedium)
-                }
                 Spacer(Modifier.height(8.dp))
             }
 
