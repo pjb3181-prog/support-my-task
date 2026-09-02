@@ -9,8 +9,8 @@
     커밋하지 않는다.
 
     TrayProgram이 실제 entry point다.
-    - 인자 없이 실행 / --tray: console 없는 NotifyIcon tray app
-    - 기존 --test/--upload/--once/... 인자: 기존 Program.Main으로 위임하여 CLI 호환 유지
+    - 인자 없이 실행 또는 tray 인자: console 없는 NotifyIcon tray app
+    - 기존 test/upload/once 등 CLI 인자: 기존 Program.Main으로 위임하여 호환 유지
   -->
 
   <PropertyGroup>
