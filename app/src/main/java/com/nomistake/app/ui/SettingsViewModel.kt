@@ -13,7 +13,6 @@ import com.nomistake.app.data.local.entity.ScheduleTypeRuleEntity
 import com.nomistake.app.data.local.entity.SettingEntity
 import com.nomistake.app.data.local.entity.TemplateItemEntity
 import com.nomistake.app.data.local.entity.TemplateKind
-import com.nomistake.app.data.remote.FirebaseAuthManager
 import com.nomistake.app.data.repository.CalendarSyncRepository
 import com.nomistake.app.domain.EventTitleParser
 import com.nomistake.app.notification.NotificationAlarmScheduler
@@ -28,7 +27,6 @@ class SettingsViewModel(
     private val settingDao: SettingDao,
     private val templateDao: TemplateDao,
     private val notificationScheduler: NotificationAlarmScheduler,
-    private val firebaseAuthManager: FirebaseAuthManager?,
     private val requestImmediateSync: () -> Unit
 ) : ViewModel() {
 
@@ -40,14 +38,8 @@ class SettingsViewModel(
         templateDao.observeTemplatesByKind(TemplateKind.TYPE)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    val firebaseAvailable: Boolean
-        get() = firebaseAuthManager != null
-
-    var signedInAs by mutableStateOf(firebaseAuthManager?.currentEmail)
+    var displayName by mutableStateOf("")
         private set
-
-    var emailInput by mutableStateOf("")
-    var passwordInput by mutableStateOf("")
 
     var mineMarker by mutableStateOf(EventTitleParser.DEFAULT_MINE_MARKER)
         private set
@@ -57,6 +49,7 @@ class SettingsViewModel(
 
     init {
         viewModelScope.launch {
+            displayName = settingDao.get(KEY_DISPLAY_NAME)?.value.orEmpty().trim()
             mineMarker = settingDao.get(CalendarSyncRepository.KEY_MINE_MARKER)?.value
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
@@ -64,41 +57,13 @@ class SettingsViewModel(
         }
     }
 
-    fun signIn() {
-        val auth = firebaseAuthManager ?: run {
-            status = "이 빌드에는 Firebase 설정이 없습니다."
+    fun saveProfile(nameInput: String, markerInput: String) {
+        val name = nameInput.trim()
+        val marker = markerInput.trim()
+        if (name.isEmpty()) {
+            status = "사용자명을 입력하세요."
             return
         }
-        val email = emailInput.trim()
-        val password = passwordInput
-        if (email.isEmpty() || password.isEmpty()) {
-            status = "이메일과 비밀번호를 입력하세요."
-            return
-        }
-
-        viewModelScope.launch {
-            try {
-                auth.signIn(email, password)
-                signedInAs = auth.currentEmail
-                passwordInput = ""
-                requestImmediateSync()
-                status = "로그인 완료 · 일정 동기화 요청"
-            } catch (e: Exception) {
-                passwordInput = ""
-                status = "로그인 실패: ${e.message ?: e::class.java.simpleName}"
-            }
-        }
-    }
-
-    fun signOut() {
-        firebaseAuthManager?.signOut()
-        signedInAs = null
-        passwordInput = ""
-        status = "로그아웃했습니다. 기기에 저장된 기존 체크 상태는 유지됩니다."
-    }
-
-    fun saveMineMarker(input: String) {
-        val marker = input.trim()
         if (marker.isEmpty()) {
             status = "내 일정 식별문자는 비워둘 수 없습니다."
             return
@@ -109,10 +74,12 @@ class SettingsViewModel(
         }
 
         viewModelScope.launch {
+            settingDao.put(SettingEntity(KEY_DISPLAY_NAME, name))
             settingDao.put(SettingEntity(CalendarSyncRepository.KEY_MINE_MARKER, marker))
+            displayName = name
             mineMarker = marker
             requestImmediateSync()
-            status = "내 일정 식별문자 '$marker' 저장 · 일정 재분류 동기화 요청"
+            status = "사용자 설정 저장 · 일정 재분류 동기화 요청"
         }
     }
 
@@ -219,6 +186,7 @@ class SettingsViewModel(
     }
 
     companion object {
+        const val KEY_DISPLAY_NAME = "pilotDisplayName"
         private val HH_MM = DateTimeFormatter.ofPattern("HH:mm")
     }
 }
