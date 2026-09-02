@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -24,6 +25,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.room.Room
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.firestore.FirebaseFirestore
 import com.nomistake.app.background.BackgroundSyncScheduler
 import com.nomistake.app.data.local.db.AppDatabase
@@ -91,8 +93,13 @@ class MainActivity : ComponentActivity() {
         val firebaseAuthManager = if (firebaseReady) FirebaseAuthManager(FirebaseAuth.getInstance()) else null
         if (firebaseAuthManager != null) {
             lifecycleScope.launch {
-                runCatching { firebaseAuthManager.ensureAnonymousSignIn() }
-                    .onSuccess { BackgroundSyncScheduler.requestImmediate(applicationContext) }
+                try {
+                    firebaseAuthManager.ensureAnonymousSignIn()
+                    BackgroundSyncScheduler.requestImmediate(applicationContext)
+                } catch (e: Exception) {
+                    val authCode = (e as? FirebaseAuthException)?.errorCode ?: e::class.java.simpleName
+                    Log.w(TAG, "Anonymous Firebase auth failed at app start: $authCode")
+                }
             }
         }
 
@@ -182,5 +189,9 @@ class MainActivity : ComponentActivity() {
     private fun Intent.notificationEventId(): Long? {
         val value = getLongExtra(NotificationReceiver.EXTRA_EVENT_ID, -1L)
         return value.takeIf { it > 0L }
+    }
+
+    companion object {
+        private const val TAG = "NoMistakeAuth"
     }
 }
