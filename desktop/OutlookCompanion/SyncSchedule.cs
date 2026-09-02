@@ -1,5 +1,5 @@
 using System;
-using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace OutlookCompanion
@@ -12,14 +12,23 @@ namespace OutlookCompanion
 
     /// <summary>
     /// Multiple PC Companions share one Firestore dataset but avoid doing the same scan at the same time.
-    /// Each PC runs every two hours during active hours. Group A uses even hours and Group B uses odd hours,
-    /// so when at least one PC from each group is online the shared backend is refreshed about once per hour.
+    /// Each PC is deterministically assigned to A or B from its persistent anonymous sourcePc id.
+    /// No user choice is exposed: as long as companion-config.txt is retained, that PC stays in the same group.
     /// </summary>
     internal static class SyncSchedule
     {
-        public const string GroupFileName = "companion-sync-group.txt";
+        public static SyncGroup AssignedGroup()
+        {
+            FirestoreConfig cfg = FirestoreConfig.Load();
+            return AssignedGroupForSourcePc(cfg.SourcePc);
+        }
 
-        public static string GroupPath => Path.Combine(SnapshotStore.AppDataDir, GroupFileName);
+        internal static SyncGroup AssignedGroupForSourcePc(string sourcePc)
+        {
+            string value = sourcePc ?? "";
+            byte[] bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+            return (bytes[0] & 1) == 0 ? SyncGroup.EvenHours : SyncGroup.OddHours;
+        }
 
         public static DateTime NextSlot(DateTime localNow, SyncGroup group)
         {
@@ -29,14 +38,12 @@ namespace OutlookCompanion
                 candidate = candidate.Date.AddHours(ActiveHours.StartHour);
             }
 
-            // Only exact top-of-hour slots count. If a slot has already started, move to the next eligible hour.
             DateTime top = new DateTime(candidate.Year, candidate.Month, candidate.Day, candidate.Hour, 0, 0, candidate.Kind);
             if (candidate > top) top = top.AddHours(1);
 
             int parity = group == SyncGroup.EvenHours ? 0 : 1;
             if ((top.Hour & 1) != parity) top = top.AddHours(1);
 
-            // Crossing midnight enters quiet hours; resume at the first slot for this group after 08:00.
             if (!ActiveHours.IsAutomaticSyncAllowed(top))
             {
                 DateTime morning = top.Date.AddHours(ActiveHours.StartHour);
@@ -45,30 +52,6 @@ namespace OutlookCompanion
             }
 
             return top;
-        }
-
-        public static SyncGroup LoadGroup()
-        {
-            try
-            {
-                if (!File.Exists(GroupPath)) return SyncGroup.EvenHours;
-                string value = File.ReadAllText(GroupPath, Encoding.UTF8).Trim();
-                if (string.Equals(value, "B", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(value, "odd", StringComparison.OrdinalIgnoreCase) || value == "1")
-                    return SyncGroup.OddHours;
-            }
-            catch { }
-            return SyncGroup.EvenHours;
-        }
-
-        public static void SaveGroup(SyncGroup group)
-        {
-            try
-            {
-                Directory.CreateDirectory(SnapshotStore.AppDataDir);
-                File.WriteAllText(GroupPath, group == SyncGroup.EvenHours ? "A" : "B", Encoding.UTF8);
-            }
-            catch { }
         }
 
         public static string Label(SyncGroup group) =>
