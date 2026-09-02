@@ -4,29 +4,53 @@ import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.tasks.await
 
 /**
- * Firebase Authentication(Email/Password) 래퍼 (Phase 5).
+ * Internal pilot Firebase Authentication wrapper.
  *
- * - Android에서 서비스 계정을 절대 사용하지 않는다(PC Companion만 서비스 계정 write 담당).
- * - 이메일/비밀번호는 앱 UI에서만 입력받는다(코드/리포지토리에 저장하지 않음).
- * - Firebase Auth가 로그인 세션을 유지하므로 앱 재시작 시 [isSignedIn]==true면
- *   로그인 화면을 생략할 수 있다.
- * - 회원가입 UI는 없다. 사용자는 Firebase Console(Authentication > Users)에서 직접 생성한다.
+ * - Android never uses the PC service-account credential.
+ * - Users do not manage Firebase email/password accounts.
+ * - The app silently creates/restores an anonymous Firebase session.
+ * - Personal checklist/settings data remains device-local; Firebase Auth only gates shared calendar reads.
  */
 class FirebaseAuthManager(private val auth: FirebaseAuth) {
-
-    val currentEmail: String?
-        get() = auth.currentUser?.email
 
     val isSignedIn: Boolean
         get() = auth.currentUser != null
 
-    /** Email/Password 로그인. 실패 시 예외 발생(FirebaseAuthInvalidUserException 등). */
+    val currentUid: String?
+        get() = auth.currentUser?.uid
+
+    /**
+     * Reuse an existing anonymous session. Legacy non-anonymous pilot sessions are signed out once,
+     * then replaced by an anonymous session so normal users never need credentials.
+     *
+     * @return true when a new anonymous session was created, false when an existing anonymous
+     * session was already active.
+     */
+    suspend fun ensureAnonymousSignIn(): Boolean {
+        val current = auth.currentUser
+        if (current?.isAnonymous == true) return false
+
+        if (current != null) {
+            auth.signOut()
+        }
+
+        auth.signInAnonymously().await()
+        check(auth.currentUser?.isAnonymous == true) {
+            "Firebase anonymous authentication did not produce an anonymous user"
+        }
+        return true
+    }
+
+    /** Debug/maintenance compatibility only; normal pilot UI does not expose credentials. */
     suspend fun signIn(email: String, password: String) {
         val trimmedEmail = email.trim()
         require(trimmedEmail.isNotEmpty()) { "이메일을 입력하세요" }
         require(password.isNotEmpty()) { "비밀번호를 입력하세요" }
         auth.signInWithEmailAndPassword(trimmedEmail, password).await()
     }
+
+    val currentEmail: String?
+        get() = auth.currentUser?.email
 
     fun signOut() {
         auth.signOut()

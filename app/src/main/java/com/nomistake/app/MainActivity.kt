@@ -5,7 +5,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
@@ -23,6 +25,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.room.Room
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.firestore.FirebaseFirestore
 import com.nomistake.app.background.BackgroundSyncScheduler
 import com.nomistake.app.data.local.db.AppDatabase
@@ -48,16 +51,15 @@ class MainActivity : ComponentActivity() {
 
     private val db by lazy {
         Room.databaseBuilder(applicationContext, AppDatabase::class.java, AppDatabase.DB_NAME)
-            .addMigrations(AppDatabase.MIGRATION_1_2) // 정식 migration — destructive 금지
+            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
             .build()
     }
 
-    /** 알림 탭으로 전달된 일정. onNewIntent에서도 갱신되어 실행 중인 앱에서도 상세로 이동한다. */
     private var requestedEventId by mutableStateOf<Long?>(null)
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* 권한 거부 시에도 앱/Alarm 등록은 계속 동작하며 Receiver가 안전하게 no-op 한다. */ }
+    ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,8 +72,6 @@ class MainActivity : ComponentActivity() {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        // Phase 9: 앱 실행 시 즉시 sync를 요청하고 30분 unique periodic work를 유지한다.
-        // Worker 내부에서도 SeedData를 보장하므로 앱 시작 seed coroutine과 race가 나지 않는다.
         BackgroundSyncScheduler.schedule(applicationContext)
 
         val notificationScheduler = NotificationAlarmScheduler(
@@ -89,13 +89,20 @@ class MainActivity : ComponentActivity() {
         val graphClient = GraphClient()
         val calendarSettingRepository = CalendarSettingRepository(db.settingDao())
 
-        // [Phase 5] google-services.json이 있을 때만 Firebase가 자동 초기화되어 있다
-        // (build.gradle.kts에서 조건부 google-services 플러그인).
-        // 파일이 없으면 Firebase 기능을 끄고 Graph fallback만 동작한다.
         val firebaseReady = FirebaseApp.getApps(applicationContext).isNotEmpty()
-        val firebaseAuthManager = if (firebaseReady) {
-            FirebaseAuthManager(FirebaseAuth.getInstance())
-        } else null
+        val firebaseAuthManager = if (firebaseReady) FirebaseAuthManager(FirebaseAuth.getInstance()) else null
+        if (firebaseAuthManager != null) {
+            lifecycleScope.launch {
+                try {
+                    firebaseAuthManager.ensureAnonymousSignIn()
+                    BackgroundSyncScheduler.requestImmediate(applicationContext)
+                } catch (e: Exception) {
+                    val authCode = (e as? FirebaseAuthException)?.errorCode ?: e::class.java.simpleName
+                    Log.w(TAG, "Anonymous Firebase auth failed at app start: $authCode")
+                }
+            }
+        }
+
         val syncRepository = if (firebaseReady) {
             CalendarSyncRepository(
                 syncSource = FirestoreCalendarSyncSource(FirebaseFirestore.getInstance()),
@@ -110,10 +117,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 val mainViewModel: MainViewModel = viewModel {
-                    MainViewModel(
-                        eventDao = db.eventDao(),
-                        checklistDao = db.checklistDao()
-                    )
+                    MainViewModel(eventDao = db.eventDao(), checklistDao = db.checklistDao())
                 }
                 val debugViewModel: DebugViewModel = viewModel {
                     DebugViewModel(
@@ -128,12 +132,21 @@ class MainActivity : ComponentActivity() {
                 val settingsViewModel: SettingsViewModel = viewModel {
                     SettingsViewModel(
                         settingDao = db.settingDao(),
-                        notificationScheduler = notificationScheduler
+                        templateDao = db.templateDao(),
+                        notificationScheduler = notificationScheduler,
+                        requestImmediateSync = {
+                            BackgroundSyncScheduler.requestImmediate(applicationContext)
+                        }
                     )
                 }
 
                 var showDebug by rememberSaveable { mutableStateOf(false) }
                 var showSettings by rememberSaveable { mutableStateOf(false) }
+
+                BackHandler(enabled = showDebug) {
+                    showDebug = false
+                }
+
                 LaunchedEffect(requestedEventId) {
                     requestedEventId?.let { eventId ->
                         showDebug = false
@@ -146,18 +159,13 @@ class MainActivity : ComponentActivity() {
                 when {
                     showDebug -> {
                         Column {
-                            TextButton(onClick = { showDebug = false }) {
-                                Text("← 일정으로")
-                            }
+                            TextButton(onClick = { showDebug = false }) { Text("← 일정으로") }
                             DebugScreen(debugViewModel)
                         }
                     }
 
                     showSettings -> {
-                        SettingsScreen(
-                            viewModel = settingsViewModel,
-                            onBack = { showSettings = false }
-                        )
+                        SettingsScreen(viewModel = settingsViewModel, onBack = { showSettings = false })
                     }
 
                     else -> {
@@ -181,5 +189,9 @@ class MainActivity : ComponentActivity() {
     private fun Intent.notificationEventId(): Long? {
         val value = getLongExtra(NotificationReceiver.EXTRA_EVENT_ID, -1L)
         return value.takeIf { it > 0L }
+    }
+
+    companion object {
+        private const val TAG = "NoMistakeAuth"
     }
 }

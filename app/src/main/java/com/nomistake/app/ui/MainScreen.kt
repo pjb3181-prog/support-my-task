@@ -1,5 +1,6 @@
 package com.nomistake.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -13,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -33,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import com.nomistake.app.data.local.entity.ChecklistEntity
 import com.nomistake.app.data.local.entity.ChecklistItemEntity
 import com.nomistake.app.data.local.entity.EventEntity
 import com.nomistake.app.data.local.entity.ItemOrigin
@@ -51,13 +54,9 @@ fun MainScreen(
     val selectedEvent by viewModel.selectedEvent.collectAsState()
 
     if (selectedEvent == null) {
-        EventListScreen(
-            viewModel = viewModel,
-            onOpenSettings = onOpenSettings,
-            onOpenDebug = onOpenDebug
-        )
+        EventListScreen(viewModel, onOpenSettings, onOpenDebug)
     } else {
-        EventDetailScreen(viewModel = viewModel)
+        EventDetailScreen(viewModel)
     }
 }
 
@@ -72,51 +71,37 @@ private fun EventListScreen(
     Scaffold(
         topBar = {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "실수없으셨죠",
+                    "실수없으셨죠",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f)
                 )
-                TextButton(onClick = onOpenSettings) {
-                    Text("설정")
-                }
-                TextButton(onClick = onOpenDebug) {
-                    Text("Debug")
-                }
+                TextButton(onClick = onOpenSettings) { Text("설정") }
+                TextButton(onClick = onOpenDebug) { Text("Debug") }
             }
         }
     ) { padding ->
         if (events.isEmpty()) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(24.dp),
+                modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text("표시할 일정이 없습니다.")
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    "동기화가 필요하면 Debug 화면에서 Sync now를 실행하세요.",
-                    style = MaterialTheme.typography.bodySmall
-                )
+                Text("동기화가 필요하면 Debug 화면에서 Sync now를 실행하세요.", style = MaterialTheme.typography.bodySmall)
             }
         } else {
             LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
+                modifier = Modifier.fillMaxSize().padding(padding),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(events, key = { it.id }) { event ->
-                    EventCard(event = event, onClick = { viewModel.openEvent(event.id) })
+                    EventCard(event) { viewModel.openEvent(event.id) }
                 }
             }
         }
@@ -130,24 +115,14 @@ private fun EventCard(event: EventEntity, onClick: () -> Unit) {
     val end = event.endTime.atZone(zone)
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp)
-            .clickable(onClick = onClick)
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).clickable(onClick = onClick)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = event.cleanTitle,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
+            Text(event.cleanTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
             Text(
-                text = if (event.isAllDay) {
-                    "${start.format(dateFormatter)} · 종일"
-                } else {
-                    "${start.format(dateFormatter)} · ${start.format(timeFormatter)}-${end.format(timeFormatter)}"
-                },
+                if (event.isAllDay) "${start.format(dateFormatter)} · 종일"
+                else "${start.format(dateFormatter)} · ${start.format(timeFormatter)}-${end.format(timeFormatter)}",
                 style = MaterialTheme.typography.bodyMedium
             )
             val meta = buildList {
@@ -170,42 +145,62 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
     val checklistItems by viewModel.checklistItems.collectAsState()
     val current = event ?: return
     var newItemText by remember(current.id) { mutableStateOf("") }
+    var showLeaveDialog by remember(current.id) { mutableStateOf(false) }
 
-    fun addCurrentItem() {
-        if (newItemText.isBlank()) return
+    fun addCurrentItem(): Boolean {
+        if (newItemText.isBlank()) return false
         viewModel.addEventOnlyItem(newItemText)
         newItemText = ""
+        return true
+    }
+
+    fun requestBack() {
+        if (newItemText.isNotBlank()) showLeaveDialog = true else viewModel.closeEvent()
+    }
+
+    BackHandler { requestBack() }
+
+    if (showLeaveDialog) {
+        AlertDialog(
+            onDismissRequest = { showLeaveDialog = false },
+            title = { Text("작성 중인 내용이 있습니다") },
+            text = { Text("새 체크 항목을 저장하고 목록으로 이동할까요?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    addCurrentItem()
+                    showLeaveDialog = false
+                    viewModel.closeEvent()
+                }) { Text("저장 후 이동") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { showLeaveDialog = false }) { Text("취소") }
+                    TextButton(onClick = {
+                        newItemText = ""
+                        showLeaveDialog = false
+                        viewModel.closeEvent()
+                    }) { Text("저장 안 함") }
+                }
+            }
+        )
     }
 
     Scaffold(
         topBar = {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = viewModel::closeEvent) { Text("← 목록") }
-                Text(
-                    text = "체크리스트",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
+                TextButton(onClick = ::requestBack) { Text("← 목록") }
+                Text("업무 체크", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             }
         }
     ) { padding ->
         LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp)
+            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)
         ) {
             item {
-                Text(
-                    current.cleanTitle,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
-                )
+                Text(current.cleanTitle, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 EventDetailMeta(current)
                 Spacer(Modifier.height(16.dp))
@@ -214,19 +209,31 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
             }
 
             if (checklist == null) {
-                item {
-                    Text("체크리스트가 아직 생성되지 않았습니다.")
-                }
+                item { Text("체크리스트가 아직 생성되지 않았습니다.") }
             } else {
+                item {
+                    TaskSummaryCard(
+                        checklist = checklist!!,
+                        items = checklistItems,
+                        onTaskCompleted = viewModel::setTaskCompleted,
+                        onAllDetailsCompleted = viewModel::setAllDetailItemsCompleted
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Text("세부 체크", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        "실무자가 필요한 항목만 세부 확인합니다. 업무 완료 표시는 위의 '업무 전체 완료'와 독립적입니다.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+
                 if (checklistItems.isEmpty()) {
-                    item { Text("체크리스트 항목이 없습니다.") }
+                    item { Text("세부 체크 항목이 없습니다.") }
                 } else {
                     items(checklistItems, key = { it.id }) { checklistItem ->
                         ChecklistRow(
                             item = checklistItem,
-                            onCheckedChange = { checked ->
-                                viewModel.setCompleted(checklistItem, checked)
-                            },
+                            onCheckedChange = { checked -> viewModel.setCompleted(checklistItem, checked) },
                             onDelete = if (checklistItem.origin == ItemOrigin.EVENT_ONLY) {
                                 { viewModel.deleteEventOnlyItem(checklistItem) }
                             } else null
@@ -238,11 +245,7 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
                     Spacer(Modifier.height(16.dp))
                     HorizontalDivider()
                     Spacer(Modifier.height(12.dp))
-                    Text(
-                        "이 일정에만 항목 추가",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Text("이 일정에만 항목 추가", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = newItemText,
@@ -254,18 +257,47 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
                         keyboardActions = KeyboardActions(onDone = { addCurrentItem() })
                     )
                     Spacer(Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        Button(
-                            onClick = { addCurrentItem() },
-                            enabled = newItemText.isNotBlank()
-                        ) {
-                            Text("추가")
-                        }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Button(onClick = { addCurrentItem() }, enabled = newItemText.isNotBlank()) { Text("추가") }
                     }
                     Spacer(Modifier.height(24.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskSummaryCard(
+    checklist: ChecklistEntity,
+    items: List<ChecklistItemEntity>,
+    onTaskCompleted: (Boolean) -> Unit,
+    onAllDetailsCompleted: (Boolean) -> Unit
+) {
+    val completedCount = items.count { it.isCompleted }
+    val allDetailsCompleted = items.isNotEmpty() && completedCount == items.size
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = checklist.isCompleted, onCheckedChange = onTaskCompleted)
+                Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
+                    Text("업무 전체 완료", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("관리/보고용 완료 상태 · 세부 체크와 독립", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = allDetailsCompleted,
+                    onCheckedChange = { checked -> onAllDetailsCompleted(checked) },
+                    enabled = items.isNotEmpty()
+                )
+                Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
+                    Text("세부항목 전체 체크", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                    Text("$completedCount/${items.size} 완료", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -279,25 +311,15 @@ private fun EventDetailMeta(event: EventEntity) {
     val end = event.endTime.atZone(zone)
 
     Text(
-        if (event.isAllDay) {
-            "${start.format(dateFormatter)} · 종일"
-        } else {
-            "${start.format(dateFormatter)} · ${start.format(timeFormatter)}-${end.format(timeFormatter)}"
-        },
+        if (event.isAllDay) "${start.format(dateFormatter)} · 종일"
+        else "${start.format(dateFormatter)} · ${start.format(timeFormatter)}-${end.format(timeFormatter)}",
         style = MaterialTheme.typography.bodyMedium
     )
     event.roomType?.let {
-        Text(
-            "회의실: ${if (it == "대") "대회의실" else if (it == "세") "세미나실" else it}",
-            style = MaterialTheme.typography.bodySmall
-        )
+        Text("회의실: ${if (it == "대") "대회의실" else if (it == "세") "세미나실" else it}", style = MaterialTheme.typography.bodySmall)
     }
-    event.scheduleType?.let {
-        Text("유형: $it", style = MaterialTheme.typography.bodySmall)
-    }
-    event.location?.takeIf { it.isNotBlank() }?.let {
-        Text("장소: $it", style = MaterialTheme.typography.bodySmall)
-    }
+    event.scheduleType?.let { Text("유형: $it", style = MaterialTheme.typography.bodySmall) }
+    event.location?.takeIf { it.isNotBlank() }?.let { Text("장소: $it", style = MaterialTheme.typography.bodySmall) }
 }
 
 @Composable
@@ -307,26 +329,15 @@ private fun ChecklistRow(
     onDelete: (() -> Unit)?
 ) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Checkbox(
-            checked = item.isCompleted,
-            onCheckedChange = onCheckedChange
-        )
+        Checkbox(checked = item.isCompleted, onCheckedChange = onCheckedChange)
         Text(
-            text = item.text,
+            item.text,
             style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier
-                .weight(1f)
-                .padding(start = 8.dp)
+            modifier = Modifier.weight(1f).padding(start = 8.dp)
         )
-        if (onDelete != null) {
-            TextButton(onClick = onDelete) {
-                Text("삭제")
-            }
-        }
+        if (onDelete != null) TextButton(onClick = onDelete) { Text("삭제") }
     }
 }

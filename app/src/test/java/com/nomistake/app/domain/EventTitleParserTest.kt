@@ -6,17 +6,13 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * EventTitleParser 단위 테스트 (JVM, Android 의존 없음).
- *
- * seed 기준 ScheduleTypeRule:
- * HAZOP(1) · LOPA(2) · 현장조사(3) · 현장방문(4) · 면담(5) · 화상회의(6)
- */
+/** EventTitleParser 단위 테스트 (JVM, Android 의존 없음). */
 class EventTitleParserTest {
 
     private val parser = EventTitleParser()
 
     private val seedRules = listOf(
+        ScheduleTypeRule("FMEA", "FMEA", 0),
         ScheduleTypeRule("HAZOP", "HAZOP", 1),
         ScheduleTypeRule("LOPA", "LOPA", 2),
         ScheduleTypeRule("현장조사", "FIELD_WORK", 3),
@@ -56,6 +52,32 @@ class EventTitleParserTest {
         assertEquals("현대차화상회의", r.cleanTitle)
         assertEquals("화상회의", r.scheduleType)
         assertFalse(r.isTarget)
+    }
+
+    @Test
+    fun `사용자별 식별문자를 적용한다`() {
+        val own = parser.parse("[대] FMEA 검토 [김성]", seedRules, mineMarker = "김")
+        assertTrue(own.isMine)
+        assertTrue(own.isTarget)
+        assertEquals("FMEA", own.scheduleType)
+
+        val other = parser.parse("[대] FMEA 검토 [김성]", seedRules, mineMarker = "종")
+        assertFalse(other.isMine)
+        assertFalse(other.isTarget)
+    }
+
+    @Test
+    fun `빈 사용자 식별문자는 누구의 일정도 잡지 않는다`() {
+        val r = parser.parse("HAZOP [종]", seedRules, mineMarker = "   ")
+        assertFalse(r.isMine)
+        assertFalse(r.isTarget)
+    }
+
+    @Test
+    fun `FMEA는 독립 업무유형으로 분류된다`() {
+        val r = parser.parse("배터리 FMEA 분석 [종]", seedRules)
+        assertEquals("FMEA", r.scheduleType)
+        assertTrue(r.isTarget)
     }
 
     @Test
@@ -194,6 +216,7 @@ class EventTitleParserTest {
         assertEquals("HAZOP", parser.parse("hazop", seedRules).scheduleType)
         assertEquals("LOPA", parser.parse("lopa", seedRules).scheduleType)
         assertEquals("HAZOP", parser.parse("Hazop", seedRules).scheduleType)
+        assertEquals("FMEA", parser.parse("fmea", seedRules).scheduleType)
     }
 
     @Test

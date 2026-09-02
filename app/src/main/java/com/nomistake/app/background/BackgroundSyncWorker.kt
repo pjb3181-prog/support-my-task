@@ -1,27 +1,29 @@
 package com.nomistake.app.background
 
 import android.content.Context
+import android.util.Log
 import androidx.room.Room
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.firestore.FirebaseFirestore
 import com.nomistake.app.data.local.db.AppDatabase
 import com.nomistake.app.data.local.db.SeedData
+import com.nomistake.app.data.remote.FirebaseAuthManager
 import com.nomistake.app.data.remote.FirestoreCalendarSyncSource
 import com.nomistake.app.data.repository.CalendarSyncRepository
 import com.nomistake.app.data.repository.ChecklistRepository
 import com.nomistake.app.notification.NotificationAlarmScheduler
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.ZoneId
 
 /**
- * Phase 9: WorkManager가 실행하는 Firestore -> Room 백그라운드 동기화.
- *
- * Firebase가 구성되지 않았거나 로그인 세션이 없으면 조용히 종료한다.
- * 네트워크/Firestore 오류는 retry하여 기존 Room 데이터를 절대 지우지 않는다.
- * 성공 후에는 Phase 7 AlarmManager 계획도 현재 Room 기준으로 다시 구성한다.
+ * Firestore -> Room 백그라운드 동기화.
+ * periodic 실행은 00:00~07:59에 Firestore read 없이 즉시 성공 종료한다.
+ * 사용자 동작으로 생성된 immediate work는 forceSync=true라 시간 제한을 우회한다.
  */
 class BackgroundSyncWorker(
     appContext: Context,
@@ -29,12 +31,22 @@ class BackgroundSyncWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        val forceSync = inputData.getBoolean(BackgroundSyncScheduler.KEY_FORCE_SYNC, false)
+        if (!forceSync && !BackgroundSyncHours.isAutomaticSyncAllowed(LocalDateTime.now())) {
+            return Result.success()
+        }
+
         val firebaseApp = FirebaseApp.getApps(applicationContext).firstOrNull()
             ?: FirebaseApp.initializeApp(applicationContext)
-            ?: return Result.success()
+            ?: return Result.retry()
 
-        if (FirebaseAuth.getInstance(firebaseApp).currentUser == null) {
-            return Result.success()
+        val auth = FirebaseAuthManager(FirebaseAuth.getInstance(firebaseApp))
+        try {
+            auth.ensureAnonymousSignIn()
+        } catch (e: Exception) {
+            val authCode = (e as? FirebaseAuthException)?.errorCode ?: e::class.java.simpleName
+            Log.w(TAG, "Anonymous Firebase auth failed: $authCode")
+            return Result.retry()
         }
 
         val db = Room.databaseBuilder(
@@ -42,11 +54,10 @@ class BackgroundSyncWorker(
             AppDatabase::class.java,
             AppDatabase.DB_NAME
         )
-            .addMigrations(AppDatabase.MIGRATION_1_2)
+            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
             .build()
 
         return try {
-            // Worker가 앱 시작 seed coroutine보다 먼저 실행되어도 안전하도록 자체 보장한다.
             SeedData.seed(db)
 
             val syncRepository = CalendarSyncRepository(
@@ -71,8 +82,8 @@ class BackgroundSyncWorker(
             ).rescheduleAll()
 
             Result.success()
-        } catch (_: Exception) {
-            // Firestore/network 일시 실패 시 Room source of truth는 그대로 두고 재시도한다.
+        } catch (e: Exception) {
+            Log.w(TAG, "Background sync failed: ${e::class.java.simpleName}")
             Result.retry()
         } finally {
             db.close()
@@ -80,6 +91,7 @@ class BackgroundSyncWorker(
     }
 
     companion object {
+        private const val TAG = "NoMistakeSync"
         const val SYNC_PAST_DAYS = 7L
         const val SYNC_FUTURE_DAYS = 90L
     }
