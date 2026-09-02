@@ -28,6 +28,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using System.Threading;
 
@@ -37,7 +38,11 @@ namespace OutlookCompanion
     {
         private static int Main(string[] args)
         {
-            Console.OutputEncoding = Encoding.UTF8;
+            // WinExe tray가 숨김 child로 CLI sync를 실행하면 유효한 console handle이 없을 수 있다.
+            // 그 경우 UTF-8 설정만 건너뛰고 기존 sync 로직은 그대로 진행한다.
+            try { Console.OutputEncoding = Encoding.UTF8; }
+            catch (IOException) { }
+
             bool test = false, gates = false, probe = false, once = false, idle = false, startOutlook = false;
             bool firebaseTest = false, upload = false;
             int pollMinutes = AppSettings.DefaultPollMinutes;
