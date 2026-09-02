@@ -52,6 +52,8 @@ namespace OutlookCompanion
             failed += Assert(ActiveHours.IsAutomaticSyncAllowed(new DateTime(2026, 9, 2, 23, 59, 59)), "23:59 allowed");
             DateTime next = ActiveHours.NextAllowedTime(new DateTime(2026, 9, 2, 3, 15, 0));
             failed += Assert(next == new DateTime(2026, 9, 2, 8, 0, 0), "quiet -> 08:00");
+            DateTime normalized = ActiveHours.NormalizeNextAutomatic(new DateTime(2026, 9, 3, 0, 30, 0));
+            failed += Assert(normalized == new DateTime(2026, 9, 3, 8, 0, 0), "after-midnight poll -> 08:00");
             Console.WriteLine(failed == 0 ? "Tray policy tests PASS" : "Tray policy tests FAIL=" + failed);
             return failed == 0 ? 0 : 1;
         }
@@ -69,9 +71,8 @@ namespace OutlookCompanion
         private readonly NotifyIcon _notifyIcon;
         private readonly ToolStripMenuItem _statusItem;
         private readonly ToolStripMenuItem _startupItem;
-        private readonly System.Threading.Timer _timer;
+        private readonly System.Windows.Forms.Timer _timer;
         private int _syncRunning;
-        private int _sequence;
         private DateTime? _lastSuccess;
         private DateTime _nextAutomatic;
         private bool _exiting;
@@ -106,7 +107,8 @@ namespace OutlookCompanion
             };
             _notifyIcon.DoubleClick += async (_, __) => await RunSyncAsync(manual: true);
 
-            _timer = new System.Threading.Timer(async _ => await TimerTickAsync(), null, Timeout.Infinite, Timeout.Infinite);
+            _timer = new System.Windows.Forms.Timer();
+            _timer.Tick += async (_, __) => await TimerTickAsync();
             ScheduleInitial();
         }
 
@@ -115,11 +117,12 @@ namespace OutlookCompanion
             DateTime now = DateTime.Now;
             _nextAutomatic = ActiveHours.IsAutomaticSyncAllowed(now) ? now.AddSeconds(20) : ActiveHours.NextAllowedTime(now);
             ArmTimer();
-            RefreshStatus("대기");
+            RefreshStatus(ActiveHours.IsAutomaticSyncAllowed(now) ? "대기" : "야간 대기");
         }
 
         private async Task TimerTickAsync()
         {
+            _timer.Stop();
             if (_exiting) return;
             DateTime now = DateTime.Now;
             if (!ActiveHours.IsAutomaticSyncAllowed(now))
@@ -138,12 +141,26 @@ namespace OutlookCompanion
             try
             {
                 if (!manual && !ActiveHours.IsAutomaticSyncAllowed(DateTime.Now)) return;
+
+                DateTime? snapshotBefore = File.Exists(SnapshotStore.SnapshotPath)
+                    ? File.GetLastWriteTimeUtc(SnapshotStore.SnapshotPath)
+                    : null;
+
                 RefreshStatus("동기화 중");
                 int exitCode = await RunLegacyChildAsync();
-                if (exitCode == 0)
+                DateTime? snapshotAfter = File.Exists(SnapshotStore.SnapshotPath)
+                    ? File.GetLastWriteTimeUtc(SnapshotStore.SnapshotPath)
+                    : null;
+
+                bool completedScan = snapshotAfter.HasValue && (!snapshotBefore.HasValue || snapshotAfter.Value > snapshotBefore.Value);
+                if (exitCode == 0 && completedScan)
                 {
                     _lastSuccess = DateTime.Now;
                     RefreshStatus("정상");
+                }
+                else if (exitCode == 0)
+                {
+                    RefreshStatus("Outlook 대기");
                 }
                 else
                 {
@@ -187,21 +204,19 @@ namespace OutlookCompanion
             if (_exiting) return;
             TimeSpan due = _nextAutomatic - DateTime.Now;
             if (due < TimeSpan.FromSeconds(1)) due = TimeSpan.FromSeconds(1);
-            _timer.Change(due, Timeout.InfiniteTimeSpan);
+            double ms = due.TotalMilliseconds;
+            if (ms > int.MaxValue) ms = int.MaxValue;
+            _timer.Interval = Math.Max(1000, (int)ms);
+            _timer.Start();
         }
 
         private void RefreshStatus(string state)
         {
             if (_exiting) return;
-            void Apply()
-            {
-                string last = _lastSuccess.HasValue ? _lastSuccess.Value.ToString("HH:mm") : "없음";
-                _statusItem.Text = state + " | 마지막 성공 " + last + " | 다음 " + _nextAutomatic.ToString("HH:mm");
-                string tip = "실수없으셨죠 - " + state;
-                _notifyIcon.Text = tip.Length <= 63 ? tip : tip.Substring(0, 63);
-            }
-            if (_statusItem.Owner != null && _statusItem.Owner.InvokeRequired) _statusItem.Owner.BeginInvoke((Action)Apply);
-            else Apply();
+            string last = _lastSuccess.HasValue ? _lastSuccess.Value.ToString("HH:mm") : "없음";
+            _statusItem.Text = state + " | 마지막 성공 " + last + " | 다음 " + _nextAutomatic.ToString("HH:mm");
+            string tip = "실수없으셨죠 - " + state;
+            _notifyIcon.Text = tip.Length <= 63 ? tip : tip.Substring(0, 63);
         }
 
         private void ToggleStartup()
@@ -209,6 +224,7 @@ namespace OutlookCompanion
             try
             {
                 string exe = Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName;
+                if (string.IsNullOrWhiteSpace(exe)) throw new InvalidOperationException("Executable path unavailable");
                 StartupRegistration.SetEnabled(_startupItem.Checked, exe);
             }
             catch
@@ -221,6 +237,7 @@ namespace OutlookCompanion
         private void ExitTray()
         {
             _exiting = true;
+            _timer.Stop();
             _timer.Dispose();
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
