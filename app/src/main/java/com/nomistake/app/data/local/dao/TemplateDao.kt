@@ -16,6 +16,9 @@ interface TemplateDao {
     @Query("SELECT * FROM checklist_templates ORDER BY kind, key")
     fun observeTemplates(): Flow<List<ChecklistTemplateEntity>>
 
+    @Query("SELECT * FROM checklist_templates WHERE kind = 'TYPE' ORDER BY name COLLATE NOCASE")
+    fun observeTypeTemplates(): Flow<List<ChecklistTemplateEntity>>
+
     @Query("SELECT * FROM checklist_templates WHERE kind = :kind AND key = :key LIMIT 1")
     suspend fun getTemplate(kind: TemplateKind, key: String): ChecklistTemplateEntity?
 
@@ -31,11 +34,17 @@ interface TemplateDao {
     @Query("DELETE FROM template_items WHERE id = :id")
     suspend fun deleteTemplateItem(id: Long)
 
-    @Query("SELECT * FROM schedule_type_rules ORDER BY priority ASC")
+    @Query("SELECT * FROM schedule_type_rules ORDER BY priority ASC, id ASC")
     suspend fun getScheduleTypeRules(): List<ScheduleTypeRuleEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertScheduleTypeRule(rule: ScheduleTypeRuleEntity): Long
+
+    @Query("SELECT COUNT(*) FROM schedule_type_rules WHERE keyword = :keyword COLLATE NOCASE AND scheduleType = :scheduleType COLLATE NOCASE")
+    suspend fun countScheduleTypeRule(keyword: String, scheduleType: String): Int
+
+    @Query("SELECT COALESCE(MAX(priority), 0) + 1 FROM schedule_type_rules")
+    suspend fun getNextScheduleTypePriority(): Int
 
     @Query("SELECT COUNT(*) FROM checklist_templates")
     suspend fun countTemplates(): Int
