@@ -13,53 +13,23 @@ import com.nomistake.app.domain.ScheduleTypeRule
 import com.nomistake.app.domain.SyncedEvent
 import java.time.Instant
 
-/** 1회 sync 실행 결과 통계 (Phase 5 Debug UI 표시용). */
 data class SyncStats(
-    /** 소스에서 읽어온 문서 수(deleted 포함). */
     val fetched: Int,
-    /** 파싱 결과 target인 live 일정 수. */
     val target: Int,
-    /** Room에 신규 insert된 Event 수. */
     val inserted: Int,
-    /** Room에 실제 변경이 있어 UPDATE된 Event 수(내용 동일 SkipSame 제외). */
     val updated: Int,
-    /** Firestore source metadata가 기존과 완전 동일해 UPDATE를 생략한 Event 수(SkipSame). */
     val skippedSame: Int,
-    /** 이번 sync에서 신규 생성된 Checklist 수. */
     val checklistCreated: Int,
-    /** 읽은 문서 중 tombstone(deleted=true) 수. */
     val tombstoneSeen: Int,
-    /** tombstone이었다가 이번 sync에서 부활(revive)된 Event 수. */
     val revived: Int
 )
 
 /**
- * Firestore → Room 동기화 오케스트레이션 (Phase 5).
+ * Firestore → Room 동기화 오케스트레이션.
  *
- * flow:
- * CalendarSyncSource(Firestore primary / Graph fallback)
- *   → SyncedEvent → EventTitleParser(기존 파서 재사용)
- *   → EventEntity upsert(getBySource → insert/update, PK 유지)
- *   → ChecklistRepository.ensureChecklist(target만, 기존 checklist 보존)
- *
- * 데이터 보존 정책 (Phase 3 정책 유지):
- * - 재동기화로 Event metadata는 갱신하되 Checklist(completed/EVENT_ONLY 항목)는 유지한다.
- * - 재동기화 시 소스 제어 metadata가 기존과 완전 동일하면 Room UPDATE를 생략한다(SkipSame).
- *   비교 대상은 Firestore DTO에서 온 필드(seriesKeyHash/occurrenceKeyHash/title/isAllDay/
- *   startTime/endTime/location/isDeleted) + 제목 재파싱 결과(cleanTitle/roomType/attendeeCode/
- *   isMine/scheduleType/isTarget — 소스 title과 파싱 규칙의 결정적 함수)뿐이다.
- *   checklist 상태/EVENT_ONLY 항목/기타 Android local state는 비교·overwrite 대상에 넣지
- *   않는다(EventEntity에 존재하지도 않는다 — 별도 테이블). lastSyncedAt은 sync bookkeeping이라
- *   비교에서 제외하고(제외하지 않으면 매 sync마다 update 발생) 실제 변경 시에만 갱신한다.
- * - Checklist 있으면 재생성하지 않는다(ensureChecklist idempotency).
- * - target→non-target: checklist DB는 보존, 활성 UI(observeActiveEvents)에서만 제외.
- * - non-target→target: checklist 없을 때 최초 생성.
- * - tombstone(deleted=true): Event soft-delete만. checklist는 즉시 삭제하지 않는다(revive 대비).
- * - revive(deleted=false 복귀): isDeleted 해제 + 기존 checklist 재사용.
- * - non-target live 일정도 Room에 저장한다(동기화 identity 관리) — 활성 목록은
- *   isTarget=1 필터로 자동 제외된다. hard delete는 하지 않는다.
- *
- * 실패 안전: 소스 조회 실패 시 예외를 그대로 던지고 DB는 건드리지 않는다(Room source of truth 유지).
+ * Phase 12부터 대상 일정 식별문자는 사용자별 settings 값(KEY_MINE_MARKER)을 사용한다.
+ * 기본값은 기존 사용자 호환을 위해 "종"이다. 일정/체크리스트의 사용자 로컬 상태는
+ * sync가 덮어쓰지 않는다.
  */
 class CalendarSyncRepository(
     private val syncSource: CalendarSyncSource,
@@ -76,6 +46,10 @@ class CalendarSyncRepository(
         val synced = syncSource.fetchEvents(from, to)
         val rules = templateDao.getScheduleTypeRules()
             .map { ScheduleTypeRule(it.keyword, it.scheduleType, it.priority) }
+        val mineMarker = settingDao.get(KEY_MINE_MARKER)?.value
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: EventTitleParser.DEFAULT_MINE_MARKER
 
         var inserted = 0
         var updated = 0
@@ -86,7 +60,7 @@ class CalendarSyncRepository(
         var targetCount = 0
 
         for (event in synced) {
-            val parsed = parser.parse(event.title, rules)
+            val parsed = parser.parse(event.title, rules, mineMarker)
             if (!event.isDeleted && parsed.isTarget) targetCount++
             if (event.isDeleted) tombstoneSeen++
 
@@ -95,17 +69,12 @@ class CalendarSyncRepository(
 
             if (existing == null) {
                 val id = eventDao.insertIgnore(event.toEntity(parsed, now))
-                if (id == -1L) continue // unique 충돌(이론적 race) → 다음 sync에서 자가수복
+                if (id == -1L) continue
                 inserted++
                 if (!event.isDeleted && parsed.isTarget) {
                     if (ensureChecklistIfTarget(id)) checklistCreated++
                 }
             } else {
-                // 소스 제어 metadata(+ 제목 재파싱 결과)로 재작성 candidate를 만든다.
-                // lastSyncedAt은 Android sync bookkeeping이라 비교에서 제외(기존값 유지) —
-                // 이 값을 비교에 넣으면 매 sync마다 달라져 항상 update가 발생한다.
-                // checklist 상태/EVENT_ONLY 항목은 EventEntity에 없으므로(별도 테이블)
-                // 비교·overwrite 대상이 될 수 없다.
                 val candidate = existing.copy(
                     seriesKeyHash = event.seriesKeyHash,
                     occurrenceKeyHash = event.occurrenceKeyHash,
@@ -124,7 +93,6 @@ class CalendarSyncRepository(
                     lastSyncedAt = existing.lastSyncedAt
                 )
                 if (candidate == existing) {
-                    // SkipSame: source metadata 완전 동일 → Room 재기록(UPDATE) 생략.
                     skippedSame++
                 } else {
                     eventDao.update(candidate.copy(lastSyncedAt = now))
@@ -137,7 +105,6 @@ class CalendarSyncRepository(
             }
         }
 
-        // 마지막 성공 sync 시각 기록(실패 시 이 지점에 도달하지 않으므로 항상 성공 의미).
         settingDao.put(SettingEntity(KEY_LAST_SYNC_AT, clock().toString()))
 
         return SyncStats(
@@ -152,23 +119,19 @@ class CalendarSyncRepository(
         )
     }
 
-    /** 마지막 성공 sync 시각(없으면 null). */
     suspend fun getLastSyncTime(): String? = settingDao.get(KEY_LAST_SYNC_AT)?.value
 
     /**
-     * target live Event에 대해 Checklist를 보장한다.
-     * @return 이번 호출로 checklist를 신규 생성했으면 true(기존 재사용이면 false).
+     * 기존 checklist도 repository에 다시 넘겨 append-only 템플릿 reconcile을 수행한다.
+     * 완료 상태/EVENT_ONLY 항목은 그대로 보존된다.
      */
     private suspend fun ensureChecklistIfTarget(eventId: Long): Boolean {
-        if (checklistDao.countByEventId(eventId) > 0) {
-            // 이미 있으면 재생성하지 않는다(completed/사용자 항목 보존).
-            return false
-        }
+        val existed = checklistDao.countByEventId(eventId) > 0
         val event = eventDao.getById(eventId) ?: return false
-        return checklistRepository.ensureChecklist(event) != null
+        val checklistId = checklistRepository.ensureChecklist(event) ?: return false
+        return !existed && checklistId > 0
     }
 
-    /** SyncedEvent + 파싱 결과 → Room 저장용 Entity. */
     private fun SyncedEvent.toEntity(parsed: ParsedTitle, now: Instant): EventEntity =
         EventEntity(
             sourceType = sourceType,
@@ -197,5 +160,6 @@ class CalendarSyncRepository(
 
     companion object {
         const val KEY_LAST_SYNC_AT = "lastSuccessfulSyncAt"
+        const val KEY_MINE_MARKER = "mineAttendeeMarker"
     }
 }
