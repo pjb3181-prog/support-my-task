@@ -131,7 +131,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = MeriColorScheme) {
                 val mainViewModel: MainViewModel = viewModel {
-                    MainViewModel(eventDao = db.eventDao(), checklistDao = db.checklistDao())
+                    MainViewModel(
+                        eventDao = db.eventDao(),
+                        checklistDao = db.checklistDao(),
+                        settingDao = db.settingDao()
+                    )
                 }
                 val debugViewModel: DebugViewModel = viewModel {
                     DebugViewModel(
