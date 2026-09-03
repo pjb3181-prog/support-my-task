@@ -1,5 +1,13 @@
-const CACHE = "meri-schedule-v2";
-const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest"];
+const CACHE = "meri-schedule-v3";
+const ASSETS = [
+  "./",
+  "./index.html",
+  "./styles.css",
+  "./work-calendar.css",
+  "./app.js",
+  "./work-calendar.js",
+  "./manifest.webmanifest"
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));
