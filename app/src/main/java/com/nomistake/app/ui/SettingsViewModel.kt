@@ -83,14 +83,40 @@ class SettingsViewModel(
         }
     }
 
+    suspend fun getTemplateItemsText(templateId: Long): String =
+        templateDao.getTemplateItems(templateId).joinToString("\n") { it.text }
+
+    fun saveTemplateItems(template: ChecklistTemplateEntity, checklistInput: String) {
+        val items = normalizedItems(checklistInput)
+        if (items.isEmpty()) {
+            status = "준비항목을 한 개 이상 입력하세요."
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                templateDao.deleteTemplateItems(template.id)
+                items.forEachIndexed { index, text ->
+                    templateDao.insertTemplateItem(
+                        TemplateItemEntity(
+                            templateId = template.id,
+                            text = text,
+                            sortOrder = index
+                        )
+                    )
+                }
+                requestImmediateSync()
+                status = "${template.name} 준비항목 저장 완료"
+            } catch (e: Exception) {
+                status = "준비항목 저장 실패: ${e.message ?: e::class.java.simpleName}"
+            }
+        }
+    }
+
     fun addTaskType(nameInput: String, keywordInput: String, checklistInput: String) {
         val name = nameInput.trim()
         val keyword = keywordInput.trim()
-        val items = checklistInput.lineSequence()
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinctBy { it.lowercase() }
-            .toList()
+        val items = normalizedItems(checklistInput)
 
         if (name.isEmpty() || keyword.isEmpty()) {
             status = "업무유형 이름과 제목 키워드를 모두 입력하세요."
@@ -140,7 +166,7 @@ class SettingsViewModel(
     }
 
     fun setEnabled(rule: NotificationRuleEntity, enabled: Boolean) {
-        save(rule.copy(enabled = enabled), "${rule.label}: ${if (enabled) "사용" else "사용 안 함"}")
+        save(rule.copy(enabled = enabled), "${notificationRuleTitle(rule)}: ${if (enabled) "사용" else "사용 안 함"}")
     }
 
     fun saveTiming(rule: NotificationRuleEntity, input: String) {
@@ -152,7 +178,7 @@ class SettingsViewModel(
                     status = "분 단위 값은 1 이상의 숫자로 입력하세요."
                     return
                 }
-                rule.copy(minutesBefore = minutes)
+                rule.copy(label = "T-$minutes", minutesBefore = minutes)
             }
 
             rule.dayOffset != null && rule.timeOfDay != null -> {
@@ -161,7 +187,8 @@ class SettingsViewModel(
                     status = "시간은 HH:mm 형식으로 입력하세요. 예: 14:00"
                     return
                 }
-                rule.copy(timeOfDay = time.format(HH_MM))
+                val updatedRule = rule.copy(timeOfDay = time.format(HH_MM))
+                updatedRule.copy(label = notificationRuleTitle(updatedRule))
             }
 
             else -> {
@@ -170,8 +197,46 @@ class SettingsViewModel(
             }
         }
 
-        save(updated, "${rule.label} 저장 완료")
+        save(updated, "${notificationRuleTitle(updated)} 저장 완료")
     }
+
+    fun saveDayAndTime(rule: NotificationRuleEntity, daysBeforeInput: String, timeInput: String) {
+        if (rule.dayOffset == null || rule.timeOfDay == null) {
+            status = "이 알림은 날짜 기준 알림이 아닙니다."
+            return
+        }
+        val daysBefore = daysBeforeInput.trim().toIntOrNull()
+        if (daysBefore == null || daysBefore < 0) {
+            status = "며칠 전 값은 0 이상의 숫자로 입력하세요. 0은 당일입니다."
+            return
+        }
+        val time = runCatching { LocalTime.parse(timeInput.trim()) }.getOrNull()
+        if (time == null) {
+            status = "시간은 HH:mm 형식으로 입력하세요. 예: 14:00"
+            return
+        }
+
+        val updated = rule.copy(
+            dayOffset = -daysBefore,
+            timeOfDay = time.format(HH_MM)
+        ).let { it.copy(label = notificationRuleTitle(it)) }
+        save(updated, "${notificationRuleTitle(updated)} 저장 완료")
+    }
+
+    fun notificationRuleTitle(rule: NotificationRuleEntity): String = when {
+        rule.minutesBefore != null -> "T-${rule.minutesBefore}"
+        rule.dayOffset != null && rule.timeOfDay != null -> {
+            val dayText = if (rule.dayOffset == 0) "당일" else "D-${kotlin.math.abs(rule.dayOffset)}"
+            "$dayText ${rule.timeOfDay}"
+        }
+        else -> rule.label
+    }
+
+    private fun normalizedItems(input: String): List<String> = input.lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .distinctBy { it.lowercase() }
+        .toList()
 
     private fun save(rule: NotificationRuleEntity, successMessage: String) {
         viewModelScope.launch {
