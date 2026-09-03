@@ -1,11 +1,13 @@
-const CACHE = "meri-schedule-v3";
+const CACHE = "meri-schedule-v4";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./work-calendar.css",
+  "./settings-items.css",
   "./app.js",
   "./work-calendar.js",
+  "./settings-items.js",
   "./manifest.webmanifest"
 ];
 
