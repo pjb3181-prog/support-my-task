@@ -11,6 +11,7 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="stylesheet" href="./styles.css" />
   <link rel="stylesheet" href="./work-calendar.css" />
+  <link rel="stylesheet" href="./settings-items.css" />
 </head>
 <body>
   <header class="app-header">
@@ -109,7 +110,7 @@
             <span class="panel-index">02</span>
             <div>
               <h3>업무 유형별 체크리스트</h3>
-              <p>유형을 선택하고 기본 준비항목을 한 줄씩 수정합니다.</p>
+              <p>유형을 선택하고 준비항목을 직접 추가·수정·삭제합니다.</p>
             </div>
           </div>
           <label>업무 유형
@@ -118,7 +119,12 @@
           <label>준비항목
             <textarea id="typeItemsInput" rows="7" placeholder="한 줄에 하나씩 입력"></textarea>
           </label>
-          <p class="muted">이 설정은 현재 브라우저에 저장됩니다.</p>
+          <div id="typeItemList" class="type-item-list" aria-live="polite"></div>
+          <div class="type-item-add">
+            <input id="newTypeItemInput" type="text" placeholder="새 준비항목 입력" aria-label="새 준비항목" />
+            <button id="addTypeItemButton" type="button">+ 추가</button>
+          </div>
+          <p class="muted">각 항목을 바로 수정하거나 삭제할 수 있습니다. 이 설정은 현재 브라우저에 저장됩니다.</p>
           <div class="panel-actions split-actions">
             <button id="resetTypeItemsButton" type="button" class="secondary-button">기본값 복원</button>
             <button id="saveTypeItemsButton" type="button">체크리스트 저장</button>
@@ -170,5 +176,6 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script type="module" src="./app.js"></script>
+  <script type="module" src="./settings-items.js"></script>
 </body>
 </html>
