@@ -11,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -20,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -170,14 +172,16 @@ class MainActivity : ComponentActivity() {
 
                 when {
                     showDebug -> {
-                        Column {
+                        Column(modifier = Modifier.statusBarsPadding()) {
                             TextButton(onClick = { showDebug = false }) { Text("← 일정으로") }
                             DebugScreen(debugViewModel)
                         }
                     }
 
                     showSettings -> {
-                        SettingsScreen(viewModel = settingsViewModel, onBack = { showSettings = false })
+                        Column(modifier = Modifier.statusBarsPadding()) {
+                            SettingsScreen(viewModel = settingsViewModel, onBack = { showSettings = false })
+                        }
                     }
 
                     else -> {
