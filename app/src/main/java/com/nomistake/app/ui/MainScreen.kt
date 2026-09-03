@@ -3,6 +3,7 @@ package com.nomistake.app.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -21,25 +23,31 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.PullToRefreshBox
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import com.nomistake.app.data.local.entity.ChecklistEntity
 import com.nomistake.app.data.local.entity.ChecklistItemEntity
@@ -70,7 +78,6 @@ fun MainScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun EventListScreen(
     viewModel: MainViewModel,
@@ -85,15 +92,42 @@ private fun EventListScreen(
     val upcomingEvents = events.filter { it.startTime.atZone(zone).toLocalDate().isAfter(today) }
     val pastEvents = events.filter { it.startTime.atZone(zone).toLocalDate().isBefore(today) }
     var isRefreshing by remember { mutableStateOf(false) }
+    var pullDistance by remember { mutableFloatStateOf(0f) }
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val thresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
 
     fun refresh() {
         if (isRefreshing) return
         isRefreshing = true
+        pullDistance = 0f
         onRefresh()
         scope.launch {
             delay(1_500)
             isRefreshing = false
+        }
+    }
+
+    val pullConnection = remember(listState, thresholdPx, isRefreshing) {
+        object : NestedScrollConnection {
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                val atTop = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
+                if (source == NestedScrollSource.UserInput && atTop && !isRefreshing && available.y > 0f) {
+                    pullDistance = (pullDistance + available.y).coerceAtMost(thresholdPx * 1.5f)
+                } else if (available.y < 0f) {
+                    pullDistance = 0f
+                }
+                return Offset.Zero
+            }
+
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                if (pullDistance >= thresholdPx && !isRefreshing) refresh() else pullDistance = 0f
+                return Velocity.Zero
+            }
         }
     }
 
@@ -127,34 +161,35 @@ private fun EventListScreen(
             }
         }
     ) { padding ->
-        PullToRefreshBox(
-            isRefreshing = isRefreshing,
-            onRefresh = ::refresh,
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .nestedScroll(pullConnection)
         ) {
-            if (events.isEmpty()) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(24.dp),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text("등록된 업무 일정이 없습니다.", fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "MERI Outlook 일정이 동기화되면 이 화면에 표시됩니다.\n화면을 아래로 당겨 새로고침할 수 있습니다.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (events.isEmpty()) {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp, vertical = 120.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("등록된 업무 일정이 없습니다.", fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "MERI Outlook 일정이 동기화되면 이 화면에 표시됩니다.\n화면을 아래로 당겨 새로고침할 수 있습니다.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                } else {
                     item { ScheduleSummaryCard(todayEvents.size, upcomingEvents.size) }
 
                     if (todayEvents.isNotEmpty()) {
@@ -180,6 +215,23 @@ private fun EventListScreen(
 
                     item { Spacer(Modifier.height(16.dp)) }
                 }
+            }
+
+            if (isRefreshing) {
+                CircularProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp)
+                )
+            } else if (pullDistance > 0f) {
+                Text(
+                    if (pullDistance >= thresholdPx) "놓아서 새로고침" else "아래로 당겨 새로고침",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp)
+                )
             }
         }
     }
