@@ -23,6 +23,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -34,8 +35,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.nomistake.app.data.local.entity.ChecklistTemplateEntity
 import com.nomistake.app.data.local.entity.NotificationRuleEntity
 import com.nomistake.app.data.local.entity.RuleAppliesTo
+import kotlin.math.abs
 
 @Composable
 fun SettingsScreen(
@@ -50,17 +53,31 @@ fun SettingsScreen(
     var keyword by remember { mutableStateOf("") }
     var checklistText by remember { mutableStateOf("") }
     val notificationDrafts = remember { mutableStateMapOf<Long, String>() }
+    val notificationDayDrafts = remember { mutableStateMapOf<Long, String>() }
+    var selectedTemplate by remember { mutableStateOf<ChecklistTemplateEntity?>(null) }
+    var templateOriginal by remember { mutableStateOf("") }
+    var templateDraft by remember { mutableStateOf("") }
     var showLeaveDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(selectedTemplate?.id) {
+        selectedTemplate?.let { template ->
+            val text = viewModel.getTemplateItemsText(template.id)
+            templateOriginal = text
+            templateDraft = text
+        }
+    }
 
     val profileDirty = displayNameInput.trim() != viewModel.displayName || markerInput.trim() != viewModel.mineMarker
     val typeDirty = typeName.isNotBlank() || keyword.isNotBlank() || checklistText.isNotBlank()
-    val hasUnsaved = profileDirty || typeDirty || notificationDrafts.isNotEmpty()
+    val templateDirty = selectedTemplate != null && templateDraft.trim() != templateOriginal.trim()
+    val hasUnsaved = profileDirty || typeDirty || templateDirty || notificationDrafts.isNotEmpty() || notificationDayDrafts.isNotEmpty()
     val profileSavable = !profileDirty || (displayNameInput.trim().isNotEmpty() && markerInput.trim().isNotEmpty())
     val typeSavable = !typeDirty || (typeName.isNotBlank() && keyword.isNotBlank() && checklistText.isNotBlank())
+    val templateSavable = !templateDirty || templateDraft.lineSequence().any { it.isNotBlank() }
     val notificationsSavable = notificationDrafts.all { (id, value) ->
-        rules.firstOrNull { it.id == id }?.let { isNotificationDraftValid(it, value) } ?: false
-    }
-    val canSaveAll = profileSavable && typeSavable && notificationsSavable
+        rules.firstOrNull { it.id == id }?.let { isTimeDraftValid(it, value) } ?: false
+    } && notificationDayDrafts.all { (_, value) -> value.toIntOrNull()?.let { it >= 0 } == true }
+    val canSaveAll = profileSavable && typeSavable && templateSavable && notificationsSavable
 
     fun leaveWithoutSaving() {
         showLeaveDialog = false
@@ -71,10 +88,21 @@ fun SettingsScreen(
         if (!canSaveAll) return
         if (profileDirty) viewModel.saveProfile(displayNameInput, markerInput)
         if (typeDirty) viewModel.addTaskType(typeName, keyword, checklistText)
-        notificationDrafts.toMap().forEach { (id, value) ->
-            rules.firstOrNull { it.id == id }?.let { viewModel.saveTiming(it, value) }
+        if (templateDirty) selectedTemplate?.let { viewModel.saveTemplateItems(it, templateDraft) }
+        rules.forEach { rule ->
+            val timeDraft = notificationDrafts[rule.id]
+            val dayDraft = notificationDayDrafts[rule.id]
+            when {
+                rule.dayOffset != null && rule.timeOfDay != null && (timeDraft != null || dayDraft != null) -> {
+                    val days = dayDraft ?: abs(rule.dayOffset).toString()
+                    val time = timeDraft ?: rule.timeOfDay
+                    viewModel.saveDayAndTime(rule, days, time)
+                }
+                timeDraft != null -> viewModel.saveTiming(rule, timeDraft)
+            }
         }
         notificationDrafts.clear()
+        notificationDayDrafts.clear()
         showLeaveDialog = false
         onBack()
     }
@@ -141,11 +169,7 @@ fun SettingsScreen(
                     description = "Outlook 일정 제목에서 내 업무만 구분하기 위한 기본 정보입니다."
                 ) {
                     viewModel.status?.let {
-                        Text(
-                            it,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.height(8.dp))
                     }
                     OutlinedTextField(
@@ -178,21 +202,50 @@ fun SettingsScreen(
             item {
                 SettingsSectionCard(
                     title = "업무 유형 및 준비항목",
-                    description = "일정 제목의 키워드에 따라 업무 유형을 분류하고 준비 체크리스트를 자동으로 붙입니다."
+                    description = "업무 유형별 기본 준비 체크리스트를 수정하거나 새 유형을 추가할 수 있습니다."
                 ) {
-                    if (taskTypes.isNotEmpty()) {
-                        Text("현재 등록", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            taskTypes.joinToString(" · ") { it.name },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        HorizontalDivider()
-                        Spacer(Modifier.height(12.dp))
+                    Text("등록된 업무 유형", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(6.dp))
+                    taskTypes.forEach { template ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(template.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                            TextButton(onClick = { selectedTemplate = template }) { Text("준비항목 수정") }
+                        }
                     }
 
+                    selectedTemplate?.let { template ->
+                        Spacer(Modifier.height(8.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(12.dp))
+                        Text("${template.name} 기본 준비항목", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = templateDraft,
+                            onValueChange = { templateDraft = it },
+                            label = { Text("준비항목") },
+                            supportingText = { Text("한 줄에 하나씩 입력 · 이후 동기화되는 일정에 반영") },
+                            minLines = 3,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = { selectedTemplate = null; templateDraft = ""; templateOriginal = "" }) { Text("닫기") }
+                            Button(
+                                onClick = {
+                                    viewModel.saveTemplateItems(template, templateDraft)
+                                    templateOriginal = templateDraft
+                                },
+                                enabled = templateDirty && templateDraft.lineSequence().any { it.isNotBlank() }
+                            ) { Text("준비항목 저장") }
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(12.dp))
                     Text("새 업무 유형 추가", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
@@ -241,7 +294,7 @@ fun SettingsScreen(
                 Column(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)) {
                     Text("알림", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text(
-                        "업무 일정에 맞춰 자동으로 알림을 등록합니다.",
+                        "며칠 전인지와 알림 시각까지 직접 조정할 수 있습니다.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -258,16 +311,27 @@ fun SettingsScreen(
                 items(rules, key = { it.id }) { rule ->
                     NotificationRuleCard(
                         rule = rule,
+                        title = viewModel.notificationRuleTitle(rule),
                         draftValue = notificationDrafts[rule.id],
+                        dayDraftValue = notificationDayDrafts[rule.id],
                         onDraftChange = { value ->
                             val initial = rule.minutesBefore?.toString() ?: rule.timeOfDay.orEmpty()
-                            if (value == initial) notificationDrafts.remove(rule.id)
-                            else notificationDrafts[rule.id] = value
+                            if (value == initial) notificationDrafts.remove(rule.id) else notificationDrafts[rule.id] = value
+                        },
+                        onDayDraftChange = { value ->
+                            val initial = abs(rule.dayOffset ?: 0).toString()
+                            if (value == initial) notificationDayDrafts.remove(rule.id) else notificationDayDrafts[rule.id] = value
                         },
                         onEnabledChange = { viewModel.setEnabled(rule, it) },
-                        onSaveTiming = { value ->
-                            viewModel.saveTiming(rule, value)
-                            notificationDrafts.remove(rule.id)
+                        onSave = { daysBefore, timeValue ->
+                            if (rule.dayOffset != null && rule.timeOfDay != null) {
+                                viewModel.saveDayAndTime(rule, daysBefore, timeValue)
+                                notificationDayDrafts.remove(rule.id)
+                                notificationDrafts.remove(rule.id)
+                            } else {
+                                viewModel.saveTiming(rule, timeValue)
+                                notificationDrafts.remove(rule.id)
+                            }
                         }
                     )
                 }
@@ -306,18 +370,14 @@ private fun SettingsSectionCard(
         Column(modifier = Modifier.padding(16.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
-            Text(
-                description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(14.dp))
             content()
         }
     }
 }
 
-private fun isNotificationDraftValid(rule: NotificationRuleEntity, value: String): Boolean {
+private fun isTimeDraftValid(rule: NotificationRuleEntity, value: String): Boolean {
     val normalized = value.trim()
     return when {
         rule.minutesBefore != null -> normalized.toIntOrNull()?.let { it > 0 } == true
@@ -329,20 +389,27 @@ private fun isNotificationDraftValid(rule: NotificationRuleEntity, value: String
 @Composable
 private fun NotificationRuleCard(
     rule: NotificationRuleEntity,
+    title: String,
     draftValue: String?,
+    dayDraftValue: String?,
     onDraftChange: (String) -> Unit,
+    onDayDraftChange: (String) -> Unit,
     onEnabledChange: (Boolean) -> Unit,
-    onSaveTiming: (String) -> Unit
+    onSave: (String, String) -> Unit
 ) {
     val initialValue = rule.minutesBefore?.toString() ?: rule.timeOfDay.orEmpty()
     val value = draftValue ?: initialValue
-    val relative = rule.minutesBefore != null
+    val absolute = rule.dayOffset != null && rule.timeOfDay != null
+    val initialDays = abs(rule.dayOffset ?: 0).toString()
+    val days = dayDraftValue ?: initialDays
+    val dirty = value != initialValue || (absolute && days != initialDays)
+    val valid = isTimeDraftValid(rule, value) && (!absolute || days.toIntOrNull()?.let { it >= 0 } == true)
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(rule.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
                         if (rule.appliesTo == RuleAppliesTo.TIMED_ONLY) "시간이 지정된 일정" else "대상 일정 전체",
                         style = MaterialTheme.typography.bodySmall,
@@ -354,22 +421,31 @@ private fun NotificationRuleCard(
 
             if (rule.enabled) {
                 Spacer(Modifier.height(12.dp))
+                if (absolute) {
+                    OutlinedTextField(
+                        value = days,
+                        onValueChange = onDayDraftChange,
+                        label = { Text("며칠 전") },
+                        supportingText = { Text("0 = 당일, 1 = D-1, 2 = D-2") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
                 OutlinedTextField(
                     value = value,
                     onValueChange = onDraftChange,
-                    label = { Text(if (relative) "몇 분 전 알림" else "알림 시각") },
-                    supportingText = { if (!relative) Text("24시간 표기, 예: 14:00") },
+                    label = { Text(if (absolute) "알림 시각" else "몇 분 전 알림") },
+                    supportingText = { if (absolute) Text("24시간 표기, 예: 14:00") },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = if (relative) KeyboardType.Number else KeyboardType.Ascii),
+                    keyboardOptions = KeyboardOptions(keyboardType = if (absolute) KeyboardType.Ascii else KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth()
                 )
-                if (value != initialValue) {
+                if (dirty) {
                     Spacer(Modifier.height(8.dp))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        Button(
-                            onClick = { onSaveTiming(value) },
-                            enabled = isNotificationDraftValid(rule, value)
-                        ) { Text("변경 적용") }
+                        Button(onClick = { onSave(days, value) }, enabled = valid) { Text("변경 적용") }
                     }
                 }
             }
