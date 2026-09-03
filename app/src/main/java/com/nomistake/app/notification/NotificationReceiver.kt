@@ -56,17 +56,21 @@ class NotificationReceiver : BroadcastReceiver() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
 
+        val notificationManager = NotificationManagerCompat.from(context)
+        if (!notificationManager.areNotificationsEnabled()) {
+            // 시스템 알림이 차단된 상태에서는 notify()가 예외 없이 반환될 수 있다.
+            // 이 경우 준비 마감 알림을 전달 완료로 소모하면 권한 복구 후 catch-up 기회를 잃으므로
+            // 아무 것도 기록하지 않고 다음 재스케줄 기회를 남긴다.
+            return
+        }
+
         try {
-            NotificationManagerCompat.from(context).notify(notificationId(eventId, ruleLabel), notification)
+            notificationManager.notify(notificationId(eventId, ruleLabel), notification)
             if (isPreparationReminder) {
-                // 실제 notify 호출이 성공한 경우에만 처리 완료로 기록한다.
-                // 알림 권한이 꺼져 있던 동안에는 delivered로 소모하지 않아,
-                // 권한을 다시 켠 뒤 다음 재스케줄에서 catch-up 기회를 유지한다.
                 NotificationAlarmScheduler.markPreparationReminderDelivered(context, eventId)
             }
         } catch (_: SecurityException) {
-            // Android 13+ 알림 권한이 거부된 경우 앱을 중단시키지 않고,
-            // 준비 마감 reminder도 delivered로 기록하지 않는다.
+            // Android 13+ 권한 상태가 호출 사이에 바뀐 경우에도 delivered로 기록하지 않는다.
         }
     }
 
