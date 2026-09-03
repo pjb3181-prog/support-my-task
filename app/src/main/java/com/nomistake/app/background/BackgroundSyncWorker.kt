@@ -16,6 +16,7 @@ import com.nomistake.app.data.remote.FirestoreCalendarSyncSource
 import com.nomistake.app.data.repository.CalendarSyncRepository
 import com.nomistake.app.data.repository.ChecklistRepository
 import com.nomistake.app.notification.NotificationAlarmScheduler
+import com.nomistake.app.widget.PreparationWidgetProvider
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -80,6 +81,8 @@ class BackgroundSyncWorker(
                 eventDao = db.eventDao(),
                 settingDao = db.settingDao()
             ).rescheduleAll()
+
+            PreparationWidgetProvider.refresh(applicationContext)
 
             Result.success()
         } catch (e: Exception) {
