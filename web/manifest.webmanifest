@@ -1,0 +1,9 @@
+{
+  "name": "MERI Schedule Assistant",
+  "short_name": "MERI Schedule",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f6f8",
+  "theme_color": "#315b7d",
+  "lang": "ko-KR"
+}
