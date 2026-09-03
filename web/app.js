@@ -1,6 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import { collection, getDocs, getFirestore, query, where } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+import { preparationDeadlineFor } from "./work-calendar.js";
 
 const TYPE_RULES = [
   ["FMEA", "FMEA"],
@@ -175,6 +176,7 @@ function appendSection(title, events, showDate) {
 
   events.forEach((event) => {
     const parts = dateParts(event);
+    const deadline = preparationDeadlineFor(event, state.events, state.marker);
     const b = document.createElement("button");
     b.className = "event-card";
     const room = event.parsed.roomType === "대" ? "대회의실" : event.parsed.roomType === "세" ? "세미나실" : "";
@@ -190,6 +192,7 @@ function appendSection(title, events, showDate) {
         <div class="title-row"><strong>${escapeHtml(event.parsed.cleanTitle)}</strong></div>
         <div class="time">${escapeHtml(formatEvent(event, showDate))}</div>
         ${meta ? `<div class="meta">${escapeHtml(meta)}</div>` : ""}
+        ${deadline ? `<div class="prep-line">준비 마감 · ${escapeHtml(deadline.label)}</div>` : ""}
       </div>
       <div class="event-action">
         ${typeLabel ? `<span class="type-badge">${escapeHtml(typeLabel)}</span>` : ""}
@@ -224,6 +227,13 @@ function openDetail(event) {
     event.parsed.roomType === "대" ? "대회의실" : event.parsed.roomType === "세" ? "세미나실" : "",
     event.location || "",
   ].filter(Boolean).join(" · ");
+
+  const deadline = preparationDeadlineFor(event, state.events, state.marker);
+  $("deadlineCard").classList.toggle("hidden", !deadline);
+  if (deadline) {
+    $("deadlineText").textContent = deadline.label;
+    $("deadlineReason").textContent = deadline.reason;
+  }
 
   const checklist = $("checklist");
   checklist.innerHTML = "";
@@ -279,7 +289,7 @@ async function loadEvents({ silent = false } = {}) {
   state.syncing = true;
   setSyncState("syncing", "동기화 중");
   const from = new Date();
-  from.setDate(from.getDate() - 7);
+  from.setDate(from.getDate() - 45);
   from.setHours(0, 0, 0, 0);
   const fromIso = `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, "0")}-${String(from.getDate()).padStart(2, "0")}T00:00:00`;
   try {
