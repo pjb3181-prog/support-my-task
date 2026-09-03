@@ -21,9 +21,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PullToRefreshBox
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,6 +34,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +48,8 @@ import com.nomistake.app.data.local.entity.ItemOrigin
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private val dateFormatter = DateTimeFormatter.ofPattern("M월 d일 (E)")
 private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
@@ -53,22 +58,25 @@ private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 fun MainScreen(
     viewModel: MainViewModel,
     onOpenSettings: () -> Unit,
-    onOpenDebug: () -> Unit
+    onOpenDebug: () -> Unit,
+    onRefresh: () -> Unit
 ) {
     val selectedEvent by viewModel.selectedEvent.collectAsState()
 
     if (selectedEvent == null) {
-        EventListScreen(viewModel, onOpenSettings, onOpenDebug)
+        EventListScreen(viewModel, onOpenSettings, onOpenDebug, onRefresh)
     } else {
         EventDetailScreen(viewModel)
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun EventListScreen(
     viewModel: MainViewModel,
     onOpenSettings: () -> Unit,
-    onOpenDebug: () -> Unit
+    onOpenDebug: () -> Unit,
+    onRefresh: () -> Unit
 ) {
     val events by viewModel.events.collectAsState()
     val zone = ZoneId.systemDefault()
@@ -76,6 +84,18 @@ private fun EventListScreen(
     val todayEvents = events.filter { it.startTime.atZone(zone).toLocalDate() == today }
     val upcomingEvents = events.filter { it.startTime.atZone(zone).toLocalDate().isAfter(today) }
     val pastEvents = events.filter { it.startTime.atZone(zone).toLocalDate().isBefore(today) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    fun refresh() {
+        if (isRefreshing) return
+        isRefreshing = true
+        onRefresh()
+        scope.launch {
+            delay(1_500)
+            isRefreshing = false
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -107,54 +127,59 @@ private fun EventListScreen(
             }
         }
     ) { padding ->
-        if (events.isEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text("등록된 업무 일정이 없습니다.", fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "MERI Outlook 일정이 동기화되면 이 화면에 표시됩니다.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                item { ScheduleSummaryCard(todayEvents.size, upcomingEvents.size) }
-
-                if (todayEvents.isNotEmpty()) {
-                    item { SectionHeader("오늘", "${todayEvents.size}건") }
-                    items(todayEvents, key = { it.id }) { event ->
-                        EventCard(event, showDate = false) { viewModel.openEvent(event.id) }
-                    }
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = ::refresh,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            if (events.isEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("등록된 업무 일정이 없습니다.", fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "MERI Outlook 일정이 동기화되면 이 화면에 표시됩니다.\n화면을 아래로 당겨 새로고침할 수 있습니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    item { ScheduleSummaryCard(todayEvents.size, upcomingEvents.size) }
 
-                if (upcomingEvents.isNotEmpty()) {
-                    item { SectionHeader("예정 일정", "${upcomingEvents.size}건") }
-                    items(upcomingEvents, key = { it.id }) { event ->
-                        EventCard(event, showDate = true) { viewModel.openEvent(event.id) }
+                    if (todayEvents.isNotEmpty()) {
+                        item { SectionHeader("오늘", "${todayEvents.size}건") }
+                        items(todayEvents, key = { it.id }) { event ->
+                            EventCard(event, showDate = false) { viewModel.openEvent(event.id) }
+                        }
                     }
-                }
 
-                if (pastEvents.isNotEmpty()) {
-                    item { SectionHeader("지난 일정", "${pastEvents.size}건") }
-                    items(pastEvents.takeLast(5), key = { it.id }) { event ->
-                        EventCard(event, showDate = true) { viewModel.openEvent(event.id) }
+                    if (upcomingEvents.isNotEmpty()) {
+                        item { SectionHeader("예정 일정", "${upcomingEvents.size}건") }
+                        items(upcomingEvents, key = { it.id }) { event ->
+                            EventCard(event, showDate = true) { viewModel.openEvent(event.id) }
+                        }
                     }
-                }
 
-                item { Spacer(Modifier.height(16.dp)) }
+                    if (pastEvents.isNotEmpty()) {
+                        item { SectionHeader("지난 일정", "${pastEvents.size}건") }
+                        items(pastEvents.takeLast(5), key = { it.id }) { event ->
+                            EventCard(event, showDate = true) { viewModel.openEvent(event.id) }
+                        }
+                    }
+
+                    item { Spacer(Modifier.height(16.dp)) }
+                }
             }
         }
     }
