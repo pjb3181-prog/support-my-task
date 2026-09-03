@@ -1,12 +1,15 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    NoMistake PC Companion - Classic Outlook COM + Firestore + lightweight Windows tray host.
+    MERI Schedule Assistant PC Companion - Classic Outlook COM + Firestore + Windows tray host.
 
-    빌드: .NET SDK 8(net8.0-windows) + NuGet restore(Google.Cloud.Firestore). build.ps1 사용.
-    COM 접근은 dynamic late-binding(ProgID 'Outlook.Application')이라 interop 어셈블리/COMReference가
-    필요 없다. Firebase credential은 %LOCALAPPDATA%\NoMistakeCompanion 아래에만 두며 Git에
-    커밋하지 않는다.
+    배포 기본값:
+    - Windows x64 self-contained
+    - single-file EXE
+    - 대상 PC에 .NET 8 Runtime 설치 불필요
+    - trimming 비활성화: COM/dynamic/Firestore reflection 호환성 우선
+
+    Firebase credential은 %LOCALAPPDATA%\NoMistakeCompanion 아래에만 두며 Git에 커밋하지 않는다.
 
     TrayProgram이 실제 entry point다.
     - 인자 없이 실행 또는 tray 인자: console 없는 NotifyIcon tray app
@@ -22,6 +25,15 @@
     <Nullable>disable</Nullable>
     <RootNamespace>OutlookCompanion</RootNamespace>
     <AssemblyName>OutlookCompanion</AssemblyName>
+
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
 
   <ItemGroup>
