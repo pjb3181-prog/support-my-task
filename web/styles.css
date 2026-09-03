@@ -7,7 +7,7 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; background: #f4f6f8; }
-button, input { font: inherit; }
+button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 .hidden { display: none !important; }
 .muted { color: #66737d; font-size: 0.88rem; }
@@ -58,13 +58,24 @@ main { max-width: 720px; margin: 0 auto; padding: 8px 12px calc(30px + env(safe-
 .text-button { border: 0; background: transparent; color: #315b7d; padding: 8px; }
 button:not(.text-button) { border: 0; border-radius: 8px; background: #315b7d; color: white; padding: 10px 14px; }
 
-input { width: 100%; padding: 12px; border: 1px solid #aeb9c2; border-radius: 8px; background: white; margin-top: 6px; }
+input, textarea, select {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #aeb9c2;
+  border-radius: 8px;
+  background: white;
+  margin-top: 6px;
+}
+textarea { resize: vertical; line-height: 1.45; }
+select { appearance: auto; }
+hr { border: 0; border-top: 1px solid #dde3e8; margin: 18px 0; }
 
-dialog { border: 0; padding: 0; background: transparent; width: min(94vw, 620px); }
+ dialog { border: 0; padding: 0; background: transparent; width: min(94vw, 620px); }
 dialog::backdrop { background: rgba(0,0,0,.36); }
 .dialog-card { padding: 18px; max-height: 86vh; overflow: auto; }
 .dialog-card h2 { margin-top: 0; }
-.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.dialog-actions, .inline-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.inline-actions { margin-top: 10px; }
 .back-button { margin: -8px 0 4px -8px; }
 .check-row { display: flex; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid #e5e9ed; }
 .check-row input { width: 22px; height: 22px; margin: 0; }
