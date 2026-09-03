@@ -53,6 +53,7 @@ const state = {
   events: [],
   configReady: false,
   typeItems: loadTypeItems(),
+  syncing: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -61,6 +62,23 @@ const summary = $("summary");
 const eventList = $("eventList");
 const emptyState = $("emptyState");
 const pullHint = $("pullHint");
+let toastTimer = null;
+
+function showToast(message) {
+  const toast = $("toast");
+  toast.textContent = message;
+  toast.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove("show"), 1800);
+}
+
+function setSyncState(mode, text) {
+  const pill = $("syncPill");
+  $("syncStatus").textContent = text;
+  pill.classList.remove("syncing", "failed");
+  if (mode === "syncing") pill.classList.add("syncing");
+  if (mode === "failed") pill.classList.add("failed");
+}
 
 function parseTitle(raw) {
   let title = String(raw || "").trim();
@@ -91,6 +109,16 @@ function localIsoDate(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function dateParts(event) {
+  const start = localIsoDate(event.start);
+  if (!start) return { month: "-", day: "-", weekday: "" };
+  return {
+    month: `${start.getMonth() + 1}월`,
+    day: String(start.getDate()),
+    weekday: new Intl.DateTimeFormat("ko-KR", { weekday: "short" }).format(start),
+  };
+}
+
 function formatEvent(event, showDate = true) {
   const start = localIsoDate(event.start);
   const end = localIsoDate(event.end);
@@ -110,12 +138,16 @@ function checklistFor(event) {
   return [...new Map(items.map((x) => [x.trim().toLowerCase(), x])).values()];
 }
 
-function render() {
-  const today = new Date(); today.setHours(0,0,0,0);
-  const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
-  const active = state.events
+function activeEvents() {
+  return state.events
     .filter((e) => !e.deleted && e.parsed?.isMine)
-    .sort((a,b) => String(a.start).localeCompare(String(b.start)));
+    .sort((a, b) => String(a.start).localeCompare(String(b.start)));
+}
+
+function render() {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+  const active = activeEvents();
 
   const todayEvents = active.filter((e) => {
     const d = localIsoDate(e.start); return d && d >= today && d < tomorrow;
@@ -140,11 +172,29 @@ function appendSection(title, events, showDate) {
   header.className = "section-title";
   header.innerHTML = `<span>${title}</span><span>${events.length}건</span>`;
   eventList.appendChild(header);
+
   events.forEach((event) => {
+    const parts = dateParts(event);
     const b = document.createElement("button");
     b.className = "event-card";
-    const meta = [event.parsed.roomType === "대" ? "대회의실" : event.parsed.roomType === "세" ? "세미나실" : "", event.location || ""].filter(Boolean).join(" · ");
-    b.innerHTML = `<div class="title-row"><strong>${escapeHtml(event.parsed.cleanTitle)}</strong><span class="type">${escapeHtml(event.parsed.scheduleType || "")}</span></div><div class="time">${escapeHtml(formatEvent(event, showDate))}</div>${meta ? `<div class="meta">${escapeHtml(meta)}</div>` : ""}`;
+    const room = event.parsed.roomType === "대" ? "대회의실" : event.parsed.roomType === "세" ? "세미나실" : "";
+    const meta = [room, event.location || ""].filter(Boolean).join(" · ");
+    const typeLabel = TYPE_LABELS[event.parsed.scheduleType] || event.parsed.scheduleType || "";
+    b.innerHTML = `
+      <div class="event-date">
+        <span class="month">${escapeHtml(parts.month)}</span>
+        <strong class="day">${escapeHtml(parts.day)}</strong>
+        <span class="weekday">${escapeHtml(parts.weekday)}</span>
+      </div>
+      <div class="event-body">
+        <div class="title-row"><strong>${escapeHtml(event.parsed.cleanTitle)}</strong></div>
+        <div class="time">${escapeHtml(formatEvent(event, showDate))}</div>
+        ${meta ? `<div class="meta">${escapeHtml(meta)}</div>` : ""}
+      </div>
+      <div class="event-action">
+        ${typeLabel ? `<span class="type-badge">${escapeHtml(typeLabel)}</span>` : ""}
+        <span class="chevron">›</span>
+      </div>`;
     b.addEventListener("click", () => openDetail(event));
     eventList.appendChild(b);
   });
@@ -154,24 +204,51 @@ function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" }[c]));
 }
 
+function updateDetailProgress(event, items) {
+  const checked = JSON.parse(localStorage.getItem(`meri.check.${event.id}`) || "{}");
+  const completed = items.filter((text) => !!checked[text]).length;
+  const total = items.length;
+  const ratio = total ? Math.round((completed / total) * 100) : 0;
+  $("detailProgressText").textContent = `${completed}/${total}`;
+  $("detailProgressBar").style.width = `${ratio}%`;
+  $("detailStatus").textContent = total > 0 && completed === total ? "준비 완료" : "준비 확인";
+  $("detailStatus").classList.toggle("complete", total > 0 && completed === total);
+}
+
 function openDetail(event) {
+  const typeLabel = TYPE_LABELS[event.parsed.scheduleType] || event.parsed.scheduleType || "일정";
+  $("detailType").textContent = typeLabel;
   $("detailTitle").textContent = event.parsed.cleanTitle;
-  $("detailMeta").textContent = [formatEvent(event, true), event.parsed.scheduleType, event.parsed.roomType === "대" ? "대회의실" : event.parsed.roomType === "세" ? "세미나실" : ""].filter(Boolean).join(" · ");
+  $("detailMeta").textContent = [
+    formatEvent(event, true),
+    event.parsed.roomType === "대" ? "대회의실" : event.parsed.roomType === "세" ? "세미나실" : "",
+    event.location || "",
+  ].filter(Boolean).join(" · ");
+
   const checklist = $("checklist");
   checklist.innerHTML = "";
+  const items = checklistFor(event);
   const checked = JSON.parse(localStorage.getItem(`meri.check.${event.id}`) || "{}");
-  checklistFor(event).forEach((text) => {
+
+  items.forEach((text) => {
     const row = document.createElement("label");
     row.className = "check-row";
-    const box = document.createElement("input"); box.type = "checkbox"; box.checked = !!checked[text];
-    const span = document.createElement("span"); span.textContent = text;
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = !!checked[text];
+    const span = document.createElement("span");
+    span.textContent = text;
     box.addEventListener("change", () => {
       const next = JSON.parse(localStorage.getItem(`meri.check.${event.id}`) || "{}");
       next[text] = box.checked;
       localStorage.setItem(`meri.check.${event.id}`, JSON.stringify(next));
+      updateDetailProgress(event, items);
     });
-    row.append(box, span); checklist.appendChild(row);
+    row.append(box, span);
+    checklist.appendChild(row);
   });
+
+  updateDetailProgress(event, items);
   $("detailDialog").showModal();
 }
 
@@ -197,22 +274,30 @@ function normalizedLines(value) {
     .filter((x) => x && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
 }
 
-async function loadEvents() {
-  if (!state.configReady) return;
-  $("syncStatus").textContent = "동기화 중";
-  const from = new Date(); from.setDate(from.getDate() - 7); from.setHours(0,0,0,0);
-  const fromIso = `${from.getFullYear()}-${String(from.getMonth()+1).padStart(2,"0")}-${String(from.getDate()).padStart(2,"0")}T00:00:00`;
+async function loadEvents({ silent = false } = {}) {
+  if (!state.configReady || state.syncing) return;
+  state.syncing = true;
+  setSyncState("syncing", "동기화 중");
+  const from = new Date();
+  from.setDate(from.getDate() - 7);
+  from.setHours(0, 0, 0, 0);
+  const fromIso = `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, "0")}-${String(from.getDate()).padStart(2, "0")}T00:00:00`;
   try {
     const snap = await getDocs(query(collection(window.__meriDb, "events"), where("start", ">=", fromIso)));
     state.events = snap.docs.map((doc) => {
       const data = doc.data();
       return { id: doc.id, ...data, parsed: parseTitle(data.subject || "") };
     });
-    $("syncStatus").textContent = "Outlook 연동";
+    setSyncState("ok", "Outlook 연동");
+    $("lastSyncTime").textContent = new Intl.DateTimeFormat("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
     render();
+    if (!silent) showToast("일정을 새로 불러왔습니다.");
   } catch (err) {
     console.error(err);
-    $("syncStatus").textContent = "동기화 실패";
+    setSyncState("failed", "동기화 실패");
+    if (!silent) showToast("동기화에 실패했습니다.");
+  } finally {
+    state.syncing = false;
   }
 }
 
@@ -225,13 +310,16 @@ async function bootstrap() {
     const auth = getAuth(firebaseApp);
     window.__meriDb = getFirestore(firebaseApp);
     state.configReady = true;
-    onAuthStateChanged(auth, (user) => { if (user) loadEvents(); });
+    onAuthStateChanged(auth, (user) => { if (user) loadEvents({ silent: true }); });
     if (!auth.currentUser) await signInAnonymously(auth);
   } catch (err) {
     console.warn("Firebase web config not ready", err);
+    setSyncState("failed", "연결 필요");
     setupCard.classList.remove("hidden");
   }
 }
+
+$("refreshButton").addEventListener("click", () => loadEvents());
 
 $("settingsButton").addEventListener("click", () => {
   $("markerInput").value = state.marker;
@@ -247,7 +335,7 @@ $("saveSettingsButton").addEventListener("click", (event) => {
   localStorage.setItem("meri.marker", marker);
   state.events = state.events.map((e) => ({ ...e, parsed: parseTitle(e.subject || "") }));
   render();
-  $("settingsDialog").close();
+  showToast("내 일정 식별문자를 저장했습니다.");
 });
 
 $("typeSelect").addEventListener("change", () => populateTypeEditor($("typeSelect").value));
@@ -259,6 +347,7 @@ $("saveTypeItemsButton").addEventListener("click", () => {
   state.typeItems[type] = items;
   localStorage.setItem("meri.typeItems", JSON.stringify(state.typeItems));
   $("typeItemsInput").value = items.join("\n");
+  showToast(`${TYPE_LABELS[type] || type} 체크리스트를 저장했습니다.`);
 });
 
 $("resetTypeItemsButton").addEventListener("click", () => {
@@ -267,10 +356,14 @@ $("resetTypeItemsButton").addEventListener("click", () => {
   state.typeItems[type] = [...(DEFAULT_TYPE_ITEMS[type] || [])];
   localStorage.setItem("meri.typeItems", JSON.stringify(state.typeItems));
   populateTypeEditor(type);
+  showToast(`${TYPE_LABELS[type] || type} 기본값을 복원했습니다.`);
 });
 
 let startY = null;
-window.addEventListener("touchstart", (e) => { if (window.scrollY <= 0) startY = e.touches[0].clientY; }, { passive: true });
+window.addEventListener("touchstart", (e) => {
+  if (window.scrollY <= 0) startY = e.touches[0].clientY;
+}, { passive: true });
+
 window.addEventListener("touchmove", (e) => {
   if (startY == null || window.scrollY > 0) return;
   const dy = Math.max(0, e.touches[0].clientY - startY);
@@ -279,10 +372,13 @@ window.addEventListener("touchmove", (e) => {
   pullHint.classList.toggle("visible", offset > 6);
   pullHint.textContent = offset >= 58 ? "놓아서 새로고침" : "아래로 당겨 새로고침";
 }, { passive: true });
+
 window.addEventListener("touchend", async () => {
   const transform = eventList.style.transform.match(/([0-9.]+)px/);
   const offset = transform ? Number(transform[1]) : 0;
-  eventList.style.transform = "translateY(0)"; pullHint.classList.remove("visible"); startY = null;
+  eventList.style.transform = "translateY(0)";
+  pullHint.classList.remove("visible");
+  startY = null;
   if (offset >= 58) await loadEvents();
 }, { passive: true });
 
