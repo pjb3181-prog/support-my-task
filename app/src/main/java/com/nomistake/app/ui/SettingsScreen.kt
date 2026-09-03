@@ -88,11 +88,11 @@ fun SettingsScreen(
     if (showLeaveDialog) {
         AlertDialog(
             onDismissRequest = { showLeaveDialog = false },
-            title = { Text("작성 중인 설정이 있습니다") },
+            title = { Text("저장하지 않은 변경사항") },
             text = {
                 Text(
-                    if (canSaveAll) "변경 내용을 저장하고 일정 화면으로 이동할까요?"
-                    else "작성 중인 항목에 비어 있는 필수값이 있어 지금은 저장할 수 없습니다. 계속 작성하거나 저장하지 않고 이동할 수 있습니다."
+                    if (canSaveAll) "변경 내용을 저장하고 일정 화면으로 돌아갈까요?"
+                    else "입력이 완료되지 않은 항목이 있습니다. 계속 작성하거나 변경사항을 버리고 이동할 수 있습니다."
                 )
             },
             confirmButton = {
@@ -100,7 +100,7 @@ fun SettingsScreen(
             },
             dismissButton = {
                 Row {
-                    TextButton(onClick = { showLeaveDialog = false }) { Text("취소") }
+                    TextButton(onClick = { showLeaveDialog = false }) { Text("계속 작성") }
                     TextButton(onClick = ::leaveWithoutSaving) { Text("저장 안 함") }
                 }
             }
@@ -109,115 +109,151 @@ fun SettingsScreen(
 
     Scaffold(
         topBar = {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
             ) {
-                TextButton(onClick = ::requestBack) { Text("← 일정") }
-                Text("설정", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = ::requestBack) { Text("← 일정") }
+                    Column(modifier = Modifier.weight(1f).padding(start = 4.dp)) {
+                        Text("설정", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(
+                            "MERI Schedule Assistant 환경설정",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
         }
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Text("내 사용자 설정", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text(
-                    "Firebase 로그인은 앱이 자동으로 처리합니다. 여기서는 표시할 사용자명과 일정 제목의 마지막 [참석자코드]에서 찾을 내 식별문자만 설정합니다.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                viewModel.status?.let {
+                SettingsSectionCard(
+                    title = "내 일정 설정",
+                    description = "Outlook 일정 제목에서 내 업무만 구분하기 위한 기본 정보입니다."
+                ) {
+                    viewModel.status?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    OutlinedTextField(
+                        value = displayNameInput,
+                        onValueChange = { displayNameInput = it },
+                        label = { Text("표시 이름") },
+                        placeholder = { Text("예: 박종범") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                     Spacer(Modifier.height(8.dp))
-                    Text(it, style = MaterialTheme.typography.bodyMedium)
+                    OutlinedTextField(
+                        value = markerInput,
+                        onValueChange = { markerInput = it },
+                        label = { Text("내 일정 식별문자") },
+                        supportingText = { Text("일정 제목 마지막 [참석자코드]에서 찾습니다. 예: 종") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Button(
+                            onClick = { viewModel.saveProfile(displayNameInput, markerInput) },
+                            enabled = displayNameInput.trim().isNotEmpty() && markerInput.trim().isNotEmpty() && profileDirty
+                        ) { Text("적용") }
+                    }
                 }
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = displayNameInput,
-                    onValueChange = { displayNameInput = it },
-                    label = { Text("사용자명") },
-                    placeholder = { Text("예: 박종범") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = markerInput,
-                    onValueChange = { markerInput = it },
-                    label = { Text("내 일정 식별문자") },
-                    supportingText = { Text("예: 종 · 저장하면 일정 재분류 sync가 실행됩니다.") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    Button(
-                        onClick = { viewModel.saveProfile(displayNameInput, markerInput) },
-                        enabled = displayNameInput.trim().isNotEmpty() && markerInput.trim().isNotEmpty() && profileDirty
-                    ) { Text("저장") }
-                }
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider()
             }
 
             item {
-                Text("업무 유형", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text(
-                    "HAZOP·LOPA·FMEA뿐 아니라 새 위험성평가/업무를 직접 추가할 수 있습니다. 새 유형은 이후 일정에 자동 분류되고 체크항목이 붙습니다.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "현재: ${taskTypes.joinToString(" · ") { it.name }}",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = typeName,
-                    onValueChange = { typeName = it },
-                    label = { Text("업무유형 이름") },
-                    placeholder = { Text("예: What-if, JSA") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = keyword,
-                    onValueChange = { keyword = it },
-                    label = { Text("제목에서 찾을 키워드") },
-                    placeholder = { Text("예: What-if") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = checklistText,
-                    onValueChange = { checklistText = it },
-                    label = { Text("기본 체크항목 · 한 줄에 하나") },
-                    placeholder = { Text("관련자료 확인\n노트북\n충전기") },
-                    minLines = 3,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    Button(
-                        onClick = {
-                            viewModel.addTaskType(typeName, keyword, checklistText)
-                            typeName = ""
-                            keyword = ""
-                            checklistText = ""
-                        },
-                        enabled = typeName.isNotBlank() && keyword.isNotBlank() && checklistText.isNotBlank()
-                    ) { Text("업무유형 추가") }
+                SettingsSectionCard(
+                    title = "업무 유형 및 준비항목",
+                    description = "일정 제목의 키워드에 따라 업무 유형을 분류하고 준비 체크리스트를 자동으로 붙입니다."
+                ) {
+                    if (taskTypes.isNotEmpty()) {
+                        Text("현재 등록", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            taskTypes.joinToString(" · ") { it.name },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(12.dp))
+                    }
+
+                    Text("새 업무 유형 추가", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = typeName,
+                        onValueChange = { typeName = it },
+                        label = { Text("업무 유형명") },
+                        placeholder = { Text("예: What-if, JSA") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = keyword,
+                        onValueChange = { keyword = it },
+                        label = { Text("일정 제목 키워드") },
+                        placeholder = { Text("예: What-if") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = checklistText,
+                        onValueChange = { checklistText = it },
+                        label = { Text("기본 준비항목") },
+                        supportingText = { Text("한 줄에 하나씩 입력") },
+                        placeholder = { Text("관련자료 확인\n노트북\n충전기") },
+                        minLines = 3,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Button(
+                            onClick = {
+                                viewModel.addTaskType(typeName, keyword, checklistText)
+                                typeName = ""
+                                keyword = ""
+                                checklistText = ""
+                            },
+                            enabled = typeName.isNotBlank() && keyword.isNotBlank() && checklistText.isNotBlank()
+                        ) { Text("업무 유형 추가") }
+                    }
                 }
-                Spacer(Modifier.height(12.dp))
-                HorizontalDivider()
             }
 
             item {
-                Text("알림 규칙", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text("변경하면 현재 일정 기준으로 알람을 즉시 다시 등록합니다.", style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(8.dp))
+                Column(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)) {
+                    Text("알림", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        "업무 일정에 맞춰 자동으로 알림을 등록합니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
             if (rules.isEmpty()) {
-                item { Text("알림 규칙을 불러오는 중입니다.") }
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Text("알림 규칙을 불러오는 중입니다.", modifier = Modifier.padding(16.dp))
+                    }
+                }
             } else {
                 items(rules, key = { it.id }) { rule ->
                     NotificationRuleCard(
@@ -238,12 +274,45 @@ fun SettingsScreen(
             }
 
             item {
-                Spacer(Modifier.height(12.dp))
-                Text("자동 백그라운드 동기화는 00:00~07:59에는 Firestore를 읽지 않습니다. 앱을 직접 열거나 설정을 저장해 발생한 동기화는 예외입니다.", style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(4.dp))
-                Text("종일 일정에는 '시간 지정 일정만' 규칙(T-60/T-30)이 적용되지 않습니다.", style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(24.dp))
+                SettingsSectionCard(
+                    title = "동기화 안내",
+                    description = "백그라운드 동기화는 업무시간 중심으로 동작합니다."
+                ) {
+                    Text(
+                        "00:00~07:59에는 자동 동기화를 쉬며, 앱을 직접 열거나 설정을 변경하면 즉시 동기화할 수 있습니다.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "종일 일정에는 '몇 분 전' 방식의 알림이 적용되지 않습니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
+
+            item { Spacer(Modifier.height(20.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSectionCard(
+    title: String,
+    description: String,
+    content: @Composable () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(14.dp))
+            content()
         }
     }
 }
@@ -275,29 +344,34 @@ private fun NotificationRuleCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(rule.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
-                        if (rule.appliesTo == RuleAppliesTo.TIMED_ONLY) "시간 지정 일정만" else "모든 대상 일정",
-                        style = MaterialTheme.typography.bodySmall
+                        if (rule.appliesTo == RuleAppliesTo.TIMED_ONLY) "시간이 지정된 일정" else "대상 일정 전체",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Switch(checked = rule.enabled, onCheckedChange = onEnabledChange)
             }
 
-            Spacer(Modifier.height(10.dp))
-            OutlinedTextField(
-                value = value,
-                onValueChange = onDraftChange,
-                enabled = rule.enabled,
-                label = { Text(if (relative) "몇 분 전" else "알림 시간 (HH:mm)") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = if (relative) KeyboardType.Number else KeyboardType.Ascii),
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                Button(
-                    onClick = { onSaveTiming(value) },
-                    enabled = rule.enabled && isNotificationDraftValid(rule, value) && value != initialValue
-                ) { Text("저장") }
+            if (rule.enabled) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = onDraftChange,
+                    label = { Text(if (relative) "몇 분 전 알림" else "알림 시각") },
+                    supportingText = { if (!relative) Text("24시간 표기, 예: 14:00") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = if (relative) KeyboardType.Number else KeyboardType.Ascii),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (value != initialValue) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Button(
+                            onClick = { onSaveTiming(value) },
+                            enabled = isNotificationDraftValid(rule, value)
+                        ) { Text("변경 적용") }
+                    }
+                }
             }
         }
     }
