@@ -55,6 +55,7 @@ fun SettingsScreen(
     val notificationDrafts = remember { mutableStateMapOf<Long, String>() }
     val notificationDayDrafts = remember { mutableStateMapOf<Long, String>() }
     var selectedTemplate by remember { mutableStateOf<ChecklistTemplateEntity?>(null) }
+    var templatePendingDelete by remember { mutableStateOf<ChecklistTemplateEntity?>(null) }
     var templateOriginal by remember { mutableStateOf("") }
     var templateDraft by remember { mutableStateOf("") }
     var showLeaveDialog by remember { mutableStateOf(false) }
@@ -135,6 +136,32 @@ fun SettingsScreen(
         )
     }
 
+    templatePendingDelete?.let { template ->
+        AlertDialog(
+            onDismissRequest = { templatePendingDelete = null },
+            title = { Text("업무 유형 삭제") },
+            text = {
+                Text("'${template.name}' 업무 유형과 자동 분류 규칙을 삭제합니다. 이미 만들어진 일정의 체크리스트는 유지됩니다.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (selectedTemplate?.id == template.id) {
+                            selectedTemplate = null
+                            templateDraft = ""
+                            templateOriginal = ""
+                        }
+                        viewModel.deleteTaskType(template)
+                        templatePendingDelete = null
+                    }
+                ) { Text("삭제", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { templatePendingDelete = null }) { Text("취소") }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             Column(
@@ -202,7 +229,7 @@ fun SettingsScreen(
             item {
                 SettingsSectionCard(
                     title = "업무 유형 및 준비항목",
-                    description = "업무 유형별 기본 준비 체크리스트를 수정하거나 새 유형을 추가할 수 있습니다."
+                    description = "업무 유형별 기본 준비 체크리스트를 수정·삭제하거나 새 유형을 추가할 수 있습니다."
                 ) {
                     Text("등록된 업무 유형", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(6.dp))
@@ -212,7 +239,10 @@ fun SettingsScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(template.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-                            TextButton(onClick = { selectedTemplate = template }) { Text("준비항목 수정") }
+                            TextButton(onClick = { selectedTemplate = template }) { Text("수정") }
+                            TextButton(onClick = { templatePendingDelete = template }) {
+                                Text("삭제", color = MaterialTheme.colorScheme.error)
+                            }
                         }
                     }
 
