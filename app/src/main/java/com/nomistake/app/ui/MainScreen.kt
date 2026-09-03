@@ -10,13 +10,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -79,27 +82,28 @@ private fun EventListScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 14.dp)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
-                Text(
-                    "MERI Schedule Assistant",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "MERI Schedule Assistant",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onOpenSettings) { Text("설정") }
+                    TextButton(onClick = onOpenDebug) { Text("진단") }
+                }
                 Text(
                     "업무 일정 · 준비사항 관리",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    TextButton(onClick = onOpenSettings) { Text("설정") }
-                    TextButton(onClick = onOpenDebug) { Text("진단") }
-                }
             }
         }
     ) { padding ->
@@ -125,11 +129,9 @@ private fun EventListScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                item {
-                    ScheduleSummaryCard(todayEvents.size, upcomingEvents.size)
-                }
+                item { ScheduleSummaryCard(todayEvents.size, upcomingEvents.size) }
 
                 if (todayEvents.isNotEmpty()) {
                     item { SectionHeader("오늘", "${todayEvents.size}건") }
@@ -163,26 +165,28 @@ private fun ScheduleSummaryCard(todayCount: Int, upcomingCount: Int) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("업무 현황", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("오늘", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("${todayCount}건", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("예정", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("${upcomingCount}건", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("오늘 일정", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${todayCount}건", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             }
-            Spacer(Modifier.height(6.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("예정 일정", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${upcomingCount}건", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            }
             Text(
-                "MERI Outlook 연동 일정 기준",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                "Outlook 연동",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
             )
         }
     }
@@ -193,7 +197,7 @@ private fun SectionHeader(title: String, countText: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -211,9 +215,11 @@ private fun EventCard(event: EventEntity, showDate: Boolean, onClick: () -> Unit
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp)
-            .clickable(onClick = onClick)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     event.cleanTitle,
@@ -225,11 +231,12 @@ private fun EventCard(event: EventEntity, showDate: Boolean, onClick: () -> Unit
                     Text(
                         it,
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 8.dp)
                     )
                 }
             }
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(4.dp))
             Text(
                 when {
                     event.isAllDay && showDate -> "${start.format(dateFormatter)} · 종일"
@@ -244,7 +251,7 @@ private fun EventCard(event: EventEntity, showDate: Boolean, onClick: () -> Unit
                 event.location?.takeIf { it.isNotBlank() }?.let { add(it) }
             }
             if (meta.isNotEmpty()) {
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(2.dp))
                 Text(
                     meta.joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
@@ -307,7 +314,8 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                    .statusBarsPadding()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TextButton(onClick = ::requestBack) { Text("← 일정") }
@@ -323,14 +331,18 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
         ) {
             item {
                 Text(current.cleanTitle, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(4.dp))
                 EventDetailMeta(current)
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(14.dp))
             }
 
             if (checklist == null) {
                 item {
-                    Card(modifier = Modifier.fillMaxWidth()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
                         Text("준비 체크리스트를 생성하는 중입니다.", modifier = Modifier.padding(16.dp))
                     }
                 }
@@ -342,14 +354,14 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
                         onTaskCompleted = viewModel::setTaskCompleted,
                         onAllDetailsCompleted = viewModel::setAllDetailItemsCompleted
                     )
-                    Spacer(Modifier.height(18.dp))
+                    Spacer(Modifier.height(16.dp))
                     Text("준비 체크리스트", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
                         "업무 유형과 일정 정보에 맞춰 자동 구성된 항목입니다.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(6.dp))
                 }
 
                 if (checklistItems.isEmpty()) {
@@ -367,9 +379,9 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
                 }
 
                 item {
-                    Spacer(Modifier.height(18.dp))
+                    Spacer(Modifier.height(16.dp))
                     HorizontalDivider()
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(12.dp))
                     Text("개인 준비사항 추가", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
                         "이 일정에서만 필요한 항목을 추가할 수 있습니다.",
@@ -407,34 +419,51 @@ private fun TaskSummaryCard(
     val completedCount = items.count { it.isCompleted }
     val allDetailsCompleted = items.isNotEmpty() && completedCount == items.size
 
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("준비 현황", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "$completedCount/${items.size} 항목 확인",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(Modifier.height(10.dp))
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("준비 현황", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        "$completedCount/${items.size} 항목 확인",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Text(
+                    if (allDetailsCompleted) "준비 완료" else "확인 필요",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider()
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(
                     checked = allDetailsCompleted,
                     onCheckedChange = { checked -> onAllDetailsCompleted(checked) },
                     enabled = items.isNotEmpty()
                 )
-                Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
-                    Text("준비항목 전체 확인", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
-                    Text("세부 준비사항을 한 번에 체크합니다.", style = MaterialTheme.typography.bodySmall)
-                }
+                Text(
+                    "준비항목 전체 확인",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f).padding(start = 6.dp)
+                )
             }
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = checklist.isCompleted, onCheckedChange = onTaskCompleted)
-                Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
+                Column(modifier = Modifier.weight(1f).padding(start = 6.dp)) {
                     Text("업무 완료 처리", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
-                    Text("업무 종료 후 완료 상태로 표시합니다.", style = MaterialTheme.typography.bodySmall)
+                    Text("업무 종료 후 체크", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -452,15 +481,15 @@ private fun EventDetailMeta(event: EventEntity) {
         else "${start.format(dateFormatter)} · ${start.format(timeFormatter)}-${end.format(timeFormatter)}",
         style = MaterialTheme.typography.bodyMedium
     )
+    event.scheduleType?.let {
+        Text("업무 유형 · $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
     event.roomType?.let {
         Text(
             "회의실 · ${if (it == "대") "대회의실" else if (it == "세") "세미나실" else it}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-    }
-    event.scheduleType?.let {
-        Text("업무 유형 · $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     event.location?.takeIf { it.isNotBlank() }?.let {
         Text("장소 · $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -476,7 +505,7 @@ private fun ChecklistRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Checkbox(checked = item.isCompleted, onCheckedChange = onCheckedChange)
@@ -485,7 +514,7 @@ private fun ChecklistRow(
             style = MaterialTheme.typography.bodyLarge,
             modifier = Modifier
                 .weight(1f)
-                .padding(start = 8.dp)
+                .padding(start = 6.dp)
         )
         if (onDelete != null) TextButton(onClick = onDelete) { Text("삭제") }
     }
