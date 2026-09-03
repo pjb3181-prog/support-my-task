@@ -41,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -96,6 +97,7 @@ private fun EventListScreen(
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val thresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
+    val contentOffsetPx = if (isRefreshing) thresholdPx * 0.45f else pullDistance * 0.55f
 
     fun refresh() {
         if (isRefreshing) return
@@ -169,7 +171,9 @@ private fun EventListScreen(
         ) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { translationY = contentOffsetPx },
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 if (events.isEmpty()) {
