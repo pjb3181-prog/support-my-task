@@ -113,6 +113,20 @@ class SettingsViewModel(
         }
     }
 
+    fun deleteTaskType(template: ChecklistTemplateEntity) {
+        viewModelScope.launch {
+            try {
+                templateDao.deleteScheduleTypeRules(template.key)
+                templateDao.deleteTemplateItems(template.id)
+                templateDao.deleteTemplate(template.id)
+                requestImmediateSync()
+                status = "업무유형 '${template.name}' 삭제 완료"
+            } catch (e: Exception) {
+                status = "업무유형 삭제 실패: ${e.message ?: e::class.java.simpleName}"
+            }
+        }
+    }
+
     fun addTaskType(nameInput: String, keywordInput: String, checklistInput: String) {
         val name = nameInput.trim()
         val keyword = keywordInput.trim()
