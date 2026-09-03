@@ -53,9 +53,10 @@ confidential/
 *.pst
 *.ost
 
-# ===== Desktop / .NET (Phase 4A OutlookCompanion) =====
+# ===== Desktop / .NET (OutlookCompanion) =====
 desktop/**/bin/
 desktop/**/obj/
+desktop/**/dist/
 
 # ===== OS =====
 .DS_Store

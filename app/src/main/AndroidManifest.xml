@@ -26,6 +26,17 @@
             android:name=".notification.NotificationReceiver"
             android:exported="false" />
 
+        <receiver
+            android:name=".widget.PreparationWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/preparation_widget_info" />
+        </receiver>
+
         <!-- MSAL 인증 리다이렉트 처리 -->
         <activity
             android:name="com.microsoft.identity.client.BrowserTabActivity"

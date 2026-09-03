@@ -98,6 +98,9 @@ function init() {
   $("settingsButton")?.addEventListener("click", () => setTimeout(renderEditor, 0));
   $("resetTypeItemsButton")?.addEventListener("click", () => setTimeout(renderEditor, 0));
   $("saveTypeItemsButton")?.addEventListener("click", () => setTimeout(renderEditor, 0));
+
+  const observer = new MutationObserver(() => renderEditor());
+  observer.observe(textarea, { attributes: true });
 }
 
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

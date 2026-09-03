@@ -23,7 +23,9 @@
   align-items: center;
 }
 
-.type-item-input { margin-top: 0; }
+.type-item-input {
+  margin-top: 0;
+}
 
 .type-item-remove {
   min-height: 42px;
@@ -50,10 +52,23 @@
   margin-top: 9px;
 }
 
-.type-item-add input { margin-top: 0; }
-.type-item-add button { min-height: 42px; white-space: nowrap; }
+.type-item-add input {
+  margin-top: 0;
+}
+
+.type-item-add button {
+  min-height: 42px;
+  white-space: nowrap;
+}
 
 @media (max-width: 640px) {
+  .type-item-row,
+  .type-item-add {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   .type-item-remove,
-  .type-item-add button { padding-inline: 10px; }
+  .type-item-add button {
+    padding-inline: 10px;
+  }
 }
