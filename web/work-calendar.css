@@ -1,0 +1,42 @@
+.prep-line {
+  margin-top: 5px;
+  color: #315b7d;
+  font-size: .72rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.deadline-card {
+  margin: 0 0 16px;
+  padding: 13px 14px;
+  border: 1px solid #d7e3eb;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #f7fbfd, #eef5f9);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.deadline-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: #dfeaf1;
+  color: #315b7d;
+  font-size: 1.1rem;
+  font-weight: 800;
+}
+.deadline-card > div:last-child { min-width: 0; display: grid; gap: 2px; }
+.deadline-card span { color: #6f7c86; font-size: .68rem; font-weight: 700; }
+.deadline-card strong { color: #244660; font-size: 1rem; letter-spacing: -.02em; }
+.deadline-card small { color: #6f7c86; font-size: .72rem; }
+
+@media (max-width: 760px) {
+  .prep-line { font-size: .69rem; }
+  .deadline-card { padding: 12px; border-radius: 12px; }
+  .deadline-icon { width: 31px; height: 31px; border-radius: 9px; }
+}

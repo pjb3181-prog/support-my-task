@@ -34,11 +34,20 @@ interface TemplateDao {
     @Query("DELETE FROM template_items WHERE id = :id")
     suspend fun deleteTemplateItem(id: Long)
 
+    @Query("DELETE FROM template_items WHERE templateId = :templateId")
+    suspend fun deleteTemplateItems(templateId: Long)
+
+    @Query("DELETE FROM checklist_templates WHERE id = :templateId")
+    suspend fun deleteTemplate(templateId: Long)
+
     @Query("SELECT * FROM schedule_type_rules ORDER BY priority ASC, id ASC")
     suspend fun getScheduleTypeRules(): List<ScheduleTypeRuleEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertScheduleTypeRule(rule: ScheduleTypeRuleEntity): Long
+
+    @Query("DELETE FROM schedule_type_rules WHERE scheduleType = :scheduleType COLLATE NOCASE")
+    suspend fun deleteScheduleTypeRules(scheduleType: String)
 
     @Query("SELECT COUNT(*) FROM schedule_type_rules WHERE keyword = :keyword COLLATE NOCASE AND scheduleType = :scheduleType COLLATE NOCASE")
     suspend fun countScheduleTypeRule(keyword: String, scheduleType: String): Int

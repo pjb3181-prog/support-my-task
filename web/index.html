@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f5f7f9" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="MERI Schedule" />
+  <title>MERI Schedule Assistant</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./work-calendar.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">M</div>
+        <div class="brand-copy">
+          <h1>MERI Schedule Assistant</h1>
+          <p>업무 일정 · 준비사항 관리</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="refreshButton" class="icon-button" type="button" title="새로고침" aria-label="새로고침">↻</button>
+        <button id="settingsButton" class="secondary-button" type="button">설정</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="app">
+    <section id="setupCard" class="card setup-card hidden">
+      <div class="empty-icon">!</div>
+      <h2>웹앱 연결 설정이 필요합니다</h2>
+      <p>Firebase Web 설정을 먼저 입력해야 일정을 불러올 수 있습니다.</p>
+      <p class="muted">web/firebase-config.js 파일을 생성한 뒤 다시 열어주세요.</p>
+    </section>
+
+    <section class="hero-row">
+      <div>
+        <span class="eyebrow">MY WORK</span>
+        <h2>업무 일정</h2>
+        <p>Outlook에서 배정된 일정과 준비사항을 한 번에 확인합니다.</p>
+      </div>
+      <div id="syncPill" class="sync-pill" title="Firestore 동기화 상태">
+        <span class="sync-dot"></span>
+        <span id="syncStatus">연결 중</span>
+      </div>
+    </section>
+
+    <section id="summary" class="summary-grid hidden">
+      <article class="metric-card metric-primary">
+        <span class="metric-label">오늘 일정</span>
+        <strong id="todayCount">0건</strong>
+        <small>오늘 확인할 업무</small>
+      </article>
+      <article class="metric-card">
+        <span class="metric-label">예정 일정</span>
+        <strong id="upcomingCount">0건</strong>
+        <small>앞으로 예정된 업무</small>
+      </article>
+      <article class="metric-card sync-card">
+        <span class="metric-label">마지막 동기화</span>
+        <strong id="lastSyncTime">-</strong>
+        <small>Outlook · Firestore</small>
+      </article>
+    </section>
+
+    <div id="pullHint" class="pull-hint">아래로 당겨 새로고침</div>
+    <section id="eventList" class="event-list"></section>
+    <section id="emptyState" class="empty hidden">
+      <div class="empty-icon">✓</div>
+      <h3>표시할 업무 일정이 없습니다</h3>
+      <p>내 일정 식별문자와 Outlook 일정을 확인해 주세요.</p>
+    </section>
+  </main>
+
+  <dialog id="settingsDialog" class="app-dialog settings-dialog">
+    <form method="dialog" class="dialog-card">
+      <div class="dialog-header">
+        <div>
+          <span class="eyebrow">PREFERENCES</span>
+          <h2>설정</h2>
+          <p>내 일정 식별과 업무 유형별 준비항목을 관리합니다.</p>
+        </div>
+        <button value="cancel" class="icon-button close-button" aria-label="닫기">×</button>
+      </div>
+
+      <div class="settings-grid">
+        <section class="settings-panel">
+          <div class="panel-heading">
+            <span class="panel-index">01</span>
+            <div>
+              <h3>내 일정 설정</h3>
+              <p>일정 제목 마지막 [참석자코드]에서 내 업무를 구분합니다.</p>
+            </div>
+          </div>
+          <label>내 일정 식별문자
+            <input id="markerInput" maxlength="20" placeholder="예: 종" />
+          </label>
+          <div class="panel-actions">
+            <button id="saveSettingsButton" value="default">식별문자 저장</button>
+          </div>
+        </section>
+
+        <section class="settings-panel">
+          <div class="panel-heading">
+            <span class="panel-index">02</span>
+            <div>
+              <h3>업무 유형별 체크리스트</h3>
+              <p>유형을 선택하고 기본 준비항목을 한 줄씩 수정합니다.</p>
+            </div>
+          </div>
+          <label>업무 유형
+            <select id="typeSelect"></select>
+          </label>
+          <label>준비항목
+            <textarea id="typeItemsInput" rows="7" placeholder="한 줄에 하나씩 입력"></textarea>
+          </label>
+          <p class="muted">이 설정은 현재 브라우저에 저장됩니다.</p>
+          <div class="panel-actions split-actions">
+            <button id="resetTypeItemsButton" type="button" class="secondary-button">기본값 복원</button>
+            <button id="saveTypeItemsButton" type="button">체크리스트 저장</button>
+          </div>
+        </section>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="detailDialog" class="app-dialog detail-dialog">
+    <form method="dialog" class="dialog-card detail-card">
+      <div class="detail-topbar">
+        <button class="secondary-button back-button" value="cancel">← 일정</button>
+        <span class="detail-status" id="detailStatus">준비 확인</span>
+      </div>
+      <div class="detail-heading">
+        <span id="detailType" class="type-badge"></span>
+        <h2 id="detailTitle"></h2>
+        <p id="detailMeta" class="muted"></p>
+      </div>
+      <section id="deadlineCard" class="deadline-card hidden">
+        <div class="deadline-icon" aria-hidden="true">⌁</div>
+        <div>
+          <span>준비 마감</span>
+          <strong id="deadlineText">-</strong>
+          <small id="deadlineReason">직전 근무일 기준</small>
+        </div>
+      </section>
+      <section class="progress-card">
+        <div>
+          <span>준비 현황</span>
+          <strong id="detailProgressText">0/0</strong>
+        </div>
+        <div class="progress-track"><span id="detailProgressBar"></span></div>
+      </section>
+      <div class="checklist-heading">
+        <div>
+          <h3>준비 체크리스트</h3>
+          <p>완료한 항목을 체크하면 이 브라우저에 저장됩니다.</p>
+        </div>
+      </div>
+      <div id="checklist" class="checklist"></div>
+      <div class="dialog-actions">
+        <button value="cancel">확인 완료</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

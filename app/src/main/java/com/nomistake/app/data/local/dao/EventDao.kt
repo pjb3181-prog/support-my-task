@@ -50,8 +50,16 @@ interface EventDao {
     @Query("SELECT * FROM events WHERE isDeleted = 0 AND isTarget = 1 ORDER BY startTime ASC")
     fun observeActiveEvents(): Flow<List<EventEntity>>
 
+    /** 준비 마감 계산용: target이 아닌 공휴일/휴가 일정까지 포함한다. */
+    @Query("SELECT * FROM events WHERE isDeleted = 0 ORDER BY startTime ASC")
+    fun observeAllActiveEvents(): Flow<List<EventEntity>>
+
     @Query("SELECT * FROM events WHERE isDeleted = 0 AND isTarget = 1 AND startTime >= :from ORDER BY startTime ASC")
     suspend fun getActiveEventsFrom(from: Long): List<EventEntity>
+
+    /** 알림의 근무일 보정용: 공휴일/휴가 일정을 포함한 전체 활성 일정. */
+    @Query("SELECT * FROM events WHERE isDeleted = 0 AND startTime >= :from ORDER BY startTime ASC")
+    suspend fun getAllActiveEventsFrom(from: Long): List<EventEntity>
 
     @Query("UPDATE events SET isDeleted = 1 WHERE id = :id")
     suspend fun softDelete(id: Long)

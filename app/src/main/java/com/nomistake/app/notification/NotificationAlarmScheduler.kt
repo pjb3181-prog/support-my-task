@@ -9,13 +9,16 @@ import android.content.Intent
 import android.os.Build
 import com.nomistake.app.data.local.dao.EventDao
 import com.nomistake.app.data.local.dao.SettingDao
+import com.nomistake.app.data.repository.CalendarSyncRepository
+import com.nomistake.app.domain.EventTitleParser
 import com.nomistake.app.domain.NotificationPlanner
 import java.time.Clock
 import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 
 /**
  * Room의 활성 target 일정과 DB 알림 규칙을 AlarmManager에 반영한다.
- * 이전에 등록한 NoMistake alarm을 먼저 취소한 뒤 현재 source of truth로 다시 구성한다.
+ * 날짜 기준 알림은 Outlook의 공휴일/휴가/반차 일정을 함께 읽어 근무 가능한 시점으로 보정한다.
  */
 class NotificationAlarmScheduler(
     private val context: Context,
@@ -33,13 +36,25 @@ class NotificationAlarmScheduler(
         val now = clock.instant()
         val zoneId = ZoneId.systemDefault()
         val events = eventDao.getActiveEventsFrom(now.toEpochMilli())
+        val calendarEvents = eventDao.getAllActiveEventsFrom(now.minus(45, ChronoUnit.DAYS).toEpochMilli())
+        val mineMarker = settingDao.get(CalendarSyncRepository.KEY_MINE_MARKER)?.value
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: EventTitleParser.DEFAULT_MINE_MARKER
         val rules = settingDao.getEnabledNotificationRules()
         var exact = 0
         var fallback = 0
         val requestCodes = mutableSetOf<String>()
 
         for (event in events) {
-            val plans = NotificationPlanner.plan(event, rules, now, zoneId)
+            val plans = NotificationPlanner.plan(
+                event = event,
+                rules = rules,
+                now = now,
+                zoneId = zoneId,
+                calendarEvents = calendarEvents,
+                mineMarker = mineMarker
+            )
             for (plan in plans) {
                 val requestCode = requestCode(plan.eventId, plan.ruleId)
                 val intent = Intent(context, NotificationReceiver::class.java).apply {
@@ -62,8 +77,6 @@ class NotificationAlarmScheduler(
                     )
                     exact++
                 } else {
-                    // Android 12+에서 exact alarm 특별 접근 권한이 없으면 알림 자체를 잃지 않도록
-                    // inexact allow-while-idle로 보수적으로 fallback한다.
                     alarmManager.setAndAllowWhileIdle(
                         AlarmManager.RTC_WAKEUP,
                         triggerMillis,

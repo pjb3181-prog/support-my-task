@@ -11,14 +11,18 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -46,6 +50,16 @@ import com.nomistake.app.ui.MainViewModel
 import com.nomistake.app.ui.SettingsScreen
 import com.nomistake.app.ui.SettingsViewModel
 import kotlinx.coroutines.launch
+
+private val MeriColorScheme = lightColorScheme(
+    primary = Color(0xFF315B7D),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFDCE7EF),
+    onPrimaryContainer = Color(0xFF173247),
+    secondary = Color(0xFF5D6B76),
+    background = Color(0xFFF4F6F8),
+    surface = Color(0xFFF8FAFB)
+)
 
 class MainActivity : ComponentActivity() {
 
@@ -115,9 +129,13 @@ class MainActivity : ComponentActivity() {
         } else null
 
         setContent {
-            MaterialTheme {
+            MaterialTheme(colorScheme = MeriColorScheme) {
                 val mainViewModel: MainViewModel = viewModel {
-                    MainViewModel(eventDao = db.eventDao(), checklistDao = db.checklistDao())
+                    MainViewModel(
+                        eventDao = db.eventDao(),
+                        checklistDao = db.checklistDao(),
+                        settingDao = db.settingDao()
+                    )
                 }
                 val debugViewModel: DebugViewModel = viewModel {
                     DebugViewModel(
@@ -158,21 +176,26 @@ class MainActivity : ComponentActivity() {
 
                 when {
                     showDebug -> {
-                        Column {
+                        Column(modifier = Modifier.statusBarsPadding()) {
                             TextButton(onClick = { showDebug = false }) { Text("← 일정으로") }
                             DebugScreen(debugViewModel)
                         }
                     }
 
                     showSettings -> {
-                        SettingsScreen(viewModel = settingsViewModel, onBack = { showSettings = false })
+                        Column(modifier = Modifier.statusBarsPadding()) {
+                            SettingsScreen(viewModel = settingsViewModel, onBack = { showSettings = false })
+                        }
                     }
 
                     else -> {
                         MainScreen(
                             viewModel = mainViewModel,
                             onOpenSettings = { showSettings = true },
-                            onOpenDebug = { showDebug = true }
+                            onOpenDebug = { showDebug = true },
+                            onRefresh = {
+                                BackgroundSyncScheduler.requestImmediate(applicationContext)
+                            }
                         )
                     }
                 }
