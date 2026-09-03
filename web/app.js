@@ -12,7 +12,7 @@ const TYPE_RULES = [
   ["면담", "면담"],
 ];
 
-const TYPE_ITEMS = {
+const DEFAULT_TYPE_ITEMS = {
   FMEA: ["관련자료 확인", "노트북", "충전기"],
   HAZOP: ["관련자료 확인", "노트북", "충전기"],
   LOPA: ["관련자료 확인", "노트북", "충전기"],
@@ -22,8 +22,38 @@ const TYPE_ITEMS = {
   일반회의: ["관련자료 확인"],
 };
 
+const TYPE_LABELS = {
+  FMEA: "FMEA",
+  HAZOP: "HAZOP",
+  LOPA: "LOPA",
+  FIELD_WORK: "현장업무",
+  면담: "면담",
+  화상회의: "화상회의",
+  일반회의: "일반회의",
+};
+
 const ROOM_ITEMS = ["참석자 명단 받기", "관련자료 출력", "입구 팻말 준비"];
-const state = { marker: localStorage.getItem("meri.marker") || "종", events: [], configReady: false };
+
+function loadTypeItems() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("meri.typeItems") || "{}");
+    return Object.fromEntries(
+      Object.entries(DEFAULT_TYPE_ITEMS).map(([key, defaults]) => [
+        key,
+        Array.isArray(saved[key]) && saved[key].length ? saved[key] : [...defaults],
+      ])
+    );
+  } catch {
+    return Object.fromEntries(Object.entries(DEFAULT_TYPE_ITEMS).map(([key, values]) => [key, [...values]]));
+  }
+}
+
+const state = {
+  marker: localStorage.getItem("meri.marker") || "종",
+  events: [],
+  configReady: false,
+  typeItems: loadTypeItems(),
+};
 
 const $ = (id) => document.getElementById(id);
 const setupCard = $("setupCard");
@@ -76,7 +106,7 @@ function checklistFor(event) {
   const parsed = event.parsed;
   const items = [];
   if (parsed.roomType) items.push(...ROOM_ITEMS);
-  items.push(...(TYPE_ITEMS[parsed.scheduleType] || TYPE_ITEMS.일반회의));
+  items.push(...(state.typeItems[parsed.scheduleType] || state.typeItems.일반회의 || []));
   return [...new Map(items.map((x) => [x.trim().toLowerCase(), x])).values()];
 }
 
@@ -145,6 +175,28 @@ function openDetail(event) {
   $("detailDialog").showModal();
 }
 
+function populateTypeEditor(type = $("typeSelect").value || "FMEA") {
+  const select = $("typeSelect");
+  if (!select.options.length) {
+    Object.keys(DEFAULT_TYPE_ITEMS).forEach((key) => {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = TYPE_LABELS[key] || key;
+      select.appendChild(option);
+    });
+  }
+  if ([...select.options].some((o) => o.value === type)) select.value = type;
+  $("typeItemsInput").value = (state.typeItems[select.value] || []).join("\n");
+}
+
+function normalizedLines(value) {
+  const seen = new Set();
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((x) => x.trim())
+    .filter((x) => x && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
+}
+
 async function loadEvents() {
   if (!state.configReady) return;
   $("syncStatus").textContent = "동기화 중";
@@ -181,14 +233,40 @@ async function bootstrap() {
   }
 }
 
-$("settingsButton").addEventListener("click", () => { $("markerInput").value = state.marker; $("settingsDialog").showModal(); });
+$("settingsButton").addEventListener("click", () => {
+  $("markerInput").value = state.marker;
+  populateTypeEditor();
+  $("settingsDialog").showModal();
+});
+
 $("saveSettingsButton").addEventListener("click", (event) => {
   event.preventDefault();
   const marker = $("markerInput").value.trim();
   if (!marker) return;
-  state.marker = marker; localStorage.setItem("meri.marker", marker);
+  state.marker = marker;
+  localStorage.setItem("meri.marker", marker);
   state.events = state.events.map((e) => ({ ...e, parsed: parseTitle(e.subject || "") }));
-  render(); $("settingsDialog").close();
+  render();
+  $("settingsDialog").close();
+});
+
+$("typeSelect").addEventListener("change", () => populateTypeEditor($("typeSelect").value));
+
+$("saveTypeItemsButton").addEventListener("click", () => {
+  const type = $("typeSelect").value;
+  const items = normalizedLines($("typeItemsInput").value);
+  if (!type || !items.length) return;
+  state.typeItems[type] = items;
+  localStorage.setItem("meri.typeItems", JSON.stringify(state.typeItems));
+  $("typeItemsInput").value = items.join("\n");
+});
+
+$("resetTypeItemsButton").addEventListener("click", () => {
+  const type = $("typeSelect").value;
+  if (!type) return;
+  state.typeItems[type] = [...(DEFAULT_TYPE_ITEMS[type] || [])];
+  localStorage.setItem("meri.typeItems", JSON.stringify(state.typeItems));
+  populateTypeEditor(type);
 });
 
 let startY = null;
