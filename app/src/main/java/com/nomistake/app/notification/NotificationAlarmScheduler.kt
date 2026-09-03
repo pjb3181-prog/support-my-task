@@ -12,6 +12,7 @@ import com.nomistake.app.data.local.dao.SettingDao
 import com.nomistake.app.data.repository.CalendarSyncRepository
 import com.nomistake.app.domain.EventTitleParser
 import com.nomistake.app.domain.NotificationPlanner
+import com.nomistake.app.domain.PreparationReminderPlanner
 import com.nomistake.app.domain.WorkCalendarPlanner
 import java.time.Clock
 import java.time.Instant
@@ -111,16 +112,21 @@ class NotificationAlarmScheduler(
                 mineMarker = mineMarker,
                 zoneId = zoneId
             )
-            val preparationAlreadyDelivered = event.id.toString() in deliveredPreparation
+            val prepPlan = PreparationReminderPlanner.plan(
+                deadlineAt = prepDeadline?.at,
+                eventStart = event.startTime,
+                now = now,
+                alreadyDelivered = event.id.toString() in deliveredPreparation,
+                catchUpDelaySeconds = CATCH_UP_DELAY_SECONDS
+            )
 
-            if (prepDeadline != null && !preparationAlreadyDelivered && event.startTime.isAfter(now)) {
-                val isCatchUp = !prepDeadline.at.isAfter(now)
-                val triggerAt = if (isCatchUp) now.plusSeconds(CATCH_UP_DELAY_SECONDS) else prepDeadline.at
+            if (prepPlan != null && prepDeadline != null) {
+                val isCatchUp = prepPlan.kind == PreparationReminderPlanner.Kind.CATCH_UP
                 schedule(
                     eventId = event.id,
                     eventTitle = event.cleanTitle,
                     ruleLabel = PREPARATION_RULE_LABEL,
-                    triggerAt = triggerAt,
+                    triggerAt = prepPlan.triggerAt,
                     requestCode = preparationRequestCode(event.id),
                     isPreparation = true,
                     isCatchUp = isCatchUp,
