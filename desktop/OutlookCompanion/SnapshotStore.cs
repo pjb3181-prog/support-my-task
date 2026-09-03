@@ -35,10 +35,10 @@ namespace OutlookCompanion
         public List<EventRecord> Events = new List<EventRecord>();
     }
 
-    // 운영 설정 기본값(Phase 4B) - 상수 하드코딩이 아니라 실행 인자로 override 가능하게 분리.
+    // 운영 설정 기본값 - CLI polling은 2시간. Tray는 A/B 시각 슬롯을 사용한다.
     public static class AppSettings
     {
-        public const int DefaultPollMinutes = 60;     // production 기본 polling 간격
+        public const int DefaultPollMinutes = 120;    // production 기본 polling 간격
         public const int DefaultWindowPastDays = 1;   // 조회 window: 과거 1일
         public const int DefaultWindowFutureDays = 30; // 조회 window: 미래 30일
         public const int DefaultScanCap = 2000;       // occurrence 열거 안전 상한(IncludeRecurrences Count는 신뢰 불가)

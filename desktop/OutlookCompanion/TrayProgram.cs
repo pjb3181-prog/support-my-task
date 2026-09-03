@@ -50,10 +50,33 @@ namespace OutlookCompanion
             failed += Assert(!ActiveHours.IsAutomaticSyncAllowed(new DateTime(2026, 9, 2, 7, 59, 59)), "07:59 blocked");
             failed += Assert(ActiveHours.IsAutomaticSyncAllowed(new DateTime(2026, 9, 2, 8, 0, 0)), "08:00 allowed");
             failed += Assert(ActiveHours.IsAutomaticSyncAllowed(new DateTime(2026, 9, 2, 23, 59, 59)), "23:59 allowed");
-            DateTime next = ActiveHours.NextAllowedTime(new DateTime(2026, 9, 2, 3, 15, 0));
-            failed += Assert(next == new DateTime(2026, 9, 2, 8, 0, 0), "quiet -> 08:00");
-            DateTime normalized = ActiveHours.NormalizeNextAutomatic(new DateTime(2026, 9, 3, 0, 30, 0));
-            failed += Assert(normalized == new DateTime(2026, 9, 3, 8, 0, 0), "after-midnight poll -> 08:00");
+
+            SyncGroup g1 = SyncSchedule.AssignedGroupForSourcePc("pc-test-alpha");
+            SyncGroup g2 = SyncSchedule.AssignedGroupForSourcePc("pc-test-alpha");
+            failed += Assert(g1 == g2, "same sourcePc -> same permanent group");
+
+            failed += Assert(
+                SyncSchedule.NextSlot(new DateTime(2026, 9, 2, 7, 30, 0), SyncGroup.EvenHours) == new DateTime(2026, 9, 2, 8, 0, 0),
+                "A before active -> 08:00");
+            failed += Assert(
+                SyncSchedule.NextSlot(new DateTime(2026, 9, 2, 7, 30, 0), SyncGroup.OddHours) == new DateTime(2026, 9, 2, 9, 0, 0),
+                "B before active -> 09:00");
+            failed += Assert(
+                SyncSchedule.NextSlot(new DateTime(2026, 9, 2, 8, 0, 0), SyncGroup.EvenHours) == new DateTime(2026, 9, 2, 8, 0, 0),
+                "A exact slot -> 08:00");
+            failed += Assert(
+                SyncSchedule.NextSlot(new DateTime(2026, 9, 2, 8, 0, 1), SyncGroup.EvenHours) == new DateTime(2026, 9, 2, 10, 0, 0),
+                "A after slot -> 10:00");
+            failed += Assert(
+                SyncSchedule.NextSlot(new DateTime(2026, 9, 2, 8, 0, 1), SyncGroup.OddHours) == new DateTime(2026, 9, 2, 9, 0, 0),
+                "B after 08 -> 09:00");
+            failed += Assert(
+                SyncSchedule.NextSlot(new DateTime(2026, 9, 2, 22, 0, 1), SyncGroup.EvenHours) == new DateTime(2026, 9, 3, 8, 0, 0),
+                "A after 22 -> next day 08:00");
+            failed += Assert(
+                SyncSchedule.NextSlot(new DateTime(2026, 9, 2, 23, 0, 1), SyncGroup.OddHours) == new DateTime(2026, 9, 3, 9, 0, 0),
+                "B after 23 -> next day 09:00");
+
             Console.WriteLine(failed == 0 ? "Tray policy tests PASS" : "Tray policy tests FAIL=" + failed);
             return failed == 0 ? 0 : 1;
         }
@@ -67,7 +90,6 @@ namespace OutlookCompanion
 
     internal sealed class TrayContext : ApplicationContext
     {
-        private const int PollMinutes = 60;
         private readonly NotifyIcon _notifyIcon;
         private readonly ToolStripMenuItem _statusItem;
         private readonly ToolStripMenuItem _startupItem;
@@ -75,10 +97,13 @@ namespace OutlookCompanion
         private int _syncRunning;
         private DateTime? _lastSuccess;
         private DateTime _nextAutomatic;
+        private readonly SyncGroup _syncGroup;
         private bool _exiting;
 
         public TrayContext()
         {
+            _syncGroup = SyncSchedule.AssignedGroup();
+
             _statusItem = new ToolStripMenuItem("시작 중...") { Enabled = false };
             ToolStripMenuItem syncNow = new ToolStripMenuItem("지금 동기화");
             syncNow.Click += async (_, __) => await RunSyncAsync(manual: true);
@@ -115,7 +140,7 @@ namespace OutlookCompanion
         private void ScheduleInitial()
         {
             DateTime now = DateTime.Now;
-            _nextAutomatic = ActiveHours.IsAutomaticSyncAllowed(now) ? now.AddSeconds(20) : ActiveHours.NextAllowedTime(now);
+            _nextAutomatic = SyncSchedule.NextSlot(now, _syncGroup);
             ArmTimer();
             RefreshStatus(ActiveHours.IsAutomaticSyncAllowed(now) ? "대기" : "야간 대기");
         }
@@ -127,7 +152,7 @@ namespace OutlookCompanion
             DateTime now = DateTime.Now;
             if (!ActiveHours.IsAutomaticSyncAllowed(now))
             {
-                _nextAutomatic = ActiveHours.NextAllowedTime(now);
+                _nextAutomatic = SyncSchedule.NextSlot(now, _syncGroup);
                 ArmTimer();
                 RefreshStatus("야간 대기");
                 return;
@@ -174,7 +199,7 @@ namespace OutlookCompanion
             }
             finally
             {
-                _nextAutomatic = ActiveHours.NormalizeNextAutomatic(DateTime.Now.AddMinutes(PollMinutes));
+                _nextAutomatic = SyncSchedule.NextSlot(DateTime.Now.AddSeconds(1), _syncGroup);
                 ArmTimer();
                 Interlocked.Exchange(ref _syncRunning, 0);
             }
@@ -214,8 +239,9 @@ namespace OutlookCompanion
         {
             if (_exiting) return;
             string last = _lastSuccess.HasValue ? _lastSuccess.Value.ToString("HH:mm") : "없음";
-            _statusItem.Text = state + " | 마지막 성공 " + last + " | 다음 " + _nextAutomatic.ToString("HH:mm");
-            string tip = "실수없으셨죠 - " + state;
+            string group = _syncGroup == SyncGroup.EvenHours ? "A짝수" : "B홀수";
+            _statusItem.Text = state + " | " + group + " | 마지막 성공 " + last + " | 다음 " + _nextAutomatic.ToString("HH:mm");
+            string tip = "실수없으셨죠 - " + state + " " + group;
             _notifyIcon.Text = tip.Length <= 63 ? tip : tip.Substring(0, 63);
         }
 
