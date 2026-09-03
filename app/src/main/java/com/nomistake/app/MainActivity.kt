@@ -188,7 +188,10 @@ class MainActivity : ComponentActivity() {
                         MainScreen(
                             viewModel = mainViewModel,
                             onOpenSettings = { showSettings = true },
-                            onOpenDebug = { showDebug = true }
+                            onOpenDebug = { showDebug = true },
+                            onRefresh = {
+                                BackgroundSyncScheduler.requestImmediate(applicationContext)
+                            }
                         )
                     }
                 }
