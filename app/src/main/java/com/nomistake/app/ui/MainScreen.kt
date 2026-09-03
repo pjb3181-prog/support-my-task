@@ -54,6 +54,7 @@ import com.nomistake.app.data.local.entity.ChecklistEntity
 import com.nomistake.app.data.local.entity.ChecklistItemEntity
 import com.nomistake.app.data.local.entity.EventEntity
 import com.nomistake.app.data.local.entity.ItemOrigin
+import com.nomistake.app.domain.WorkCalendarPlanner
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -348,6 +349,7 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
     val event by viewModel.selectedEvent.collectAsState()
     val checklist by viewModel.checklist.collectAsState()
     val checklistItems by viewModel.checklistItems.collectAsState()
+    val preparationDeadline by viewModel.preparationDeadline.collectAsState()
     val current = event ?: return
     var newItemText by remember(current.id) { mutableStateOf("") }
     var showLeaveDialog by remember(current.id) { mutableStateOf(false) }
@@ -414,6 +416,10 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
                 Text(current.cleanTitle, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
                 EventDetailMeta(current)
+                preparationDeadline?.let {
+                    Spacer(Modifier.height(10.dp))
+                    PreparationDeadlineCard(it)
+                }
                 Spacer(Modifier.height(14.dp))
             }
 
@@ -486,6 +492,31 @@ private fun EventDetailScreen(viewModel: MainViewModel) {
                     Spacer(Modifier.height(24.dp))
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PreparationDeadlineCard(deadline: WorkCalendarPlanner.PreparationDeadline) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text("준비 마감", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text(
+                deadline.label,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                deadline.reason,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
         }
     }
 }
