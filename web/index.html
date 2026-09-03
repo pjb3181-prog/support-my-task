@@ -45,9 +45,24 @@
         <input id="markerInput" maxlength="20" placeholder="예: 종" />
       </label>
       <p class="muted">일정 제목 마지막 [참석자코드]에서 찾습니다.</p>
+
+      <hr />
+      <h3>업무 유형별 기본 체크리스트</h3>
+      <label>업무 유형
+        <select id="typeSelect"></select>
+      </label>
+      <label>준비항목
+        <textarea id="typeItemsInput" rows="6" placeholder="한 줄에 하나씩 입력"></textarea>
+      </label>
+      <p class="muted">한 줄에 하나씩 입력합니다. 이 기기의 Safari/브라우저에 저장됩니다.</p>
+      <div class="inline-actions">
+        <button id="resetTypeItemsButton" type="button" class="text-button">기본값 복원</button>
+        <button id="saveTypeItemsButton" type="button">체크리스트 저장</button>
+      </div>
+
       <div class="dialog-actions">
         <button value="cancel" class="text-button">닫기</button>
-        <button id="saveSettingsButton" value="default">저장</button>
+        <button id="saveSettingsButton" value="default">식별문자 저장</button>
       </div>
     </form>
   </dialog>
