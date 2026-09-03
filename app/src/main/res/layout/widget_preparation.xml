@@ -80,9 +80,10 @@
             android:textStyle="bold" />
     </LinearLayout>
 
-    <View
+    <TextView
         android:layout_width="match_parent"
-        android:layout_height="6dp" />
+        android:layout_height="6dp"
+        android:text="" />
 
     <LinearLayout
         android:id="@+id/widgetRow2"
