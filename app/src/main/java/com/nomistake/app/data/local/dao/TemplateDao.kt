@@ -34,6 +34,9 @@ interface TemplateDao {
     @Query("DELETE FROM template_items WHERE id = :id")
     suspend fun deleteTemplateItem(id: Long)
 
+    @Query("DELETE FROM template_items WHERE templateId = :templateId")
+    suspend fun deleteTemplateItems(templateId: Long)
+
     @Query("SELECT * FROM schedule_type_rules ORDER BY priority ASC, id ASC")
     suspend fun getScheduleTypeRules(): List<ScheduleTypeRuleEntity>
 
