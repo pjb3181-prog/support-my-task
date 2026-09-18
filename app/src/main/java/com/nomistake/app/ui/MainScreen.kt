@@ -69,14 +69,29 @@ fun MainScreen(
     viewModel: MainViewModel,
     onOpenSettings: () -> Unit,
     onOpenDebug: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onHistoryRefresh: () -> Unit
 ) {
     val selectedEvent by viewModel.selectedEvent.collectAsState()
+    var showHistory by remember { mutableStateOf(false) }
 
-    if (selectedEvent == null) {
-        EventListScreen(viewModel, onOpenSettings, onOpenDebug, onRefresh)
-    } else {
-        EventDetailScreen(viewModel)
+    when {
+        selectedEvent != null -> EventDetailScreen(viewModel)
+        showHistory -> HistoryScreen(
+            viewModel = viewModel,
+            onBack = { showHistory = false },
+            onRefreshHistory = onHistoryRefresh
+        )
+        else -> EventListScreen(
+            viewModel = viewModel,
+            onOpenSettings = onOpenSettings,
+            onOpenDebug = onOpenDebug,
+            onRefresh = onRefresh,
+            onOpenHistory = {
+                showHistory = true
+                onHistoryRefresh()
+            }
+        )
     }
 }
 
@@ -85,7 +100,8 @@ private fun EventListScreen(
     viewModel: MainViewModel,
     onOpenSettings: () -> Unit,
     onOpenDebug: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onOpenHistory: () -> Unit
 ) {
     val events by viewModel.events.collectAsState()
     val zone = ZoneId.systemDefault()
@@ -153,6 +169,7 @@ private fun EventListScreen(
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.weight(1f)
                     )
+                    TextButton(onClick = onOpenHistory) { Text("이전 일정") }
                     TextButton(onClick = onOpenSettings) { Text("설정") }
                     TextButton(onClick = onOpenDebug) { Text("진단") }
                 }
@@ -238,6 +255,96 @@ private fun EventListScreen(
                         .padding(top = 10.dp)
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun HistoryScreen(
+    viewModel: MainViewModel,
+    onBack: () -> Unit,
+    onRefreshHistory: () -> Unit
+) {
+    val events by viewModel.events.collectAsState()
+    val zone = ZoneId.systemDefault()
+    val today = LocalDate.now(zone)
+    var query by remember { mutableStateOf("") }
+
+    val past = events
+        .filter { it.startTime.atZone(zone).toLocalDate().isBefore(today) }
+        .filter { event ->
+            val q = query.trim()
+            q.isEmpty() ||
+                event.cleanTitle.contains(q, ignoreCase = true) ||
+                (event.location?.contains(q, ignoreCase = true) == true) ||
+                (event.scheduleType?.contains(q, ignoreCase = true) == true)
+        }
+        .sortedByDescending { it.startTime }
+
+    Scaffold(
+        topBar = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onBack) { Text("← 일정") }
+                    Text(
+                        "이전 일정 조회",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onRefreshHistory) { Text("2년 불러오기") }
+                }
+                Text(
+                    "출장비·지출결의 작성 시 과거 일정의 날짜와 장소를 검색합니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            item {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    singleLine = true,
+                    label = { Text("일정명·장소 검색") },
+                    placeholder = { Text("예: 울산, 제주, HAZOP") }
+                )
+            }
+            item {
+                SectionHeader("이전 일정", "${past.size}건")
+            }
+            if (past.isEmpty()) {
+                item {
+                    Text(
+                        if (query.isBlank()) "조회된 이전 일정이 없습니다." else "검색 결과가 없습니다.",
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 32.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                items(past, key = { it.id }) { event ->
+                    EventCard(event, showDate = true) { viewModel.openEvent(event.id) }
+                }
+            }
+            item { Spacer(Modifier.height(20.dp)) }
         }
     }
 }
