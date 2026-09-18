@@ -31,6 +31,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.collectAsState
@@ -799,6 +800,9 @@ fun HistoryScreen(
     }
 
     BackHandler(onBack = onBack)
+    LaunchedEffect(Unit) {
+        if (!state.hasSearched && !state.loading) viewModel.search()
+    }
 
     Scaffold(
         topBar = {
