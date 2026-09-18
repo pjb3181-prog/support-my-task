@@ -381,7 +381,8 @@ namespace OutlookCompanion
         // [flow] (1) upsert 대상(diff added/changed 또는 첫 sync 전체) -> 배치 Get -> Decide -> write
         //        (2) time-moved: diff Moved의 기존 문서(구 occurrenceKey) hard delete(새 문서로 대체)
         //        (3) MissingTracker 갱신 -> 임계(연속 2회) 도달 + 아직 live 문서 -> tombstone write
-        public SyncReport SyncEvents(List<EventRecord> currentRecords, DiffResult diff, List<EventRecord> prevEvents)
+        public SyncReport SyncEvents(List<EventRecord> currentRecords, DiffResult diff, List<EventRecord> prevEvents,
+            DateTime windowStart, DateTime windowEnd)
         {
             SyncReport rpt = new SyncReport();
             string nowIso = KeyPolicy.ToIso(DateTime.Now);
@@ -438,14 +439,14 @@ namespace OutlookCompanion
                 if (any) { batch.CommitAsync().GetAwaiter().GetResult(); rpt.Batches++; }
             }
 
-            return FinishSync(rpt, currentRecords, diff, prevEvents, nowIso);
+            return FinishSync(rpt, currentRecords, diff, prevEvents, nowIso, windowStart, windowEnd);
         }
 
         // moved(시간 이동) 기존 문서 delete + missing tracker 갱신/tombstone + 로컬 상태 저장.
         // time-moved는 확정된 이동(새 문서로 대체)이므로 기존 문서를 tombstone이 아닌 즉시 delete로
         // 처리한다(데이터 손실 없음 - 같은 seriesKey의 새 문서가 (2)에서 이미 upsert되었다).
         private SyncReport FinishSync(SyncReport rpt, List<EventRecord> currentRecords,
-            DiffResult diff, List<EventRecord> prevEvents, string nowIso)
+            DiffResult diff, List<EventRecord> prevEvents, string nowIso, DateTime windowStart, DateTime windowEnd)
         {
             if (diff != null && diff.Moved.Count > 0)
             {
@@ -491,7 +492,15 @@ namespace OutlookCompanion
                     DocumentSnapshot snap = snaps[j];
                     ExistingDocSnapshot ex = ReadExisting(snap);
                     if (!snap.Exists) { tracker.Remove(due[i + j]); continue; }  // Firestore에 없으면 관리 불필요
-                    if (ex != null && ex.Deleted) continue;                     // 이미 tombstone이면 no-op
+                    if (ex == null) { tracker.Remove(due[i + j]); continue; }
+                    if (!TombstoneWindowPolicy.IsInsideCurrentWindow(ex.StartIso, windowStart, windowEnd))
+                    {
+                        // 운영 window 밖의 과거/미래 이력은 삭제 대상이 아니다.
+                        // stale tracker 항목도 여기서 정리해 다음 poll의 반복 tombstone을 막는다.
+                        tracker.Remove(due[i + j]);
+                        continue;
+                    }
+                    if (ex.Deleted) continue;                                   // 이미 tombstone이면 no-op
                     Dictionary<string, object> patch = new Dictionary<string, object>();
                     patch["deleted"] = true;
                     patch["deletedAt"] = FieldValue.ServerTimestamp;
