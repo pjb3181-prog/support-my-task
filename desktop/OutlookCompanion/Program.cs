@@ -241,7 +241,7 @@ namespace OutlookCompanion
 
                 // (4.5) Firebase 업로드(Phase 4C --upload). 실패 시 snapshot을 저장하지 않고 이번
                 //       cycle을 중단한다 -> 다음 poll이 같은 diff로 재시도(변경 유실 방지).
-                if (uploadMode && !UploadToFirestore(read.Events, diff, hasPrev ? prev.Events : null))
+                if (uploadMode && !UploadToFirestore(read.Events, diff, hasPrev ? prev.Events : null, opt.WindowStart, opt.WindowEnd))
                 {
                     return 5;
                 }
@@ -278,7 +278,8 @@ namespace OutlookCompanion
         // 첫 업로드(로컬 state에 lastSyncAt 없음)는 diff 대신 전체 window를 upsert 대상으로 한다:
         //   - 로컬 snapshot에 unchanged로 있는 일정도 Firestore에는 없을 수 있기 때문(최초 관측 기준).
         //   - 두 번째 PC도 첫 실행 시 전체 모드로 재확인하되 Firestore 비교로 전부 SkipSame(no-op)된다.
-        private static bool UploadToFirestore(List<EventRecord> current, DiffResult diff, List<EventRecord> prevEvents)
+        private static bool UploadToFirestore(List<EventRecord> current, DiffResult diff, List<EventRecord> prevEvents,
+            DateTime windowStart, DateTime windowEnd)
         {
             FirestoreSyncState st = FirestoreSyncState.Load();
             if (st.SyntheticPassedAtIso.Length == 0)
@@ -292,7 +293,8 @@ namespace OutlookCompanion
             {
                 bool firstUpload = st.LastSyncAtIso.Length == 0;
                 // 첫 업로드 시 prevEvents도 null로(tracker 오염 방지 - window 밖 이동 문서를 missing으로 오계산하지 않게).
-                SyncReport rpt = sync.SyncEvents(current, firstUpload ? null : diff, firstUpload ? null : prevEvents);
+                SyncReport rpt = sync.SyncEvents(current, firstUpload ? null : diff, firstUpload ? null : prevEvents,
+                    windowStart, windowEnd);
                 Console.WriteLine("[firebase] upload" + (firstUpload ? "(first-full)" : "") + ": " + rpt.Summary()
                     + " / syntheticPassed=" + st.SyntheticPassedAtIso);
                 return true;
