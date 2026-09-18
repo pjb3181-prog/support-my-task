@@ -31,6 +31,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -53,12 +56,21 @@ import androidx.compose.ui.unit.dp
 import com.nomistake.app.data.local.entity.ChecklistEntity
 import com.nomistake.app.data.local.entity.ChecklistItemEntity
 import com.nomistake.app.data.local.entity.EventEntity
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Source
+import com.nomistake.app.data.local.dao.SettingDao
 import com.nomistake.app.data.local.entity.ItemOrigin
+import com.nomistake.app.data.repository.CalendarSyncRepository
+import com.nomistake.app.domain.EventTitleParser
 import com.nomistake.app.domain.WorkCalendarPlanner
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 private val dateFormatter = DateTimeFormatter.ofPattern("M월 d일 (E)")
@@ -68,13 +80,14 @@ private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 fun MainScreen(
     viewModel: MainViewModel,
     onOpenSettings: () -> Unit,
+    onOpenHistory: () -> Unit,
     onOpenDebug: () -> Unit,
     onRefresh: () -> Unit
 ) {
     val selectedEvent by viewModel.selectedEvent.collectAsState()
 
     if (selectedEvent == null) {
-        EventListScreen(viewModel, onOpenSettings, onOpenDebug, onRefresh)
+        EventListScreen(viewModel, onOpenSettings, onOpenHistory, onOpenDebug, onRefresh)
     } else {
         EventDetailScreen(viewModel)
     }
@@ -84,6 +97,7 @@ fun MainScreen(
 private fun EventListScreen(
     viewModel: MainViewModel,
     onOpenSettings: () -> Unit,
+    onOpenHistory: () -> Unit,
     onOpenDebug: () -> Unit,
     onRefresh: () -> Unit
 ) {
@@ -153,6 +167,7 @@ private fun EventListScreen(
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.weight(1f)
                     )
+                    TextButton(onClick = onOpenHistory) { Text("이전 일정") }
                     TextButton(onClick = onOpenSettings) { Text("설정") }
                     TextButton(onClick = onOpenDebug) { Text("진단") }
                 }
@@ -629,5 +644,326 @@ private fun ChecklistRow(
                 .padding(start = 6.dp)
         )
         if (onDelete != null) TextButton(onClick = onDelete) { Text("삭제") }
+    }
+}
+
+
+data class HistoryEvent(
+    val id: String,
+    val title: String,
+    val location: String,
+    val start: java.time.LocalDateTime,
+    val end: java.time.LocalDateTime?,
+    val isAllDay: Boolean
+)
+
+data class HistoryUiState(
+    val from: LocalDate,
+    val to: LocalDate,
+    val keyword: String = "",
+    val loading: Boolean = false,
+    val error: String? = null,
+    val results: List<HistoryEvent> = emptyList(),
+    val hasSearched: Boolean = false
+)
+
+class HistoryViewModel(
+    private val firestore: FirebaseFirestore?,
+    private val settingDao: SettingDao,
+    private val zoneId: ZoneId = ZoneId.systemDefault()
+) : ViewModel() {
+    private val today = LocalDate.now(zoneId)
+    private val _uiState = MutableStateFlow(HistoryUiState(from = today.minusYears(1), to = today))
+    val uiState: StateFlow<HistoryUiState> = _uiState.asStateFlow()
+
+    fun setFrom(value: LocalDate) { _uiState.value = _uiState.value.copy(from = value, error = null) }
+    fun setTo(value: LocalDate) { _uiState.value = _uiState.value.copy(to = value, error = null) }
+    fun setKeyword(value: String) { _uiState.value = _uiState.value.copy(keyword = value) }
+
+    fun setThisYear() {
+        _uiState.value = _uiState.value.copy(from = LocalDate.of(today.year, 1, 1), to = today, error = null)
+    }
+
+    fun setRecentYear() {
+        _uiState.value = _uiState.value.copy(from = today.minusYears(1), to = today, error = null)
+    }
+
+    fun search() {
+        val current = _uiState.value
+        if (current.from.isAfter(current.to)) {
+            _uiState.value = current.copy(error = "시작일이 종료일보다 늦습니다.")
+            return
+        }
+        val db = firestore
+        if (db == null) {
+            _uiState.value = current.copy(hasSearched = true, error = "Firebase 연결 설정이 없어 이전 일정을 조회할 수 없습니다.")
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(loading = true, error = null)
+            try {
+                val marker = settingDao.get(CalendarSyncRepository.KEY_MINE_MARKER)?.value
+                    ?.trim()?.takeIf { it.isNotEmpty() } ?: EventTitleParser.DEFAULT_MINE_MARKER
+                val formatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")
+                val fromIso = current.from.atStartOfDay().format(formatter)
+                val toExclusiveIso = current.to.plusDays(1).atStartOfDay().format(formatter)
+
+                val snapshot = db.collection("events")
+                    .whereGreaterThanOrEqualTo("start", fromIso)
+                    .whereLessThan("start", toExclusiveIso)
+                    .get(Source.SERVER)
+                    .await()
+
+                val keyword = current.keyword.trim()
+                val results = snapshot.documents.mapNotNull { doc ->
+                    val data = doc.data ?: return@mapNotNull null
+                    if (data["deleted"] as? Boolean == true) return@mapNotNull null
+                    val rawTitle = data["subject"] as? String ?: return@mapNotNull null
+                    if (!belongsToMe(rawTitle, marker)) return@mapNotNull null
+                    val location = (data["location"] as? String).orEmpty()
+                    if (keyword.isNotEmpty() &&
+                        !rawTitle.contains(keyword, ignoreCase = true) &&
+                        !location.contains(keyword, ignoreCase = true)
+                    ) return@mapNotNull null
+
+                    val start = (data["start"] as? String)
+                        ?.let { runCatching { java.time.LocalDateTime.parse(it) }.getOrNull() }
+                        ?: return@mapNotNull null
+                    val end = (data["end"] as? String)
+                        ?.let { runCatching { java.time.LocalDateTime.parse(it) }.getOrNull() }
+
+                    HistoryEvent(
+                        id = doc.id,
+                        title = cleanHistoryTitle(rawTitle),
+                        location = location,
+                        start = start,
+                        end = end,
+                        isAllDay = data["allDay"] as? Boolean ?: false
+                    )
+                }.sortedByDescending { it.start }
+
+                _uiState.value = _uiState.value.copy(
+                    loading = false,
+                    results = results,
+                    hasSearched = true
+                )
+            } catch (_: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    loading = false,
+                    hasSearched = true,
+                    error = "이전 일정 조회에 실패했습니다."
+                )
+            }
+        }
+    }
+
+    private fun belongsToMe(rawTitle: String, marker: String): Boolean {
+        if (marker.isBlank()) return false
+        val attendee = HISTORY_ATTENDEE_REGEX.find(rawTitle.trim())?.groupValues?.getOrNull(1) ?: return false
+        return attendee.contains(marker)
+    }
+
+    private fun cleanHistoryTitle(rawTitle: String): String {
+        var title = rawTitle.trim()
+        if (title.startsWith("[대]") || title.startsWith("[세]")) title = title.drop(3).trim()
+        HISTORY_ATTENDEE_REGEX.find(title)?.let { title = title.removeRange(it.range).trim() }
+        return title.ifBlank { rawTitle }
+    }
+}
+
+private val HISTORY_ATTENDEE_REGEX = Regex("\\[([^\\]]*)\\]$")
+private val historyDateInputFormatter = DateTimeFormatter.ISO_LOCAL_DATE
+private val historyDateFormatter = DateTimeFormatter.ofPattern("yyyy. M. d. (E)")
+private val historyTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+@Composable
+fun HistoryScreen(
+    viewModel: HistoryViewModel,
+    onBack: () -> Unit
+) {
+    val state by viewModel.uiState.collectAsState()
+    var fromText by remember(state.from) { mutableStateOf(state.from.format(historyDateInputFormatter)) }
+    var toText by remember(state.to) { mutableStateOf(state.to.format(historyDateInputFormatter)) }
+
+    fun applyDates(): Boolean {
+        val from = runCatching { LocalDate.parse(fromText, historyDateInputFormatter) }.getOrNull()
+        val to = runCatching { LocalDate.parse(toText, historyDateInputFormatter) }.getOrNull()
+        if (from == null || to == null) return false
+        viewModel.setFrom(from)
+        viewModel.setTo(to)
+        return true
+    }
+
+    fun runSearch() {
+        if (applyDates()) viewModel.search()
+    }
+
+    BackHandler(onBack = onBack)
+    LaunchedEffect(Unit) {
+        if (!state.hasSearched && !state.loading) viewModel.search()
+    }
+
+    Scaffold(
+        topBar = {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onBack) { Text("← 일정") }
+                Text("이전 일정", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            }
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text("출장·방문 이력 조회", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        "출장비 지출결의서 작성 등에 필요한 과거 일정과 장소를 찾습니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            viewModel.setThisYear()
+                            val updated = viewModel.uiState.value
+                            fromText = updated.from.format(historyDateInputFormatter)
+                            toText = updated.to.format(historyDateInputFormatter)
+                            viewModel.search()
+                        }) { Text("올해") }
+                        TextButton(onClick = {
+                            viewModel.setRecentYear()
+                            val updated = viewModel.uiState.value
+                            fromText = updated.from.format(historyDateInputFormatter)
+                            toText = updated.to.format(historyDateInputFormatter)
+                            viewModel.search()
+                        }) { Text("최근 1년") }
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = fromText,
+                            onValueChange = { fromText = it },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("시작일") },
+                            supportingText = { Text("YYYY-MM-DD") },
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = toText,
+                            onValueChange = { toText = it },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("종료일") },
+                            supportingText = { Text("YYYY-MM-DD") },
+                            singleLine = true
+                        )
+                    }
+                    OutlinedTextField(
+                        value = state.keyword,
+                        onValueChange = viewModel::setKeyword,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("검색어") },
+                        placeholder = { Text("업체명, 지역, 업무명 등") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { runSearch() })
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { runSearch() },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !state.loading
+                    ) { Text(if (state.loading) "조회 중…" else "조회") }
+
+                    state.error?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (state.hasSearched && state.error == null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "${state.results.size}건을 찾았습니다.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            if (state.loading) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 28.dp),
+                        horizontalArrangement = Arrangement.Center
+                    ) { CircularProgressIndicator() }
+                }
+            } else if (state.hasSearched && state.results.isEmpty() && state.error == null) {
+                item {
+                    Text(
+                        "조건에 맞는 이전 일정이 없습니다.",
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 48.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                items(state.results, key = { it.id }) { event ->
+                    HistoryEventCard(event)
+                }
+            }
+            item { Spacer(Modifier.height(20.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun HistoryEventCard(event: HistoryEvent) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text(
+                event.start.format(historyDateFormatter),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(event.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(3.dp))
+            Text(
+                if (event.isAllDay) "종일" else buildString {
+                    append(event.start.format(historyTimeFormatter))
+                    event.end?.let {
+                        append("-")
+                        append(it.format(historyTimeFormatter))
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(5.dp))
+            Text(
+                if (event.location.isBlank()) "장소 정보 없음" else "장소 · ${event.location}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (event.location.isBlank()) FontWeight.Normal else FontWeight.SemiBold,
+                color = if (event.location.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
+            )
+        }
     }
 }
