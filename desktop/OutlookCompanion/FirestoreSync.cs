@@ -316,6 +316,62 @@ namespace OutlookCompanion
             return snap.TryGetValue<string>(field, out v) ? (v ?? "") : "";
         }
 
+        // ===== 이력 백필 전용 =====
+        //
+        // 과거 일정 아카이브를 Firestore에 안전하게 적재한다.
+        // 일반 polling snapshot / missing tracker / tombstone 상태는 전혀 건드리지 않는다.
+        // 따라서 넓은 과거 window를 1회 스캔한 뒤 다시 좁은 운영 window로 돌아가도
+        // 과거 문서가 missing으로 오판되어 삭제되지 않는다.
+        public SyncReport UpsertArchive(List<EventRecord> records)
+        {
+            SyncReport rpt = new SyncReport();
+            string nowIso = KeyPolicy.ToIso(DateTime.Now);
+
+            List<EventRecord> ordered = new List<EventRecord>();
+            Dictionary<string, bool> seen = new Dictionary<string, bool>(StringComparer.Ordinal);
+            foreach (EventRecord r in records)
+            {
+                if (r == null) continue;
+                string id = KeyPolicy.ComputeDocumentId(r);
+                if (id.Length == 0 || seen.ContainsKey(id)) continue;
+                seen[id] = true;
+                ordered.Add(r);
+            }
+            rpt.UpsertTargets = ordered.Count;
+
+            for (int i = 0; i < ordered.Count; i += BatchChunk)
+            {
+                int take = Math.Min(BatchChunk, ordered.Count - i);
+                List<DocumentReference> refs = new List<DocumentReference>(take);
+                for (int j = 0; j < take; j++)
+                    refs.Add(Events.Document(KeyPolicy.ComputeDocumentId(ordered[i + j])));
+
+                IList<DocumentSnapshot> snaps = _db.GetAllSnapshotsAsync(refs).GetAwaiter().GetResult();
+                rpt.DocsRead += snaps.Count;
+
+                WriteBatch batch = _db.StartBatch();
+                bool any = false;
+                for (int j = 0; j < take; j++)
+                {
+                    EventRecord rec = ordered[i + j];
+                    DocumentSnapshot snap = snaps[j];
+                    UpsertAction action = UpsertPlanner.Decide(rec, ReadExisting(snap));
+                    if (action == UpsertAction.SkipSame) { rpt.SkippedSame++; continue; }
+                    if (action == UpsertAction.SkipStale) { rpt.SkippedStale++; continue; }
+                    if (action == UpsertAction.Revive) rpt.Revived++;
+                    else if (action == UpsertAction.Update) rpt.Updated++;
+                    else rpt.Created++;
+
+                    batch.Set(snap.Reference, BuildFields(rec, SourcePc, nowIso, false, false));
+                    any = true;
+                }
+                if (any) { batch.CommitAsync().GetAwaiter().GetResult(); rpt.Batches++; }
+            }
+
+            rpt.Note = "archive-backfill(no snapshot/tombstone mutation)";
+            return rpt;
+        }
+
         // ===== 메인 파이프라인 =====
         //
         // 이번 scan 레코드를 Firestore에 반영한다.
