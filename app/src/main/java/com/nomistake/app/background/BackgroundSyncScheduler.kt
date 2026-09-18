@@ -44,6 +44,26 @@ object BackgroundSyncScheduler {
         enqueueImmediate(context, ExistingWorkPolicy.REPLACE)
     }
 
+    /** 사용자가 이전 일정 화면을 열었을 때만 최근 2년 이력을 한 번 가져온다. */
+    fun requestHistory(context: Context) {
+        val history = OneTimeWorkRequestBuilder<BackgroundSyncWorker>()
+            .setConstraints(connectedConstraints())
+            .setInputData(
+                Data.Builder()
+                    .putBoolean(KEY_FORCE_SYNC, true)
+                    .putBoolean(KEY_HISTORY_SYNC, true)
+                    .build()
+            )
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, BACKOFF_MINUTES, TimeUnit.MINUTES)
+            .build()
+
+        WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+            HISTORY_WORK_NAME,
+            ExistingWorkPolicy.REPLACE,
+            history
+        )
+    }
+
     private fun enqueueImmediate(context: Context, policy: ExistingWorkPolicy) {
         val immediate = OneTimeWorkRequestBuilder<BackgroundSyncWorker>()
             .setConstraints(connectedConstraints())
@@ -64,7 +84,9 @@ object BackgroundSyncScheduler {
 
     const val PERIODIC_WORK_NAME = "nomistake_calendar_periodic_sync"
     const val IMMEDIATE_WORK_NAME = "nomistake_calendar_immediate_sync"
+    const val HISTORY_WORK_NAME = "nomistake_calendar_history_sync"
     const val REPEAT_MINUTES = 30L
     const val KEY_FORCE_SYNC = "forceSync"
+    const val KEY_HISTORY_SYNC = "historySync"
     private const val BACKOFF_MINUTES = 10L
 }
