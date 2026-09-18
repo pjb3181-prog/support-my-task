@@ -33,6 +33,7 @@ class BackgroundSyncWorker(
 
     override suspend fun doWork(): Result {
         val forceSync = inputData.getBoolean(BackgroundSyncScheduler.KEY_FORCE_SYNC, false)
+        val historySync = inputData.getBoolean(BackgroundSyncScheduler.KEY_HISTORY_SYNC, false)
         if (!forceSync && !BackgroundSyncHours.isAutomaticSyncAllowed(LocalDateTime.now())) {
             return Result.success()
         }
@@ -72,7 +73,8 @@ class BackgroundSyncWorker(
 
             val zone = ZoneId.systemDefault()
             val today = LocalDate.now(zone)
-            val from = today.minusDays(SYNC_PAST_DAYS).atStartOfDay(zone).toInstant()
+            val pastDays = if (historySync) HISTORY_PAST_DAYS else SYNC_PAST_DAYS
+            val from = today.minusDays(pastDays).atStartOfDay(zone).toInstant()
             val to = today.plusDays(SYNC_FUTURE_DAYS).atStartOfDay(zone).toInstant()
             syncRepository.syncNow(from, to)
 
@@ -96,6 +98,7 @@ class BackgroundSyncWorker(
     companion object {
         private const val TAG = "NoMistakeSync"
         const val SYNC_PAST_DAYS = 7L
+        const val HISTORY_PAST_DAYS = 730L
         const val SYNC_FUTURE_DAYS = 90L
     }
 }
