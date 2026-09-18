@@ -45,6 +45,8 @@ import com.nomistake.app.notification.NotificationAlarmScheduler
 import com.nomistake.app.notification.NotificationReceiver
 import com.nomistake.app.ui.DebugScreen
 import com.nomistake.app.ui.DebugViewModel
+import com.nomistake.app.ui.HistoryScreen
+import com.nomistake.app.ui.HistoryViewModel
 import com.nomistake.app.ui.MainScreen
 import com.nomistake.app.ui.MainViewModel
 import com.nomistake.app.ui.SettingsScreen
@@ -147,6 +149,12 @@ class MainActivity : ComponentActivity() {
                         notificationScheduler = notificationScheduler
                     )
                 }
+                val historyViewModel: HistoryViewModel = viewModel {
+                    HistoryViewModel(
+                        firestore = if (firebaseReady) FirebaseFirestore.getInstance() else null,
+                        settingDao = db.settingDao()
+                    )
+                }
                 val settingsViewModel: SettingsViewModel = viewModel {
                     SettingsViewModel(
                         settingDao = db.settingDao(),
@@ -160,15 +168,20 @@ class MainActivity : ComponentActivity() {
 
                 var showDebug by rememberSaveable { mutableStateOf(false) }
                 var showSettings by rememberSaveable { mutableStateOf(false) }
+                var showHistory by rememberSaveable { mutableStateOf(false) }
 
                 BackHandler(enabled = showDebug) {
                     showDebug = false
+                }
+                BackHandler(enabled = showHistory) {
+                    showHistory = false
                 }
 
                 LaunchedEffect(requestedEventId) {
                     requestedEventId?.let { eventId ->
                         showDebug = false
                         showSettings = false
+                        showHistory = false
                         mainViewModel.openEvent(eventId)
                         requestedEventId = null
                     }
@@ -182,6 +195,13 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    showHistory -> {
+                        HistoryScreen(
+                            viewModel = historyViewModel,
+                            onBack = { showHistory = false }
+                        )
+                    }
+
                     showSettings -> {
                         Column(modifier = Modifier.statusBarsPadding()) {
                             SettingsScreen(viewModel = settingsViewModel, onBack = { showSettings = false })
@@ -192,6 +212,7 @@ class MainActivity : ComponentActivity() {
                         MainScreen(
                             viewModel = mainViewModel,
                             onOpenSettings = { showSettings = true },
+                            onOpenHistory = { showHistory = true },
                             onOpenDebug = { showDebug = true },
                             onRefresh = {
                                 BackgroundSyncScheduler.requestImmediate(applicationContext)
