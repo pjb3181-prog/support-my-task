@@ -92,6 +92,21 @@ namespace OutlookCompanion
     // 연속 missing 추적 -> tombstone 대상 판정(순수 로직 - SelfTest 대상).
     // [역할] poll1에서 removed된 문서는 poll2의 snapshot에 없으므로 diff Removed에 다시 나오지 않는다.
     //        tracker가 이 연속성을 담당한다(후보 = tracker 기존 항목 ∪ 이전 snapshot 문서 ID).
+    public static class TombstoneWindowPolicy
+    {
+        // 정상 polling의 tombstone은 "현재 관측 window 안에 있어야 하는 일정"에만 적용한다.
+        // 백필로 보존한 오래된 이력이나, 시간이 흘러 운영 window 밖으로 빠진 과거 일정은
+        // 삭제 후보가 아니라 아카이브이므로 tracker에서 제거한다.
+        public static bool IsInsideCurrentWindow(string startIso, DateTime windowStart, DateTime windowEnd)
+        {
+            if (string.IsNullOrEmpty(startIso)) return false;
+            DateTime start;
+            try { start = KeyPolicy.FromIso(startIso); }
+            catch { return false; }
+            return start >= windowStart && start < windowEnd;
+        }
+    }
+
     public sealed class MissingTracker
     {
         public const int DefaultThreshold = 2;   // 연속 missing 회수(기본 polling 60분 -> 약 2시간)
