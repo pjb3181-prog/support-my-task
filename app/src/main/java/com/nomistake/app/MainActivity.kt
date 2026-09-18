@@ -195,6 +195,9 @@ class MainActivity : ComponentActivity() {
                             onOpenDebug = { showDebug = true },
                             onRefresh = {
                                 BackgroundSyncScheduler.requestImmediate(applicationContext)
+                            },
+                            onHistoryRefresh = {
+                                BackgroundSyncScheduler.requestHistory(applicationContext)
                             }
                         )
                     }
