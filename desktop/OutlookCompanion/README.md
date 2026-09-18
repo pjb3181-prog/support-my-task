@@ -75,6 +75,27 @@ Android / Web
 
 CLI 호환 인자: `--poll-minutes N`, `--window-past N`, `--window-future N`, `--start-outlook`.
 
+## 과거 일정 이력 백필
+
+출장비 지출결의서 등에서 과거 방문/출장 일정을 조회할 수 있도록, 운영 polling과 별도로 과거 일정을 Firestore에 1회 적재할 수 있다.
+
+```powershell
+OutlookCompanion.exe --history-backfill
+```
+
+기본은 과거 10년이다. 필요하면 연수를 지정한다.
+
+```powershell
+OutlookCompanion.exe --history-backfill 5
+```
+
+- 백필은 일반 polling snapshot을 변경하지 않는다.
+- missing tracker/tombstone 상태도 변경하지 않는다.
+- 따라서 백필 직후 일반 1시간 polling으로 돌아가도 오래된 과거 일정이 삭제 대상으로 오판되지 않는다.
+- 같은 stable ID 문서가 이미 있으면 내용 비교 후 필요한 경우만 업데이트한다.
+- 오래된 일정이 Outlook에서 사후 수정된 경우 백필을 다시 실행하면 갱신할 수 있다.
+- 웹의 **이전 일정** 메뉴에서 기간과 검색어로 조회할 수 있다.
+
 ## 개발 환경
 
 빌드하는 PC에만 .NET 8 SDK가 필요하다.

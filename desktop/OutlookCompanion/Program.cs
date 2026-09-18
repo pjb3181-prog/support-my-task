@@ -13,6 +13,7 @@
 //   --poll-minutes N   polling 간격 override(검증용 짧은 간격 가능 / production 기본 60)
 //   --window-past N    조회 window 과거 일수(기본 1)
 //   --window-future N  조회 window 미래 일수(기본 30)
+//   --history-backfill [년]  과거 이력을 Firestore에 1회 백필(기본 10년, snapshot/tombstone 불변)
 //   --start-outlook    Outlook 미실행 시 Companion이 Outlook을 시작(기본은 시작하지 않고 skip)
 //
 // [COM 수명 정책 - Phase 4B 확정] 매 poll cycle마다 짧게 attach -> read -> 전량 release.
@@ -44,7 +45,8 @@ namespace OutlookCompanion
             catch (IOException) { }
 
             bool test = false, gates = false, probe = false, once = false, idle = false, startOutlook = false;
-            bool firebaseTest = false, upload = false;
+            bool firebaseTest = false, upload = false, historyBackfill = false;
+            int historyYears = 10;
             int pollMinutes = AppSettings.DefaultPollMinutes;
             int windowPast = AppSettings.DefaultWindowPastDays;
             int windowFuture = AppSettings.DefaultWindowFutureDays;
@@ -61,6 +63,19 @@ namespace OutlookCompanion
                 else if (a == "--start-outlook") startOutlook = true;
                 else if (a == "--firebase-test") firebaseTest = true;
                 else if (a == "--upload") upload = true;
+                else if (a == "--history-backfill")
+                {
+                    historyBackfill = true;
+                    if (i + 1 < args.Length)
+                    {
+                        int years;
+                        if (int.TryParse(args[i + 1], out years) && years > 0 && years <= 30)
+                        {
+                            historyYears = years;
+                            i++;
+                        }
+                    }
+                }
                 else if (a == "--poll-minutes" && i + 1 < args.Length) { int v; if (int.TryParse(args[++i], out v) && v > 0) pollMinutes = v; }
                 else if (a == "--window-past" && i + 1 < args.Length) { int v; if (int.TryParse(args[++i], out v) && v >= 0) windowPast = v; }
                 else if (a == "--window-future" && i + 1 < args.Length) { int v; if (int.TryParse(args[++i], out v) && v > 0) windowFuture = v; }
@@ -80,6 +95,14 @@ namespace OutlookCompanion
             if (idle) return IdleCpuTest(idleSeconds);
             if (gates) return Gates.Run();
             if (firebaseTest) return FirestoreTest.Run();
+
+            if (historyBackfill)
+            {
+                int historyPastDays = (int)Math.Ceiling((DateTime.Now - DateTime.Now.AddYears(-historyYears)).TotalDays);
+                Console.WriteLine("[history] 과거 " + historyYears + "년 이력 백필 시작");
+                Console.WriteLine("[history] 일반 polling snapshot / tombstone 상태는 변경하지 않습니다.");
+                return RunSync(1, historyPastDays, 1, startOutlook, false, true, true);
+            }
 
             if (probe)
             {
@@ -111,7 +134,7 @@ namespace OutlookCompanion
         }
 
         // 1회 sync: attach -> MERI 해석(재접근 정책) -> window 읽기 -> diff -> (업로드) -> snapshot 저장 -> 전량 release.
-        private static int RunSync(int seq, int windowPastDays, int windowFutureDays, bool allowStartOutlook, bool probeMode, bool uploadMode)
+        private static int RunSync(int seq, int windowPastDays, int windowFutureDays, bool allowStartOutlook, bool probeMode, bool uploadMode, bool archiveBackfill = false)
         {
             Console.WriteLine();
             Console.WriteLine("[sync #" + seq + "] " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
@@ -190,6 +213,13 @@ namespace OutlookCompanion
                         + " / method=" + meri.Method);
                     return 0; // probe는 재접근/성능 실측이 목적(diff/snapshot 미저장)
                 }
+                if (archiveBackfill)
+                {
+                    if (!UploadArchiveToFirestore(read.Events)) return 5;
+                    Console.WriteLine("[history] 백필 완료 - 운영 snapshot은 변경하지 않음.");
+                    return 0;
+                }
+
                 // (4) diff(이전 snapshot vs 이번 scan - Subject 원문 미출력, 카운트만)
                 SnapshotData prev = SnapshotStore.LoadSnapshot();
                 bool hasPrev = (prev != null && prev.Events.Count > 0);
@@ -211,7 +241,7 @@ namespace OutlookCompanion
 
                 // (4.5) Firebase 업로드(Phase 4C --upload). 실패 시 snapshot을 저장하지 않고 이번
                 //       cycle을 중단한다 -> 다음 poll이 같은 diff로 재시도(변경 유실 방지).
-                if (uploadMode && !UploadToFirestore(read.Events, diff, hasPrev ? prev.Events : null))
+                if (uploadMode && !UploadToFirestore(read.Events, diff, hasPrev ? prev.Events : null, opt.WindowStart, opt.WindowEnd))
                 {
                     return 5;
                 }
@@ -248,7 +278,8 @@ namespace OutlookCompanion
         // 첫 업로드(로컬 state에 lastSyncAt 없음)는 diff 대신 전체 window를 upsert 대상으로 한다:
         //   - 로컬 snapshot에 unchanged로 있는 일정도 Firestore에는 없을 수 있기 때문(최초 관측 기준).
         //   - 두 번째 PC도 첫 실행 시 전체 모드로 재확인하되 Firestore 비교로 전부 SkipSame(no-op)된다.
-        private static bool UploadToFirestore(List<EventRecord> current, DiffResult diff, List<EventRecord> prevEvents)
+        private static bool UploadToFirestore(List<EventRecord> current, DiffResult diff, List<EventRecord> prevEvents,
+            DateTime windowStart, DateTime windowEnd)
         {
             FirestoreSyncState st = FirestoreSyncState.Load();
             if (st.SyntheticPassedAtIso.Length == 0)
@@ -262,7 +293,8 @@ namespace OutlookCompanion
             {
                 bool firstUpload = st.LastSyncAtIso.Length == 0;
                 // 첫 업로드 시 prevEvents도 null로(tracker 오염 방지 - window 밖 이동 문서를 missing으로 오계산하지 않게).
-                SyncReport rpt = sync.SyncEvents(current, firstUpload ? null : diff, firstUpload ? null : prevEvents);
+                SyncReport rpt = sync.SyncEvents(current, firstUpload ? null : diff, firstUpload ? null : prevEvents,
+                    windowStart, windowEnd);
                 Console.WriteLine("[firebase] upload" + (firstUpload ? "(first-full)" : "") + ": " + rpt.Summary()
                     + " / syntheticPassed=" + st.SyntheticPassedAtIso);
                 return true;
@@ -270,6 +302,31 @@ namespace OutlookCompanion
             catch (Exception ex)
             {
                 Console.WriteLine("[firebase] 업로드 오류 - snapshot 미저장(다음 poll에 같은 diff로 재시도): " + ex.Message);
+                return false;
+            }
+        }
+
+        private static bool UploadArchiveToFirestore(List<EventRecord> records)
+        {
+            FirestoreSyncState st = FirestoreSyncState.Load();
+            if (st.SyntheticPassedAtIso.Length == 0)
+            {
+                Console.WriteLine("[firebase] history 게이트: synthetic 검증(--firebase-test) 미통과 - 업로드 중단");
+                return false;
+            }
+
+            FirestoreSync sync = FirestoreSync.Create(FirestoreConfig.Load());
+            if (sync == null) return false;
+            try
+            {
+                SyncReport rpt = sync.UpsertArchive(records);
+                Console.WriteLine("[firebase] history-backfill: " + rpt.Summary()
+                    + " / syntheticPassed=" + st.SyntheticPassedAtIso);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[firebase] history-backfill 오류: " + ex.Message);
                 return false;
             }
         }

@@ -404,6 +404,16 @@ namespace OutlookCompanion
             EventRecord c8 = CloneRecord(cBase); c8.LastModIso = KeyPolicy.ToIso(new DateTime(2026, 8, 31, 10, 0, 0));
             allDetected &= !UpsertPlanner.ContentEquals(dBase, c8);
             Check("T27 ContentEquals 필드별 변경 감지(8종 전부)", allDetected);
+
+            // T28: tombstone window guard - 운영 window 밖 과거 이력은 삭제 대상이 아님
+            DateTime tws = new DateTime(2026, 9, 17, 0, 0, 0);
+            DateTime twe = new DateTime(2026, 10, 18, 0, 0, 0);
+            Check("T28a tombstone window: 현재 window 내부 일정은 대상",
+                TombstoneWindowPolicy.IsInsideCurrentWindow(KeyPolicy.ToIso(new DateTime(2026, 9, 18, 10, 0, 0)), tws, twe));
+            Check("T28b tombstone window: 오래된 백필 이력은 대상 아님",
+                !TombstoneWindowPolicy.IsInsideCurrentWindow(KeyPolicy.ToIso(new DateTime(2026, 3, 1, 10, 0, 0)), tws, twe));
+            Check("T28c tombstone window: 경계 밖 미래 일정도 대상 아님",
+                !TombstoneWindowPolicy.IsInsideCurrentWindow(KeyPolicy.ToIso(twe), tws, twe));
         }
     }
 }
