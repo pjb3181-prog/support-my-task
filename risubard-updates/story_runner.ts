@@ -1935,6 +1935,12 @@
   // It is only used for AI-generated fiction, never the user's manual prose.
   const storyQualityVerdicts = new Map();
   const STORY_QUALITY_GATE_TIMEOUT_MS = 90000;
+  function correctEstablishedNameTypos(draft, messages) {
+    let out=text(draft);
+    const canon=(Array.isArray(messages)?messages:[]).map(m=>text(m&&m.content)).join('\n');
+    if(canon.includes('세이라')) out=out.replace(/세이러/g,'세이라');
+    return out;
+  }
   function storyQualityKey(value) {
     const src = text(value);
     let hash = 2166136261;
@@ -2046,7 +2052,7 @@
         || typeof parsed.garbled !== 'boolean' || typeof parsed.cutOff !== 'boolean') throw new Error('품질 검사 형식 오류');
       const evidence = Array.isArray(parsed.evidence) ? parsed.evidence
         .map(x=>text(x).trim()).filter(x=>x && gateInput.includes(x)).slice(0,3) : [];
-      // v0.95.5: an auxiliary model can misread a proper-name spelling variant,
+      // v0.95.6: an auxiliary model can misread a proper-name spelling variant,
       // an awkward metaphor, or an open-ended scene as "corruption". These are
       // EDITORIAL opinions, not proof of damaged bytes or invalid output. Do not
       // trap the user in an endless refusal/retry loop because of that verdict.
@@ -2098,7 +2104,7 @@
   async function requireValidStoryBeforeInsert(candidate, messages, stage) {
     const value = text(candidate).trim();
     let report = await storyQualityVerdict(value);
-    if (report.ok) return value;
+    if (report.ok) return correctEstablishedNameTypos(value,messages);
     perfLog('storyQualityReject',{stage,reason:report.reason,code:report.code,characters:value.length});
     const fragments=storyMixedScriptFragments(value);
     // For localized orthography damage, let MAIN writer copy-edit instead of
@@ -2107,7 +2113,7 @@
       const repaired=await repairMixedScriptDraft(value,fragments);
       if(repaired) {
         const revisedReport=await storyQualityVerdict(repaired);
-        if(revisedReport.ok)return repaired;
+        if(revisedReport.ok)return correctEstablishedNameTypos(repaired,messages);
         report=revisedReport;
       }
     }
@@ -2117,7 +2123,7 @@
       const regenerated=await regenerateCleanStory(messages);
       if(regenerated) {
         const regenerateReport=await storyQualityVerdict(regenerated);
-        if(regenerateReport.ok) return text(regenerated).replaceAll(COMPLETE_MARKER,'').trim();
+        if(regenerateReport.ok) return correctEstablishedNameTypos(text(regenerated).replaceAll(COMPLETE_MARKER,'').trim(),messages);
         report=regenerateReport;
       }
     }
@@ -5298,8 +5304,8 @@
       content: [
         "Continue the story naturally from the exact current chat state.",
         "Do not summarize or rush through the current Story Runner node.",
-        "Treat the current node as a full scene, not a checklist.",
-        "Let interaction, reaction, dialogue, tension, and consequences breathe before marking the scene complete.",
+        "Treat the current node as a full scene, not a checklist. Show the central event actually happening on-page, not merely foreshadowed.",
+        "Let interaction, reaction, dialogue, tension, and consequences breathe before marking the scene complete. If the node requires a confrontation or encounter, perform it now. Do not replace it with hidden surveillance, mysterious shadows, or repeated delays.",
         "Follow the active Risu Lorebook and Story Runner runtime guidance together."
       ].join("\n"),
     });
@@ -6140,6 +6146,7 @@
       '장면을 단편적인 대화 하나로 화 종료하지 말고, 한 화 안에서 여러 의미 있는 사건이 이어지게 해.',
       '큰 방향만 설계하고 세부 행동·말투·갈등은 Writer에게 여지를 남겨.',
       '실제로 이미 발생한 사건을 반복하거나, 미래 계획을 과거 사실로 취급하지 마.',
+      '현재 장면의 핵심 사건을 실제로 진행시켜. 직접 대면해야 하는 장면을 그림자 속 감시나 반복되는 암시로 대체하지 마.',
       book.lastEvent ? ('최근 실제 사건: '+book.lastEvent) : '',
       book.openThreads.length ? ('현재 미해결: '+book.openThreads.slice(0,4).join(' / ')) : '',
     ].filter(Boolean).join('\n');
@@ -7803,8 +7810,8 @@
           'Write the current episode now according to the Story Runner episode context above.',
           'Write the story in Korean only.',
           'Return exactly <SR_STORY>...actual Korean story prose...</SR_STORY>, with nothing before the opening tag. If and only if the episode naturally completes, append ' + COMPLETE_MARKER + ' after the closing tag.',
-          'Do not output an outline, directive, planning notes, explanation, chain-of-thought, analysis, or machine-status footer.',
-          'Honor MUST requirements. Treat GUIDANCE as optional inspiration, not a checklist. Preserve natural scene flow, character initiative, and useful surprises.',
+          'Do not output an outline, directive, planning notes, explanation, chain-of-thought, analysis, or machine-status footer. Correct obvious character-name typos against canonical context before returning.',
+          'Honor MUST requirements. Treat GUIDANCE as optional inspiration, not a checklist. Preserve natural scene flow, character initiative, and useful surprises. The active scene's central event MUST happen in this turn; avoid shadowy surveillance, ominous hints and setup-only detours instead of direct interaction. Follow the latest user revision.',
           interactionPacingMode === 'fine' ? 'FINE PACING IS ACTIVE: perform only the immediate beat and stop with the incident open.' : (interactionPacingMode === 'adaptive' ? 'ADAPTIVE CHOICE-POINT PACING IS ACTIVE: compress low-stakes buildup, continue until just before the next meaningful user-relevant decision; if none exists before the current goal, continue to the goal.' : (interactionPacingMode === 'goal' ? 'GOAL-RUN PACING IS ACTIVE: continue through intermediate choices toward the requested goal.' : '')),
           additionalDirection ? ('Additional user direction: ' + additionalDirection) : '',
         ].filter(Boolean).join('\n\n'),
