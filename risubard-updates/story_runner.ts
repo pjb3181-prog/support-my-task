@@ -2,12 +2,12 @@
 //@display-name Story Runner
 //@api 3.0
 //@allowed-ipc mutation_state_router_v2
-//@version 0.95.4
+//@version 0.95.5
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_runner.ts
-//@description Story Workspace: bounded main-writer context, safe output recovery, short-prompt diagnostic and story continuity; updater metadata.
+//@description Story Workspace: evidence-based output safety; no legacy prose recheck lockout; self-updating story studio.
 
 (async () => {
-  const VERSION = "0.95.4";
+  const VERSION = "0.95.5";
   const STORAGE_PREFIX = "storyrunner_plugin_v1";
   const SCENE_LIBRARY_KEY = STORAGE_PREFIX + "_scene_library";
   const CAMEO_LIBRARY_KEY = STORAGE_PREFIX + "_cameo_character_lore_library";
@@ -2046,14 +2046,24 @@
         || typeof parsed.garbled !== 'boolean' || typeof parsed.cutOff !== 'boolean') throw new Error('품질 검사 형식 오류');
       const evidence = Array.isArray(parsed.evidence) ? parsed.evidence
         .map(x=>text(x).trim()).filter(x=>x && gateInput.includes(x)).slice(0,3) : [];
+      // v0.95.5: an auxiliary model can misread a proper-name spelling variant,
+      // an awkward metaphor, or an open-ended scene as "corruption". These are
+      // EDITORIAL opinions, not proof of damaged bytes or invalid output. Do not
+      // trap the user in an endless refusal/retry loop because of that verdict.
+      // storySurfaceProblem() above still hard-rejects objective corruption.
       const approved = parsed.pass === true && !parsed.garbled && !parsed.cutOff;
-      return {
-        ok: approved,
-        reason: approved ? '' : (text(parsed.reasonKo).trim().slice(0,180) || '문장 흐름이 손상됨'),
-        code: approved ? 'pass' : 'semantic', evidence,
-      };
+      if (!approved) {
+        const warning = text(parsed.reasonKo).trim().slice(0,180) || '검수 모델이 문장 표현을 지적함';
+        perfLog('storyQualityAdvisory', { warning, evidenceCount: evidence.length });
+        return { ok: true, reason: '', code: 'semantic-advisory', warning, evidence };
+      }
+      return { ok: true, reason: '', code: 'pass', evidence };
     } catch (error) {
-      return {ok:false, reason:'독립 품질 검사를 완료하지 못함: '+text(error&&error.message||error).slice(0,120),code:'unavailable'};
+      // A failed/timed-out editor cannot veto a syntactically intact story.
+      // Keep the deterministic gate active even when the auxiliary API is down.
+      const warning = '보조 모델 품질 평가 불가: ' + text(error&&error.message||error).slice(0,100);
+      perfLog('storyQualityAdvisory', { warning });
+      return { ok: true, reason: '', code: 'checker-unavailable', warning };
     } finally {
       if (timeoutId !== null) clearTimeout(timeoutId);
     }
@@ -2822,6 +2832,12 @@
     return tail.map((m, i) => {
       const role = m.role === "user" ? "user" : "assistant";
       const value = text(m.data);
+      // A provably corrupted saved output remains in the user's chat history,
+      // but never becomes a style/template source in future model prompts.
+      // Editorial defects (name variants, rough metaphors) do NOT trigger this.
+      if (role === 'assistant' && storySurfaceProblem(value)) {
+        return { role, content: '[기존 채팅의 이 메시지는 문자/형식 손상으로 모델 입력에서 제외함. 앞서 확인된 사건과 현재 사용자 지시를 따라 이어서 쓸 것. 실제 채팅 원문은 변경하지 않음.]' };
+      }
       // Prefer the ending over the beginning: the unresolved situation is at the end.
       const limit = i === tail.length - 1 ? 10500 : (i >= tail.length - 3 ? 3500 : 1200);
       return { role, content: value.length > limit ? "[Earlier text omitted; following is the END of this message]\n" + value.slice(-limit) : value };
@@ -5270,7 +5286,10 @@
       const role = m.role === 'assistant' || m.role === 'char' ? 'assistant' : 'user';
       // Prefer the last actual paragraphs for continuity; do not resend the
       // same huge chat tail into both system canon and recent messages.
-      messages.push({role,content:text(m.content||m.data).slice(-2300)});
+      const excerpt = text(m.content||m.data);
+      messages.push({role,content:(role==='assistant' && storySurfaceProblem(excerpt))
+        ? '[이전 저장 메시지의 문자 손상 부분은 모델 입력에서 제외함. 기존에 확정된 사건만 참고할 것.]'
+        : excerpt.slice(-2300)});
     }
     perfLog('boundedDirectContext',{systemChars:messages[0].content.length,chatChars:messages.slice(1).reduce((n,m)=>n+m.content.length,0),node:text(node.title).slice(0,80)});
 
@@ -5847,7 +5866,8 @@
     if(project.running&&project.autoRun&&!project.paused)return '<span class="m-status running">연속 생성 중</span>';
     if(project.paused&&normalizeStoryNotebook(project.storyNotebook).needsUserDecision)return '<span class="m-status">선택 대기</span>';
     if(notebookStatus.includes('읽는 중'))return '<span class="m-status busy"><span class="m-pulse"></span>대화 분석 중</span>';
-    return '<span class="m-status">'+escapeHtml(project.lastStatus==='failed'?'확인 필요':project.experienceMode==='direct'?'직접 진행':'준비됨')+'</span>';
+    const staleLegacyRecheck = project.lastStatus==='failed' && text(project.lastReason).startsWith('본문 품질 검사 실패 (이전 대화 재검사)');
+    return '<span class="m-status">'+escapeHtml(project.lastStatus==='failed'&&!staleLegacyRecheck?'확인 필요':project.experienceMode==='direct'?'직접 진행':'준비됨')+'</span>';
   }
 
   function renderModernUI() {
@@ -6013,7 +6033,7 @@
        (lastError?'<div class="m-warn" role="alert">'+escapeHtml(lastError)+'</div>':'')+
        (lastError&&(/본문|검수|생성/.test(lastError))?'<details class="m-details" id="m-diagnostic"><summary>원인 확인 · 메인 모델 단문 테스트 <span>채팅 저장 없음</span></summary><div class="m-detailbody"><p class="m-muted">같은 메인 모델에 짧은 한국어 문장만 요청하여 문맥 중복 문제인지 모델 자체 문제인지 구분할 단서를 확인해.</p><button type="button" id="m-diagnose-writer" class="m-outline"'+(mainWriterDiagnosticBusy?' disabled':'')+'>메인 모델 단문 테스트</button>'+(mainWriterDiagnostic?'<p class="m-muted" style="white-space:pre-wrap;overflow-wrap:anywhere">'+escapeHtml(mainWriterDiagnostic)+'</p>':'')+'</div></details>':'')+
 
-       (project.paused&&text(project.lastReason)&&text(project.lastReason)!==text(lastError)?'<div class="m-warn">'+escapeHtml(project.lastReason)+'</div>':'')+
+       (project.paused&&!lastError&&text(project.lastReason)&&!text(project.lastReason).startsWith('본문 품질 검사 실패 (이전 대화 재검사)')?'<div class="m-warn">'+escapeHtml(project.lastReason)+'</div>':'')+
        '<div class="m-layout"><section class="m-primary-surface">'+(aiMode?directorPanel:directPanel)+'</section><aside>'+storyPanel+notebookPanel+'</aside></div>'+
        '<div class="m-footer">설계와 집필은 Story Runner · 세계관과 Lorebook은 Mutation / Risu에서 관리</div></main>';
     const $=(id)=>document.getElementById(id);
@@ -6152,12 +6172,20 @@
   }
 
   async function verifyLiveContinuationBeforeWriting() {
+    // v0.95.5: NEVER re-judge a previously SAVED reply using the editorial
+    // auxiliary LLM as a precondition for writing. Chat history belongs to the
+    // user; an inconsistent name or clumsy phrase must not lock the next turn.
+    // New output still goes through requireValidStoryBeforeInsert().
     const live = await loadModernLivePreview();
     if (!live || !text(live.content).trim()) return;
-    const report = await storyQualityVerdict(live.content);
-    if (!report.ok) {
-      const reason = await flagRejectedStory(report.reason,'이전 대화 재검사');
-      throw new Error(reason + ' · 현재 마지막 메시지가 손상됐어. 정상 메시지에서 분기하거나 손상된 메시지를 수정한 뒤 다시 실행해줘.');
+    const objectiveProblem = storySurfaceProblem(live.content);
+    if (objectiveProblem) {
+      // Warn without modifying the saved chat, advancing any beat, or blocking
+      // continuation. readDirectorLiveTail() avoids echoing verifiably damaged
+      // legacy text back into the next writer prompt.
+      notebookStatus = '이전 본문의 문자 손상 가능성 · 원문 유지, 다음 집필 허용';
+      notebookError = '';
+      perfLog('legacyStoryAdvisory', { reason: objectiveProblem, messageIndex: live.messageIndex });
     }
   }
 
@@ -6166,6 +6194,13 @@
     await requireTarget();
     if(project.running && project.autoRun) return;
     await verifyLiveContinuationBeforeWriting();
+    // Recovery from the older false-positive recheck is automatic and does not
+    // touch message history, Story DNA, Mutation, or the accepted outline.
+    if (text(project.lastReason).startsWith('본문 품질 검사 실패 (이전 대화 재검사)')) {
+      project.lastReason='';
+      if (project.lastStatus==='failed') project.lastStatus='idle';
+      project.paused=false;
+    }
     modernUserStopped=false;
     project.experienceMode='ai';
     project.modernContinuous=!!continuous;
@@ -7721,7 +7756,9 @@
       const recent = Array.isArray(chat && chat.message)
         ? chat.message.slice(-24).map((m) => ({
             role: m.role === 'user' ? 'user' : 'assistant',
-            content: text(m.data),
+            content: m.role !== 'user' && storySurfaceProblem(text(m.data))
+              ? '[객관적으로 문자 손상이 확인된 기존 메시지는 모델 입력에서 제외함. 원본 채팅은 보존.]'
+              : text(m.data),
           }))
         : [];
 
