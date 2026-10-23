@@ -2,12 +2,12 @@
 //@display-name Story Runner
 //@api 3.0
 //@allowed-ipc mutation_state_router_v2
-//@version 0.95.5
+//@version 0.95.7
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_runner.ts
 //@description Story Workspace: evidence-based output safety; no legacy prose recheck lockout; self-updating story studio.
 
 (async () => {
-  const VERSION = "0.95.5";
+  const VERSION = "0.95.7";
   const STORAGE_PREFIX = "storyrunner_plugin_v1";
   const SCENE_LIBRARY_KEY = STORAGE_PREFIX + "_scene_library";
   const CAMEO_LIBRARY_KEY = STORAGE_PREFIX + "_cameo_character_lore_library";
@@ -5298,8 +5298,8 @@
       content: [
         "Continue the story naturally from the exact current chat state.",
         "Do not summarize or rush through the current Story Runner node.",
-        "Treat the current node as a full scene, not a checklist.",
-        "Let interaction, reaction, dialogue, tension, and consequences breathe before marking the scene complete.",
+        "Treat the current node as a full scene, not a checklist. Make its central event happen visibly in this generation; do not replace a required encounter with off-screen lurking, mysterious shadows or repeated foreshadowing.",
+        "Let interaction, reaction, dialogue, tension, and consequences breathe before marking the scene complete. Follow the latest user-edited plan rather than an older summary; make tangible progress toward the active scene goal.",
         "Follow the active Risu Lorebook and Story Runner runtime guidance together."
       ].join("\n"),
     });
@@ -6139,7 +6139,7 @@
       '현재 실제 채팅 마지막 장면과 캐릭터·Lorebook을 기준으로, 가까운 2~3화의 흥미로운 전개를 알아서 설계해.',
       '장면을 단편적인 대화 하나로 화 종료하지 말고, 한 화 안에서 여러 의미 있는 사건이 이어지게 해.',
       '큰 방향만 설계하고 세부 행동·말투·갈등은 Writer에게 여지를 남겨.',
-      '실제로 이미 발생한 사건을 반복하거나, 미래 계획을 과거 사실로 취급하지 마.',
+      '실제로 이미 발생한 사건을 반복하거나, 미래 계획을 과거 사실로 취급하지 마. 현재 장면의 핵심 사건을 실행하고, 직접 대면 장면을 잠복이나 불길한 암시로 바꿔 미루지 마.',
       book.lastEvent ? ('최근 실제 사건: '+book.lastEvent) : '',
       book.openThreads.length ? ('현재 미해결: '+book.openThreads.slice(0,4).join(' / ')) : '',
     ].filter(Boolean).join('\n');
@@ -7804,7 +7804,7 @@
           'Write the story in Korean only.',
           'Return exactly <SR_STORY>...actual Korean story prose...</SR_STORY>, with nothing before the opening tag. If and only if the episode naturally completes, append ' + COMPLETE_MARKER + ' after the closing tag.',
           'Do not output an outline, directive, planning notes, explanation, chain-of-thought, analysis, or machine-status footer.',
-          'Honor MUST requirements. Treat GUIDANCE as optional inspiration, not a checklist. Preserve natural scene flow, character initiative, and useful surprises.',
+          'Honor MUST requirements. Treat GUIDANCE as optional inspiration, not a checklist. Preserve natural scene flow, character initiative, and useful surprises. Perform the current scene rather than endlessly preparing for it. Keep character names consistent with the active character card and most recent verified dialogue; silently fix obvious spelling slips.',
           interactionPacingMode === 'fine' ? 'FINE PACING IS ACTIVE: perform only the immediate beat and stop with the incident open.' : (interactionPacingMode === 'adaptive' ? 'ADAPTIVE CHOICE-POINT PACING IS ACTIVE: compress low-stakes buildup, continue until just before the next meaningful user-relevant decision; if none exists before the current goal, continue to the goal.' : (interactionPacingMode === 'goal' ? 'GOAL-RUN PACING IS ACTIVE: continue through intermediate choices toward the requested goal.' : '')),
           additionalDirection ? ('Additional user direction: ' + additionalDirection) : '',
         ].filter(Boolean).join('\n\n'),
