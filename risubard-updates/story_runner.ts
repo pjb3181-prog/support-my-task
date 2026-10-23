@@ -2,12 +2,12 @@
 //@display-name Story Runner
 //@api 3.0
 //@allowed-ipc mutation_state_router_v2
-//@version 0.95.5
+//@version 0.95.6
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_runner.ts
 //@description Story Workspace: evidence-based output safety; no legacy prose recheck lockout; self-updating story studio.
 
 (async () => {
-  const VERSION = "0.95.5";
+  const VERSION = "0.95.6";
   const STORAGE_PREFIX = "storyrunner_plugin_v1";
   const SCENE_LIBRARY_KEY = STORAGE_PREFIX + "_scene_library";
   const CAMEO_LIBRARY_KEY = STORAGE_PREFIX + "_cameo_character_lore_library";
