@@ -2,6 +2,7 @@
 //@display-name Bard Editor Lab
 //@api 3.0
 //@version 0.3.0
+//@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
 //@description Optional automatic selective Korean fiction editing for regular RisuBard chats; no host modifications.
 (async () => {
  const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups';
