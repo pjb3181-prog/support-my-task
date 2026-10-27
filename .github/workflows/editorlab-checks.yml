@@ -1,0 +1,24 @@
+name: Editor Lab isolated plugin checks
+on:
+  push:
+    branches:
+      - feature/editorlab-selective-20261027
+    paths:
+      - risubard-updates/bard_editor_lab.js
+      - tests/editorlab-auto.test.mjs
+      - .github/workflows/editorlab-checks.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  editorlab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Parse plugin JS
+        run: node --check risubard-updates/bard_editor_lab.js
+      - name: Execute plugin with mock RisuBard API
+        run: node tests/editorlab-auto.test.mjs
