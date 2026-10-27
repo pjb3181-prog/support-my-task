@@ -5,7 +5,7 @@ import vm from 'node:vm';
 const source = readFileSync(new URL('../risubard-updates/bard_editor_lab.js', import.meta.url),'utf8');
 const story = '하은은 상대의 말을 들은 뒤 잠깐 고개를 끄덕였다. "정말?" 하고 되물었지만, 정작 원하는 것이 무엇인지는 설명하지 않았다. 창밖의 불빛이 느리게 흔들렸다. '.repeat(6);
 assert.ok(story.length>240 && (story.match(/[가-힣]/g)||[]).length>65);
-const revised = story.replace('"정말?" 하고 되물었지만', '"그럼 다음에는 어떻게 할까?" 하고 물었지만');
+const revised = story.replace('"정말?" 하고 되물었지만', '"그럼 다음에는 어떻게 할까?" 하고 물었지만').trim();
 
 async function scenario({enabled=true,reply='revise',stream=false,replace=revised}={}) {
   let chat={id:'chat-1',message:[
