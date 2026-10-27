@@ -103,8 +103,91 @@
    if(revision===source)return {...original,issues,reason:'원본과 동일'};
    return {original:source,revised:revision,issues,reason:'교정본 검증 통과'};
  }
- async function run(){if(state.busy)return;state.busy=true;state.status='검수 중';await render();try{if(!state.target)await load();let c=await current(),t=state.target;if(t.ci!==c.ci||t.ti!==c.ti||t.id!==c.id)throw Error('채팅 변경 · 원문 다시 불러오기');const result=await pipeline(state.original);state.issues=result.issues;state.revised=result.revised;state.status=result.reason;}catch(e){state.revised='';state.status='원문 보존 · '+txt(e?.message||e)}finally{state.busy=false;if(uiOpen)await render()}}
- async function apply(){if(state.busy||!state.revised||!state.target)return;const c=await current(),t=state.target;if(t.ci!==c.ci||t.ti!==c.ti||t.id!==c.id)throw Error('채팅 전환 차단');const m=c.chat?.message;if(!Array.isArray(m)||state.index!==m.length-1||!['char','assistant'].includes(m[state.index]?.role)||txt(m[state.index].data)!==state.original)throw Error('원문이 변경되었거나 메시지가 추가됨');const fault=verify(state.original,state.revised);if(fault)throw Error(fault);const next=JSON.parse(JSON.stringify(c.chat));next.message[state.index].data=state.revised;await risuai.setChatToIndex(t.ci,t.ti,next);state.original=state.revised;state.revised='';state.status='사용자 확정 퇴고본 적용 완료 · Notebook 갱신은 수동 확인 필요';}
+
+ const outputKey=(ci,ti,id,i,m)=>[ci,ti,id,i,txt(m?.chatId||m?.time),txt(m?.data).length,txt(m?.data).slice(0,80)].join('|');
+ const remember=k=>{seen.add(k);if(seen.size>200)seen.delete(seen.values().next().value)};
+ const same=(meta,live)=>meta&&meta.ci===live.ci&&meta.ti===live.ti&&meta.id===live.id;
+ async function backup(meta,original,revised){
+   try{
+     const old=await risuai.pluginStorage.getItem(BACKUP_STORE);
+     const records=Array.isArray(old)?old:[];
+     records.unshift({ci:meta.ci,ti:meta.ti,id:meta.id,index:meta.index,messageId:meta.messageId,
+       original:original.slice(0,conf.maxChars),revised:revised.slice(0,conf.maxChars),at:Date.now()});
+     await risuai.pluginStorage.setItem(BACKUP_STORE,records.slice(0,5));
+   }catch(e){console.log('[EditorLab] backup write failed',e)}
+ }
+ async function commit(meta,original,revised,recordBackup=true){
+   const live=await current();
+   if(!same(meta,live))throw Error('다른 채팅으로 바뀌어 적용하지 않았어');
+   const messages=live.chat?.message;
+   if(!Array.isArray(messages)||meta.index!==messages.length-1)throw Error('뒤에 새 메시지가 추가되어 적용하지 않았어');
+   const m=messages[meta.index];
+   if(!m||!['char','assistant'].includes(m.role)||txt(m.data)!==original)throw Error('원문이 변경되어 적용하지 않았어');
+   if(meta.messageId&&txt(m.chatId||m.time)!==meta.messageId)throw Error('메시지 식별자 변경');
+   const fail=verify(original,revised);if(fail)throw Error('검증 실패 · '+fail);
+   const next=JSON.parse(JSON.stringify(live.chat));next.message[meta.index].data=revised;
+   await risuai.setChatToIndex(meta.ci,meta.ti,next);
+   remember(outputKey(meta.ci,meta.ti,meta.id,meta.index,next.message[meta.index]));
+   if(recordBackup)await backup(meta,original,revised);
+ }
+ async function run(){
+   if(state.busy)return;
+   state.busy=true;state.status='수동 검수 진행 중';if(uiOpen)await render();
+   try{
+     if(!state.target)await load();
+     const now=await current();
+     if(!same(state.target,now))throw Error('채팅이 전환되었어');
+     const message=now.chat?.message?.[state.index];
+     if(!message||txt(message.data)!==state.original)throw Error('원본 메시지가 달라졌어');
+     state.target={...state.target,index:state.index,messageId:txt(message.chatId||message.time)};
+     const result=await pipeline(state.original,context(now.chat,state.index,{}));
+     state.issues=result.issues;state.revised=result.revised;state.status=result.reason;
+   }catch(e){state.revised='';state.status='원문 유지 · '+txt(e.message||e)}
+   finally{state.busy=false;if(uiOpen)await render()}
+ }
+ async function apply(){
+   if(state.busy||!state.revised||!state.target)return;
+   await commit(state.target,state.original,state.revised);
+   state.original=state.revised;state.revised='';state.status='사용자 승인 퇴고본 적용 · 원문 백업됨';
+ }
+ async function automatic(arg,sourceLabel){
+   if(!conf.auto||unloaded||!arg||!Number.isInteger(arg.messageIndex)||!Array.isArray(arg.chat?.message))return;
+   const i=arg.messageIndex,m=arg.chat.message[i],ci=arg.characterIndex,ti=arg.chatIndex;
+   if(!Number.isInteger(ci)||!Number.isInteger(ti)||!m||!['char','assistant'].includes(m.role)||i!==arg.chat.message.length-1)return;
+   const original=txt(m.data);if(!eligible(original))return;
+   const id=txt(arg.chat.id),k=outputKey(ci,ti,id,i,m);
+   if(seen.has(k)||inflight.has(k))return;
+   remember(k);inflight.add(k);
+   try{
+     const result=await pipeline(original,context(arg.chat,i,arg.char||{}));
+     if(result.revised){
+       await commit({ci,ti,id,index:i,messageId:txt(m.chatId||m.time)},original,result.revised);
+       state.lastAuto=sourceLabel+' · 실제 퇴고 반영 ('+result.issues.length+'건)';
+     }else state.lastAuto=sourceLabel+' · '+result.reason;
+   }catch(e){state.lastAuto=sourceLabel+' · 원문 유지 · '+txt(e.message||e)}
+   finally{inflight.delete(k);if(uiOpen)void render()}
+ }
+ async function pollStoryRunner(){
+   if(!conf.auto||!conf.watchStoryRunner||unloaded)return;
+   try{
+     const t=await current(),messages=t.chat?.message;
+     if(!Array.isArray(messages)||!messages.length)return;
+     const i=messages.length-1,m=messages[i];
+     if(!m||!['char','assistant'].includes(m.role)||!/^srmsg/i.test(txt(m.chatId)))return;
+     const session=[t.ci,t.ti,t.id].join('|'),key=outputKey(t.ci,t.ti,t.id,i,m);
+     if(!initializedChats.has(session)){initializedChats.add(session);remember(key);return}
+     if(seen.has(key))return;
+     await automatic({characterIndex:t.ci,chatIndex:t.ti,chat:t.chat,char:{},messageIndex:i},'Story Runner 직접 생성');
+   }catch(e){console.log('[EditorLab] direct-run watcher error',e)}
+ }
+ async function restoreLast(){
+   const old=await risuai.pluginStorage.getItem(BACKUP_STORE);
+   if(!Array.isArray(old)||!old.length)throw Error('복원할 원문 백업 없음');
+   const last=old[0];
+   await commit(last,last.revised,last.original,false);
+   old.shift();await risuai.pluginStorage.setItem(BACKUP_STORE,old);
+   state.status='최근 퇴고를 원문으로 복원했어';
+ }
  async function render(){document.body.innerHTML=`<style>body{font:14px/1.6 system-ui;color:#edf0ff;background:#171d2c;margin:0;padding:22px}main{max-width:1100px;margin:auto}h2{margin-top:0}button,select{border-radius:8px;padding:9px;background:#344469;color:#fff;border:1px solid #6679a7}button:disabled{opacity:.4}textarea{box-sizing:border-box;background:#111827;color:#edf0ff;width:100%;height:320px;border:1px solid #566482;border-radius:8px;padding:12px;line-height:1.7}.pair{display:grid;grid-template-columns:1fr 1fr;gap:14px}.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px}@media(max-width:720px){.pair{grid-template-columns:1fr}}.muted{color:#b8c6e2;font-size:12px}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><main><h2>Bard Editor Lab v0.2.0</h2><p class="muted">본체 수정 없음 · 자동 퇴고 미연결 · 메인/보조 모델의 기존 RisuBard 설정 사용 · 원본 수동 승인</p><div class="top"><select id="model"><option value="otherAx" ${conf.model==='otherAx'?'selected':''}>기존 보조 모델(otherAx)</option><option value="model" ${conf.model==='model'?'selected':''}>기존 메인 모델</option></select><select id="mode"><option value="selective" ${conf.mode==='selective'?'selected':''}>선택적 퇴고</option><option value="always" ${conf.mode==='always'?'selected':''}>항상 진단</option></select><button id="load">마지막 AI 본문 불러오기</button><button id="run" ${state.busy?'disabled':''}>검수 및 퇴고</button><button id="apply" ${!state.revised||state.busy?'disabled':''}>선택한 퇴고본 적용</button><button id="close">닫기</button></div><p>${esc(state.status)}</p><div class="pair"><section><h3>원본</h3><textarea readonly>${esc(state.original)}</textarea></section><section><h3>퇴고본 (미적용)</h3><textarea readonly>${esc(state.revised)}</textarea></section></div><h3>진단 근거</h3><pre>${esc(state.issues.map((x,i)=>`${i+1}. ${x.problem} / ${x.instruction}`).join('\n')||'진단 없음')}</pre></main>`;const el=id=>document.getElementById(id);el('model').onchange=async e=>{conf.model=e.target.value;await save()};el('mode').onchange=async e=>{conf.mode=e.target.value;await save()};el('load').onclick=()=>load().then(render).catch(e=>{state.status=txt(e.message);render()});el('run').onclick=()=>run();el('apply').onclick=()=>apply().then(render).catch(e=>{state.status='적용 차단 · '+txt(e.message);render()});el('close').onclick=()=>risuai.hideContainer();}
  const saved=await risuai.pluginStorage.getItem(STORE).catch(()=>null);if(saved&&typeof saved==='object')conf={...DEFAULT,...saved,auto:false};
  async function open(){await render();await risuai.showContainer('fullscreen')}
