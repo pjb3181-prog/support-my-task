@@ -1,34 +1,32 @@
-# Bard Editor Lab — experimental v0.1.0 (2026-10-27)
+# Bard Editor Lab v0.2.0 — 2026-10-27
 
-## IMPORTANT: NOT DEPLOYED
-Only experimental branch `feature/editorlab-selective-20261027` was changed. `main` (Story Runner automatic update) is untouched.
+## Current policy
+RisuBard core must not be forked or patched for this feature. All three experimental host edits on the private branch were reverted. No changes were made to private main.
 
-## Sources
-- Plugin: `risubard-updates/bard_editor_lab.js` (manual, opt-in)
-- Host adapter in private RisuBard branch `feature/editorlab-selective-20261027`:
-  - `src/ts/process/request/request.ts` non-chat selected preset invocation
-  - `src/ts/plugins/apiV3/v3.svelte.ts` listEditorModelPresets and runEditorModelPreset
-  - `src/ts/plugins/apiV3/risuai.d.ts` declarations
-- Existing core `src/ts/risubard/editorLab.ts` and tests remain on originating Android feature branch.
+## Independent plugin
+- Source: `risubard-updates/bard_editor_lab.js` on public experimental branch.
+- Uses only established plugin APIs: `runLLMModel`, `getCurrentCharacterIndex`, `getCurrentChatIndex`, `getChatFromIndex`, `setChatToIndex`, `pluginStorage`, `registerSetting`, `registerButton`, `showContainer`.
+- Model selection: configured RisuBard **main** or **otherAx** auxiliary model. Arbitrary independent ModelPreset IDs CANNOT be selected with the available standard plugin API.
+- Default selection mode: selective, manual button; auto application OFF.
+- 2-stage edit: deterministic suspect detection -> critic JSON verdict -> targeted prose rewrite (only if needed).
+- Detailed A/B original and revised comparison, explicit user commit, revalidate chat identity + exact message body before commit.
+- Reject rewrite if structural tags change, excessive shrink/growth, or output appears empty / leaking private meta.
+- Uses no external API keys or direct provider connection. The host's existing model transport is reused.
 
-## Limitations
-- The manual plugin needs RisuBard host WITH the two experimental v3 APIs; stock builds will not work.
-- It currently has no actual live-run test, typecheck or app build, and has no plugin permission audit.
-- Automatic Story Runner pipeline and before-save handoff NOT IMPLEMENTED.
-- Budget USD cap, actual token accounting, cancellation and timeout NOT IMPLEMENTED.
-- The quality heuristic is intentionally not active. The manual `진단 + 선택적 퇴고` button always asks for an inexpensive critic verdict first; it rewrites only when verdict says revise.
-- No automatic save unless user explicitly presses `퇴고본 적용`.
-- Chat switch and exact original text are checked at apply time; if new messages appear, apply is blocked.
-- Automated notebook refresh following a manual replacement is not implemented; may require explicit re-scan.
-- Basic tag-fingerprint and length safeguards are NOT a guarantee of full narrative fidelity.
+## Not yet finished
+- The user-supplied `.risup` preset is NOT present in the transferred handoff ZIP: its content cannot safely be condensed yet. No preset changes were made.
+- Story Runner `main` v0.95.7 and Mutation `main` v0.79.3 were not changed.
+- Automatic Story Runner pre-save integration is NOT implemented. Do not register multiple afterRequest hooks without sequencing, persistence and Notebook tests.
+- ModelPreset ID chooser remains unsupported without host API changes. The model setting can be chosen via native RisuBard's existing main/aux configuration.
+- Manual replacement does not trigger guaranteed Story Runner Notebook reconciliation.
+- No live runtime or model API invocation tests passed yet; only GitHub code creation confirmed. Browser/Termux/PC testing outstanding.
+- No verifiable node syntax check: sandbox container cannot resolve GitHub public URL; a fetched copy is needed.
+- Budget control is approximate (input-length cap), not a true USD cap. There is a timeout Promise but the underlying request is not aborted and may still be billed.
+- Rewriting safety guards are structural heuristics; event fidelity and nuanced character voice need actual A/B review.
 
-## Next stages
-1. Install/test host build from the private branch on PC, then mobile; run syntax/typecheck/tests/build.
-2. Add regression tests for plugin route: auth isolated; no tools; no auto commit; unsupported preset; chat switching.
-3. Add manual UI for estimating token/cost and refusal when unknown > cap; timeout/cancellation and revalidation.
-4. After live tests, connect Story Runner from its experimental branch with IPC, preserve existing v0.95.7 behaviors, disable its duplicate quality route under Editor Lab mode.
-5. A/B compare on provided Korean prose, Mutation ON/OFF, special-character voices, status windows, first-message choices, and failure fallbacks.
-6. Only after passing gates, review PR to main; do not auto-merge.
-
-## Installation caution
-Do not install the experimental plugin into a production RisuBard host without the matching host API; the model-preset selector will fail. Keep the existing production instance and main auto-update untouched.
+## Next
+1. Run node --check on the plugin, load into unmodified RisuBard, verify main/otherAx request completion and plugin permissions.
+2. Read actual ContextCore v1 - Dialogue Flow Fix risup original (not in ZIP), merge redundant prose rules without rewriting active preset, export separate revision for explicit approval.
+3. Compare existing Story Runner quality hooks, choose mutually exclusive role and optional IPC to Editor Lab if plugin APIs permit.
+4. Test first message, Mutation original / modified world, characters with quirks, and on-the-fly chat switches.
+5. After validated, release standalone plugin to public main and only then optionally add a small Story Runner integration update to its existing continuous update track (never fork core).
