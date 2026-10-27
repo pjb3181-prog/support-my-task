@@ -188,9 +188,73 @@
    old.shift();await risuai.pluginStorage.setItem(BACKUP_STORE,old);
    state.status='최근 퇴고를 원문으로 복원했어';
  }
- async function render(){document.body.innerHTML=`<style>body{font:14px/1.6 system-ui;color:#edf0ff;background:#171d2c;margin:0;padding:22px}main{max-width:1100px;margin:auto}h2{margin-top:0}button,select{border-radius:8px;padding:9px;background:#344469;color:#fff;border:1px solid #6679a7}button:disabled{opacity:.4}textarea{box-sizing:border-box;background:#111827;color:#edf0ff;width:100%;height:320px;border:1px solid #566482;border-radius:8px;padding:12px;line-height:1.7}.pair{display:grid;grid-template-columns:1fr 1fr;gap:14px}.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px}@media(max-width:720px){.pair{grid-template-columns:1fr}}.muted{color:#b8c6e2;font-size:12px}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><main><h2>Bard Editor Lab v0.2.0</h2><p class="muted">본체 수정 없음 · 자동 퇴고 미연결 · 메인/보조 모델의 기존 RisuBard 설정 사용 · 원본 수동 승인</p><div class="top"><select id="model"><option value="otherAx" ${conf.model==='otherAx'?'selected':''}>기존 보조 모델(otherAx)</option><option value="model" ${conf.model==='model'?'selected':''}>기존 메인 모델</option></select><select id="mode"><option value="selective" ${conf.mode==='selective'?'selected':''}>선택적 퇴고</option><option value="always" ${conf.mode==='always'?'selected':''}>항상 진단</option></select><button id="load">마지막 AI 본문 불러오기</button><button id="run" ${state.busy?'disabled':''}>검수 및 퇴고</button><button id="apply" ${!state.revised||state.busy?'disabled':''}>선택한 퇴고본 적용</button><button id="close">닫기</button></div><p>${esc(state.status)}</p><div class="pair"><section><h3>원본</h3><textarea readonly>${esc(state.original)}</textarea></section><section><h3>퇴고본 (미적용)</h3><textarea readonly>${esc(state.revised)}</textarea></section></div><h3>진단 근거</h3><pre>${esc(state.issues.map((x,i)=>`${i+1}. ${x.problem} / ${x.instruction}`).join('\n')||'진단 없음')}</pre></main>`;const el=id=>document.getElementById(id);el('model').onchange=async e=>{conf.model=e.target.value;await save()};el('mode').onchange=async e=>{conf.mode=e.target.value;await save()};el('load').onclick=()=>load().then(render).catch(e=>{state.status=txt(e.message);render()});el('run').onclick=()=>run();el('apply').onclick=()=>apply().then(render).catch(e=>{state.status='적용 차단 · '+txt(e.message);render()});el('close').onclick=()=>risuai.hideContainer();}
- const saved=await risuai.pluginStorage.getItem(STORE).catch(()=>null);if(saved&&typeof saved==='object')conf={...DEFAULT,...saved,auto:false};
- async function open(){await render();await risuai.showContainer('fullscreen')}
+ async function render(){
+  if(!uiOpen)return;
+  document.body.innerHTML=`<style>
+    body{background:#171d2b;color:#edf0ff;font:14px/1.6 system-ui;margin:0;padding:18px}main{max-width:1100px;margin:auto}
+    button,select{color:#fff;background:#334568;border:1px solid #63769d;border-radius:8px;padding:9px;cursor:pointer;font:inherit}
+    button:disabled{opacity:.4;cursor:not-allowed}
+    textarea{width:100%;height:310px;box-sizing:border-box;background:#111827;color:#edf0ff;border:1px solid #52617f;border-radius:8px;padding:12px;line-height:1.7}
+    .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+    .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
+    .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
+  </style><main><h2>Bard Editor Lab v0.3.0</h2>
+  <p class="muted">RisuBard 본체·프리셋 변경 없음 · 일반 채팅의 AI 메시지를 자동 검사하고 필요할 때만 퇴고</p>
+  <div class="top">
+    <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
+    <select id="model">
+      <option value="otherAx" ${conf.model==='otherAx'?'selected':''}>기존 보조 모델 (otherAx)</option>
+      <option value="model" ${conf.model==='model'?'selected':''}>기존 메인 모델</option>
+    </select>
+    <select id="mode">
+      <option value="selective" ${conf.mode==='selective'?'selected':''}>선택적 · 매 턴 진단, 필요할 때만 퇴고</option>
+      <option value="economy" ${conf.mode==='economy'?'selected':''}>저비용 · 반복 징후 있을 때만 진단</option>
+    </select>
+  </div>
+  <div class="top">
+    <label><input id="srwatch" type="checkbox" ${conf.watchStoryRunner?'checked':''}/> Story Runner 직접 생성도 감시 (수동 삽입 포함 가능)</label>
+    <label>최대 입력 <select id="max">${[4500,7000,9000,12000,18000].map(n=>`<option value="${n}" ${conf.maxChars===n?'selected':''}>${n.toLocaleString()}자</option>`).join('')}</select></label>
+    <button id="restore">가장 최근 퇴고 원본 복원</button>
+  </div>
+  <p class="status">${esc(state.status)}<span class="muted"><br/>최근 자동 작업: ${esc(state.lastAuto)}</span></p>
+  <div class="top">
+    <button id="load">마지막 AI 본문 불러오기</button>
+    <button id="run" ${state.busy?'disabled':''}>수동 검수</button>
+    <button id="apply" ${!state.revised||state.busy?'disabled':''}>퇴고본 직접 적용</button>
+    <button id="close">닫기</button>
+  </div>
+  <div class="pair">
+    <section><h3>원문</h3><textarea readonly>${esc(state.original)}</textarea></section>
+    <section><h3>퇴고본 (미적용)</h3><textarea readonly>${esc(state.revised)}</textarea></section>
+  </div>
+  <h3>편집장 진단</h3><pre>${esc(state.issues.map((x,i)=>`${i+1}. ${x.problem} — ${x.instruction}`).join('\n')||'진단 기록 없음')}</pre>
+  <p class="muted">한 응답당 최대 2회 모델 호출. 자동 퇴고 실패·검증 실패 시 원문 유지. 최근 5건은 플러그인 저장소에 백업해.
+  타임아웃은 대기를 중단하지만 모델 과금 취소를 보장하지 않아.</p></main>`;
+  const el=id=>document.getElementById(id);
+  el('auto').onclick=async()=>{conf.auto=!conf.auto;await save();state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';await render()};
+  el('model').onchange=async e=>{conf.model=e.target.value;await save()};
+  el('mode').onchange=async e=>{conf.mode=e.target.value;await save()};
+  el('max').onchange=async e=>{conf.maxChars=Number(e.target.value);await save()};
+  el('srwatch').onchange=async e=>{conf.watchStoryRunner=e.target.checked;initializedChats.clear();await save()};
+  el('load').onclick=()=>load().then(render).catch(e=>{state.status=txt(e.message);render()});
+  el('run').onclick=()=>run();
+  el('apply').onclick=()=>apply().then(render).catch(e=>{state.status='적용 차단 · '+txt(e.message);render()});
+  el('restore').onclick=()=>restoreLast().then(render).catch(e=>{state.status='복원 실패 · '+txt(e.message);render()});
+  el('close').onclick=()=>{uiOpen=false;void risuai.hideContainer()};
+}
+
+ const saved=await risuai.pluginStorage.getItem(STORE).catch(()=>null);
+ if(saved&&typeof saved==='object'){
+   conf={...DEFAULT,...saved};
+   if(!['otherAx','model'].includes(conf.model))conf.model='otherAx';
+   if(!['selective','economy'].includes(conf.mode))conf.mode='selective';
+   if(![4500,7000,9000,12000,18000].includes(Number(conf.maxChars)))conf.maxChars=9000;
+   conf.timeoutMs=90000;
+ }
+ async function open(){uiOpen=true;await render();await risuai.showContainer('fullscreen')}
  await risuai.registerSetting('Bard Editor Lab',open,'✍️','html','bard-editor-lab-settings');
  await risuai.registerButton({name:'Bard Editor Lab',icon:'✍️',iconType:'html',location:'hamburger',id:'bard-editor-lab-hamburger'},open);
+ await risuai.addRisuChatListener('output',arg=>automatic(arg,'일반 채팅'));
+ pollTimer=setInterval(()=>{void pollStoryRunner()},2800);
+ await risuai.onUnload(()=>{unloaded=true;if(pollTimer)clearInterval(pollTimer)});
 })();
