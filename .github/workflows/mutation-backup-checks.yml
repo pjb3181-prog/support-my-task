@@ -1,0 +1,24 @@
+name: Mutation original backup regression
+on:
+  push:
+    branches:
+      - fix/mutation-original-backup-0794
+    paths:
+      - risubard-updates/mutation_state.ts
+      - tests/mutation-original-backup.test.mjs
+      - .github/workflows/mutation-backup-checks.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mutation-backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Parse Mutation plugin as JavaScript
+        run: cp risubard-updates/mutation_state.ts /tmp/mutation-0794.mjs && node --check /tmp/mutation-0794.mjs
+      - name: Execute original backup regression scenarios
+        run: node tests/mutation-original-backup.test.mjs
