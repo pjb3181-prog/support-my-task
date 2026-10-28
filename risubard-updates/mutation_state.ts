@@ -2,12 +2,12 @@
 //@display-name Mutation State Router
 //@api 3.0
 //@allowed-ipc story_runner
-//@version 0.79.3
+//@version 0.79.4
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/mutation_state.ts
 //@description Adds full-Lore conflict sweep and resolved-canon shielding so dense Lorebooks cannot silently restore stale pre-mutation facts; keeps staged world/feature switches and explicit recompilation.
 
 (async () => {
-  const VERSION = "0.79.3";
+  const VERSION = "0.79.4";
   // v0.71: classic-module-style staged controls. Pack/feature/frame/first-message
   // switches only change the pending configuration; Character/Lore/World Canon are
   // rewritten once when the user presses the explicit apply button. Each visible
@@ -971,30 +971,106 @@
     };
   }
 
+
+  // A Mutation World Module is global to RisuBard, not evidence that THIS
+  // character's own card was rewritten. v0.79.3 mistakenly treated the mere
+  // presence of a shared module as proof of a contaminated new character.
+  function pristineCharacterEvidence(live, owner, meta) {
+    const reasons=[];
+    if(owner && (owner.mode==='common' || owner.mode==='ntr')) reasons.push('이 캐릭터의 개변 모드 이력이 존재함');
+    if(meta && meta.appliedAt) reasons.push('이 캐릭터의 침식 적용 메타데이터가 존재함');
+    if(live && live.character && Array.isArray(live.character.globalLore)
+       && live.character.globalLore.some(isGeneratedNativeWorldLore)) reasons.push('현재 캐릭터 Lore에 개변 생성 흔적이 있음');
+    const phrase=live && live.character ? originalLeakMatch(JSON.stringify(live.character)) : '';
+    const globalModules=live && live.world && Array.isArray(live.world.modules) ? live.world.modules.length : 0;
+    return {reasons,phrase,globalModules,
+      safeToCapture:reasons.length===0&&!phrase,
+      keywordOnly:reasons.length===0&&!!phrase};
+  }
+
+  function validPristineCharacterSnapshot(value) {
+    if(!value||typeof value!=='object')return false;
+    return ['desc','personality','scenario','firstMessage','exampleMessage'].every(k=>typeof value[k]==='string')
+      && Array.isArray(value.alternateGreetings) && Array.isArray(value.globalLore);
+  }
+
+  // Recover a lost legacy direct-backup key ONLY from a previously stored,
+  // explicitly original-mode snapshot that carries no Mutation-specific
+  // characters, enabled world modules or uninvalidated compiler metadata.
+  function verifiedOriginalVault(value) {
+    const char=value && value.character;
+    return !!(value && value.mode==='original' && validPristineCharacterSnapshot(char)
+      && !(value.charMeta && value.charMeta.appliedAt && !value.charMeta.invalidatedAt)
+      && !(value.world && Array.isArray(value.world.modules) && value.world.modules.length)
+      && !char.globalLore.some(isGeneratedNativeWorldLore)
+      && !originalLeakMatch(JSON.stringify(char)));
+  }
+
+  async function originalRecoveryDiagnostics(t) {
+    const [backup,vault,owner,meta,live]=await Promise.all([
+      risuai.pluginStorage.getItem(DIRECT_CHAR_BACKUP_PREFIX+t.characterId),
+      risuai.pluginStorage.getItem(modeVaultKey(t,'original')),
+      risuai.pluginStorage.getItem(modeOwnerKey(t)),
+      risuai.pluginStorage.getItem(DIRECT_CHAR_META_PREFIX+t.characterId),
+      captureModeSurface(t)
+    ]);
+    const evidence=pristineCharacterEvidence(live,owner,meta);
+    const safeVault=verifiedOriginalVault(vault);
+    const notes=[
+      '[원본 백업 상태 진단 · 읽기 전용]',
+      '캐릭터: '+t.characterName+' / ID '+t.characterId,
+      '직접 원본 백업: '+(backup?'존재':'없음'),
+      '원작 모드 저장본: '+(vault?(safeVault?'검증 가능한 저장본':'존재하지만 안전성 확인 필요'):'없음'),
+      '현재 카드의 모드 소유 기록: '+text(owner&&owner.mode||'없음'),
+      '카드 침식 적용 메타: '+(meta&&meta.appliedAt?'있음':'없음'),
+      '공용 Mutation World 모듈: '+evidence.globalModules+'개 (다른 캐릭터에서도 공용으로 유지됨)',
+      '현재 캐릭터 개변 흔적: '+(evidence.reasons.length?evidence.reasons.join('; '):'구체적 적용 이력 없음'),
+      '본문의 개변 의심 표현: '+(evidence.phrase||'검출되지 않음'),
+      '',
+      backup?'현재 직접 원본 백업이 있음. 원작 복원 경로를 확인할 수 있어.':
+      safeVault?'검증 가능한 원작 모드 저장본이 있음. 모드를 다시 적용하면 직접 백업을 자동 복구할 수 있어.':
+      evidence.safeToCapture?'이 캐릭터 자체의 개변 흔적은 없음. 공용 모듈 때문에만 차단되었다면 v0.79.4에서 해결돼.':
+      evidence.keywordOnly?'개변 이력은 없지만 카드에 의심되는 표현이 있어. 실제 원본임을 확인한 경우에만 [현재 카드를 원본으로 확정]을 사용해.':
+      '원본으로 확인된 기록이 없으므로 현재 카드를 자동 백업할 수 없어. 원작 캐릭터 파일 또는 과거 RisuBard 백업이 필요해.',
+      '진단은 데이터를 변경하지 않아.'
+    ];
+    return {text:notes.join('\n'),backup,vault,owner,meta,evidence,safeVault,live};
+  }
+
   async function modeOriginalSurface(t) {
-    const backup = await risuai.pluginStorage.getItem(DIRECT_CHAR_BACKUP_PREFIX + t.characterId);
-    const meta = await risuai.pluginStorage.getItem(DIRECT_CHAR_META_PREFIX + t.characterId);
-    if (!backup) {
-      if (meta && meta.appliedAt && !meta.invalidatedAt) {
-        throw new Error("이미 개변된 카드인데 최초 원본 백업이 없어. 현재 데이터를 원본으로 오인하지 않도록 중단했어.");
+    const backupKey=DIRECT_CHAR_BACKUP_PREFIX+t.characterId;
+    let backup=await risuai.pluginStorage.getItem(backupKey);
+    if(!backup) {
+      const priorVault=await risuai.pluginStorage.getItem(modeVaultKey(t,'original'));
+      if(verifiedOriginalVault(priorVault)) {
+        backup=Object.assign({createdAt:Date.now(),recoveredFrom:'verified-original-mode-vault'},cloneJson(priorVault.character));
+        await risuai.pluginStorage.setItem(backupKey,backup);
       }
-      const live = await captureModeSurface(t);
-      const owner=await risuai.pluginStorage.getItem(modeOwnerKey(t));
-      if((owner&&owner.mode==='common') || (meta&&meta.appliedAt) || (live.world&&live.world.modules&&live.world.modules.length) || originalLeakMatch(JSON.stringify(live.character))) {
-        throw new Error('Original backup is missing while a mutated surface may be active. Refusing to save mutated data as pristine original. Restore an actual original backup first.');
-      }
-      await risuai.pluginStorage.setItem(DIRECT_CHAR_BACKUP_PREFIX + t.characterId, Object.assign({createdAt:Date.now()},live.character));
-      return {schema:1,mode:"original",savedAt:Date.now(),character:live.character,charMeta:null,world:{modules:[],enabledIds:[]}};
     }
+    if(!backup){
+      const live=await captureModeSurface(t);
+      const owner=await risuai.pluginStorage.getItem(modeOwnerKey(t));
+      const meta=await risuai.pluginStorage.getItem(DIRECT_CHAR_META_PREFIX+t.characterId);
+      const evidence=pristineCharacterEvidence(live,owner,meta);
+      if(!evidence.safeToCapture){
+        const detail=evidence.reasons.join('; ') || (evidence.phrase?'카드 본문에 개변 의심 표현이 있음':'원본 판별 불가');
+        throw new Error('원본 백업이 없어 자동 적용을 중단했어. '+detail+'. [원본 백업 상태 진단]을 눌러 확인해줘. 개변된 카드를 원본으로 저장하지 않도록 보호 중이야.');
+      }
+      // A module owned by ANOTHER character is shared and cannot invalidate
+      // an otherwise pristine, never-mutated character card.
+      backup=Object.assign({createdAt:Date.now(),source:'verified-new-character',
+        sharedWorldModulesAtCapture:evidence.globalModules},cloneJson(live.character));
+      await risuai.pluginStorage.setItem(backupKey,backup);
+    }
+    if(!validPristineCharacterSnapshot(backup))throw new Error('저장된 원본 백업의 필드가 손상되었어. 원본 복구 진단을 실행해줘.');
     return {
-      schema:1,mode:"original",savedAt:Date.now(),
-      character: {
-        desc:text(backup.desc), personality:text(backup.personality), scenario:text(backup.scenario),
-        firstMessage:text(backup.firstMessage), exampleMessage:text(backup.exampleMessage),
-        alternateGreetings:cloneJson(Array.isArray(backup.alternateGreetings)?backup.alternateGreetings:[]),
-        globalLore:cloneJson(Array.isArray(backup.globalLore)?backup.globalLore:[])
+      schema:1,mode:'original',savedAt:Date.now(),
+      character:{
+        desc:text(backup.desc),personality:text(backup.personality),scenario:text(backup.scenario),
+        firstMessage:text(backup.firstMessage),exampleMessage:text(backup.exampleMessage),
+        alternateGreetings:cloneJson(backup.alternateGreetings),globalLore:cloneJson(backup.globalLore)
       },
-      charMeta:null, world:{modules:[],enabledIds:[]}
+      charMeta:null,world:{modules:[],enabledIds:[]}
     };
   }
 
