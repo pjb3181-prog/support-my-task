@@ -152,7 +152,7 @@ async function scenario({enabled=true,reply='revise',stream=false,replace=revise
   await t.fire();
   assert.equal(t.calls(),1);
   assert.equal(t.current(),loop);
-  assert.match(t.modelArgs[0].messages[0].content,/interview-like question\/yes-answer/);
+  assert.match(t.modelArgs[0].messages[0].content,/question\/echo\/confirmation/);
 }
 {
   // Saving backups must happen before applying, so a storage failure is never data loss.
