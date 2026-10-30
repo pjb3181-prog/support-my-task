@@ -1,6 +1,25 @@
-# Bard Editor Lab v0.3.4 — visible automatic editing history
+# Bard Editor Lab v0.3.5 — first-message character voice continuity
 
 A standalone RisuBard plugin (Plugin API 3.0) combining **prompt-like style guidance** with **real LLM-backed selective editorial review**. No RisuBard host patch or user preset rewrite.
+
+## v0.3.5 — first-message voice guard and dialogue erosion detection
+
+The editor now compares later responses against a **READ-ONLY character first message**. Unlike the previous 0.3.4 checker, it does not automatically accept decades of repetitive `근데 / 네 / …… / 할게요`-style exchanges as normal simply because they are short SMS turns.
+
+- Original opening is used **only as a style/characterization anchor**, not as an instruction to repeat opening dialogue, freeze initial shyness, restore the initial relationship, or revert legitimate character development.
+- In the non-stream `afterRequest` path, the editor now reads the character and nearby chat context before diagnosing; previously the extra critic had **no character context**.
+- In the streamed `output` listener and manual review path, the same reference is used. If the selected chat starts with a character first message, that selected greeting takes precedence over the card's default `firstMessage`. All reads are non-mutating.
+- For text exchanges tagged `[NPC NAME]`, conservative drift signals look for unusually high rates and repeated counts of empty one-word fragments *relative to the opening's informative NPC dialogue*. They require multiple independent signs, so shorter but contentful SMS is not automatically rejected.
+- An extreme drift signal can override a model's unsupported `revise:false`, forcing a targeted edit. If the resulting rewrite still has essentially the same severe fragment pattern, the editor refuses to label it a successful quality correction and keeps the original.
+- Existing `[OTHER SPEAKER]` tagged dialogue remains text-identical when revising a known NPC, avoiding modification of user-character or other cast lines.
+- Adds **첫 메시지 캐릭터성 기준 유지** option, default ON. Turn it off for deliberately experimental voice shifts.
+- The generation-stage hint includes up to two short speech excerpts from the character's first message. These are marked as non-copyable reference; editing requests receive a bounded opening anchor.
+- Earlier logs and manuscripts are not retroactively edited. Only newly generated or explicitly manually reviewed messages are evaluated with the new guard.
+
+Tests: [41 mocks plus JS syntax check PASS](https://github.com/pjb3181-prog/support-my-task/actions/runs/41054471168): 13 existing editor cases, 21 hybrid/scene cases, and 7 new voice-anchor cases. Real provider-based prose quality and live app behavior still require acceptance testing.
+
+Files: [JS auto-update source](./bard_editor_lab.js) · [TS downloadable plugin v0.3.5](./Bard_Editor_Lab_v0.3.5.ts).
+No RisuBard core, Story Runner, Mutation State or user prompt was modified.
 
 ## v0.3.4 — automatic editing results are now visible
 
