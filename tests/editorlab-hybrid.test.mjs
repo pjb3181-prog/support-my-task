@@ -77,7 +77,7 @@ await check('fresh install defaults to prompt + actual editor ON',async()=>{
  assert.equal(injected.length,2);
  assert.equal(injected[0].role,'system');
  assert.match(injected[0].content,/BARD_EDITOR_LAB_STYLE_V033/);
- assert.match(injected[0].content,/question -> echo -> confirmation/);
+ assert.match(injected[0].content,/question\/echo\/confirmation loops/);
  assert.deepEqual(JSON.parse(JSON.stringify(messageSet)),messageSet);
  assert.notEqual(injected[0],messageSet[0]);
  assert.equal(await t.hooks.beforeRequest(injected,'model'),injected);
