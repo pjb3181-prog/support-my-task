@@ -1,6 +1,17 @@
-# Bard Editor Lab v0.3.2 — inline automatic editor
+# Bard Editor Lab v0.3.3 — inline automatic editor + scene momentum
 
 A standalone RisuBard plugin (Plugin API 3.0) combining **prompt-like style guidance** with **real LLM-backed selective editorial review**. No RisuBard host patch or user preset rewrite.
+
+## v0.3.3 — scene momentum instead of repeated static scenes
+
+- **Default ON** `장면 정체 감지·자연스러운 진전 유도` (persisted independently as `momentum`). Existing settings remain intact.
+- Before each normal chat generation, a small, transient prompt guideline asks the author to move at least one concrete scene state: **fact, NPC decision, boundary, practical task, relationship dynamic or a next-step commitment**. No arbitrary crises or forced sexual progression; quiet transition/rest scenes remain valid.
+- Critic now explicitly compares the scene's beginning and ending, returning optional `sceneProgress.material` and `intentionalStillness` alongside textual issues.
+- If a sufficiently long scene is judged stagnant but the critic forgets to add a reason, a grounded stasis instruction enables **one modest NPC-driven beat already supported by the story**, without inventing user-character choices or a major new plotline.
+- Replace stagnant repetition rather than padding the number of dialogue lines. Keep the existing event chronology, state/status tags, numerical facts, personality and player autonomy.
+- **No forced new events** for short vignettes or meaningful stillness.
+- [34 mock regression scenarios + syntax validation (passed)](https://github.com/pjb3181-prog/support-my-task/actions/runs/41048609643): original 13, hybrid 16, new momentum 5. Actual model-generated plot quality is not yet validated on PC/Android.
+- Only Editor Lab changed. Story Runner, Mutation and RisuBard core remain untouched.
 
 ## Install or update
 - Stable plugin: [bard_editor_lab.js](./bard_editor_lab.js)
