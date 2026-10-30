@@ -1,0 +1,24 @@
+name: Editor Lab hybrid model hook checks
+on:
+  push:
+    branches:
+      - feature/editorlab-inline-hybrid-032
+    paths:
+      - risubard-updates/bard_editor_lab.js
+      - tests/editorlab-hybrid.test.mjs
+      - .github/workflows/editorlab-hybrid-checks.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  plugin-hooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax validation
+        run: node --check risubard-updates/bard_editor_lab.js
+      - name: Hybrid generation tests
+        run: node tests/editorlab-hybrid.test.mjs
