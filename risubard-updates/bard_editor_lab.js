@@ -111,32 +111,48 @@
      +'\nPrevious messages are continuity FACTS, not prose examples.\n'+lines).slice(-3200);
  }
  async function pipeline(draft,background=''){
-   const source=txt(draft),original={original:source,revised:'',issues:[],reason:'원문 유지'};
+   const raw=txt(draft),source=clean(raw);
+   const original={original:raw,revised:'',issues:[],reason:'원문 유지'};
    if(!eligible(source))return {...original,reason:'짧은 응답·비서사·입력 길이 초과'};
-   if(conf.mode==='economy'&&!suspicious(source))return {...original,reason:'저비용 선별: 반복 징후 없음'};
+   const normalizedOnly=raw.trim()!==source&&!verify(raw,source)?source:'';
+   if(conf.mode==='economy'&&!suspicious(source))
+     return {...original,revised:normalizedOnly,reason:normalizedOnly?'출력 메타만 제거':'저비용 선별: 실질적 반복 징후 없음'};
+   const metrics=dialogueSignals(source);
    const diagnosis=await request([{role:'system',content:[
-     'You are a discerning editor of Korean character-driven fiction, NOT a coauthor. Identify only real actionable defects: echoed questions, mechanically mirrored replies, everyone speaking with the same cold cadence, repetitive emotional confirmations, stock gestures, translated-sounding prose and stalled immediate action.',
-     'Respect each character’s individual voice, habits, relationships, motivations, established lore and player decisions. An unusual habit or a quiet character is NOT automatically a flaw.',
-     'Return ONLY JSON: {"revise":boolean,"issues":[{"excerpt":string,"problem":string,"instruction":string}],"strengths":[string],"summary":string}. At most four issues. If the prose is good enough, revise=false. Do NOT rewrite yet.'
-   ].join(' ')},{role:'user',content:'# PREVIOUS FACTS (do not copy style)\n'+background+'\n\n# FINISHED FICTION\n'+source}]);
+     'You are a professional Korean-fiction dialogue and scene editor, NOT a coauthor. Judge the function of the dialogue, not merely its length.',
+     'Find actionable patterns: interview-like question/yes-answer/confirmation loops; short echoes that add no information; the NPC repeatedly saying I do not know or the same excuse; a protagonist reduced to a therapist or interviewer; everyone speaking with the same cool clipped voice; narration repeatedly diagnosing an emotion that action already shows; recycled body/gesture details; postponed scene objectives.',
+     'A sharp short line, repeated personal catchphrase, hesitation or quiet character is NOT automatically bad. Do not inflate word count, erase a character quirk, or make everyone clever, sarcastic or aggressive. Distinguish useful tension from stagnant repetition.',
+     'When there is a substantial problem grounded in the text, report the exact excerpt and a targeted editorial instruction. Respect established characterization, dialogue hierarchy, world canon, player agency and unresolved scene endings.',
+     'Return ONLY JSON: {"revise":boolean,"issues":[{"excerpt":string,"problem":string,"instruction":string}],"strengths":[string],"summary":string}. Up to four independent issues. If effective as written, revise=false.'
+   ].join(' ')},{role:'user',content:
+      '# HEURISTIC SIGNALS (not absolute judgments)\n'+JSON.stringify(metrics)
+      +'\n\n# PREVIOUS CONTINUITY FACTS (never imitate previous stylistic flaws)\n'+background
+      +'\n\n# CURRENT FINISHED FICTION TO EVALUATE\n'+source}]);
    const verdict=obj(diagnosis);
-   if(typeof verdict.revise!=='boolean'||!Array.isArray(verdict.issues))throw Error('편집장 진단 형식 오류');
+   if(!verdict||typeof verdict.revise!=='boolean'||!Array.isArray(verdict.issues))
+     throw Error('편집장 진단 형식 오류');
    const issues=verdict.issues.filter(x=>x&&typeof x.excerpt==='string'&&typeof x.problem==='string'&&typeof x.instruction==='string')
      .map(x=>({excerpt:x.excerpt.trim().slice(0,180),problem:x.problem.trim().slice(0,280),instruction:x.instruction.trim().slice(0,280)}))
      .filter(x=>x.problem&&x.instruction&&(!x.excerpt||source.includes(x.excerpt))).slice(0,4);
-   if(!verdict.revise||!issues.length)return {...original,issues,reason:'편집장: 수정 불필요'};
+   if(!verdict.revise||!issues.length)
+     return {...original,revised:normalizedOnly,issues,
+       reason:normalizedOnly?'편집장: 문체 수정 불필요 · 출력 메타만 제거':'편집장: 실질적 수정 불필요'};
    const revision=await request([{role:'system',content:[
-     'You are a surgical editor. Rewrite ONLY the verified defects. Output the ENTIRE revised Korean fiction only; no explanation, critique, JSON or fences.',
-     'Preserve named characters, distinct personalities and speech patterns, past events, relationships, world rules, player choices, immediate scene purpose and unresolved endings.',
-     'Preserve system messages, status displays, choice blocks, all tags and numerical values exactly. Do not add a new event or resolve a scene to make it sound polished.',
-     'Do not make everybody short, cool, cynical or emotionally flat. Vary genuine reactions while maintaining who each person is.'
-   ].join(' ')},{role:'user',content:'# VERIFIED ISSUES\n'+JSON.stringify(issues)+'\n\n# RECENT CANON\n'+background+'\n\n# ORIGINAL\n'+source}]);
-   const error=verify(source,revision);
-   if(error)return {...original,issues,reason:'퇴고본 거부: '+error};
-   if(revision===source)return {...original,issues,reason:'원본과 동일'};
-   return {original:source,revised:revision,issues,reason:'교정본 검증 통과'};
+     'You are a surgical Korean-fiction editor. Return the FULL revised fiction and nothing else. NO analysis, thoughts, Approved, Response, explanations, JSON, or fences.',
+     'Fix ONLY the grounded issues. Preserve exact character identities, distinct speech mannerisms, established facts, motives, relationships, narrative viewpoint, world rules, player utterances, chronology, imagery tags, system/status windows and numbers.',
+     'Remove redundant interrogation and echo exchanges where they perform the same function. A character can answer obliquely, offer a concrete preference, make a small choice, tease, object or redirect depending on personality. Preserve genuine uncertainty but do not repeat it through several turns. Make the NPC a participant rather than a questionnaire respondent.',
+     'Short dialogue is welcome when meaningful. Do NOT mechanically expand every line or shorten everyone into clipped cool replies. Do not add a newly resolved plot, new character, new consent or new event simply to sound dynamic. Use only natural, locally implied micro-actions for rhythm.',
+     'Reduce repeated narration of blushing, trembling, eyes, fingers or body hardware unless it conveys new information. Do not narrate as certain another character’s unspoken thoughts. Show through decisions and varied responses; keep the current scene goal intact.'
+   ].join(' ')},{role:'user',content:
+      '# GROUNDED ISSUES TO FIX ONLY\n'+JSON.stringify(issues)
+      +'\n\n# CONTINUITY FACTS\n'+background
+      +'\n\n# ORIGINAL FICTION\n'+source}]);
+   const error=verify(raw,revision);
+   if(error)return {...original,revised:normalizedOnly,issues,reason:'퇴고본 거부: '+error+(normalizedOnly?' · 메타만 제거':'')};
+   if(revision===source)
+     return {...original,revised:normalizedOnly,issues,reason:normalizedOnly?'출력 메타만 제거':'퇴고 원문과 동일'};
+   return {original:raw,revised:revision,issues,reason:'대화 기능·세계관 기초 검증 통과'};
  }
-
  const outputKey=(ci,ti,id,i,m)=>[ci,ti,id,i,txt(m?.chatId||m?.time),txt(m?.data).length,txt(m?.data).slice(0,80)].join('|');
  const remember=k=>{seen.add(k);if(seen.size>200)seen.delete(seen.values().next().value)};
  const same=(meta,live)=>meta&&meta.ci===live.ci&&meta.ti===live.ti&&meta.id===live.id;
