@@ -1,12 +1,12 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.4
+//@version 0.3.5
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
-//@description Automatic editorial activity history, original vs revision comparisons, scene-momentum review; host-independent.
+//@description Read-only first-message character voice anchor, long-term drift detection and grounded selective rewriting.
 (async () => {
  const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups'; const ACTIVITY_STORE='bard_editor_lab_v034_activity';
- const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,watchStoryRunner:false,timeoutMs:90000,maxChars:9000};
+ const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,timeoutMs:90000,maxChars:9000};
  let conf={...DEFAULT};
  let state={target:null,index:-1,original:'',revised:'',issues:[],status:'자동 퇴고 OFF',busy:false,lastAuto:'없음'};
  let uiOpen=false;let unloaded=false;let pollTimer=null;
@@ -62,11 +62,118 @@
    return {turns:turns.length,lowInformation:low,echoQuestions:echo,
      repeatedMarkers,stockGestures,exactRepeats,dialogueLoop,recycledBeatMentions,passiveAnswers};
  }
+
+ // Reads the established first message as a style reference. Never writes to it.
+ // Short texts and SMS are valid; flag repetitive low-information fragments, not length alone.
+ function quoteLines(text){
+   const lines=clean(text).split(/\r?\n/),out=[];
+   for(const row of lines){
+     const m=row.trim().match(/^["“「『]([^"”」』]{2,700})["”」』]$/);
+     if(m)out.push(m[1].trim());
+   }
+   return out;
+ }
+ function namedTurns(text){
+   const lines=clean(text).split(/\r?\n/),out=[];
+   for(let i=0;i<lines.length-1;i++){
+     const speaker=lines[i].trim().match(/^\[([^\]\r\n]{1,42})\]$/);
+     if(!speaker)continue;
+     const speech=lines[i+1].trim().match(/^["“「『]([^"”」』]{1,700})["”」』]$/);
+     if(speech)out.push({speaker:speaker[1],text:speech[1].trim()});
+   }
+   return out;
+ }
+ function fillerSpeech(text){
+   return /^(?:(?:…|\.|·|\s)+|(?:근데|그런데|네|예|응|아|그래|그렇구나|그럼|왜요|진짜요|그러니까|할게요|모르겠어요|알겠어요|알아요)(?:[.…!?？\s]*)|(?:그게|저기)(?:[.…!?？\s]*))$/.test(text.trim());
+ }
+ function voiceDriftSignals(draft,opening,name){
+   const initial=quoteLines(opening);
+   const all=namedTurns(draft);
+   const npc=all.filter(x=>name&&x.speaker===name).map(x=>x.text);
+   const uniqueRepeated=new Map();
+   for(const line of npc){
+     const norm=line.replace(/[.…!?？\s]/g,'');
+     if(fillerSpeech(line))uniqueRepeated.set(norm,(uniqueRepeated.get(norm)||0)+1);
+   }
+   const fillerCount=npc.filter(fillerSpeech).length;
+   const repeatFiller=[...uniqueRepeated.values()].reduce((a,n)=>a+Math.max(0,n-1),0);
+   const baselineAvg=initial.length?initial.reduce((a,x)=>a+x.length,0)/initial.length:0;
+   const currentAvg=npc.length?npc.reduce((a,x)=>a+x.length,0)/npc.length:0;
+   // Several independent signals prevent ordinary brisk SMS from being treated
+   // as degradation. Without a real first-message baseline, return uncertain.
+   const severe=initial.length>=2&&baselineAvg>=24&&npc.length>=12
+     &&fillerCount>=6&&repeatFiller>=4&&fillerCount/npc.length>=0.24
+     &&currentAvg<baselineAvg*.70;
+   return {hasAnchor:initial.length>=2,baselineTurns:initial.length,
+     baselineAverage:Math.round(baselineAvg),npcTurns:npc.length,
+     npcAverage:Math.round(currentAvg),lowInformation:fillerCount,
+     repeatedFragments:repeatFiller,
+     repeatedExamples:[...uniqueRepeated].filter(([,count])=>count>=2)
+       .sort((a,b)=>b[1]-a[1]).slice(0,4).map(([phrase,count])=>({phrase,count})),
+     severe};
+ }
+ async function editorialReference(chat,index,chara){
+   let fromHost=null;
+   try{if(typeof risuai.getCharacter==='function')fromHost=await risuai.getCharacter()}
+   catch(err){console.log('[EditorLab] read-only first-message reference unavailable',err)}
+   const canonical=(fromHost&&typeof fromHost==='object')?fromHost:{};
+   const fallback=(chara&&typeof chara==='object')?chara:{};
+   const name=txt(fallback.name||canonical.name||fallback.charaName||'').trim().slice(0,80);
+   const messages=Array.isArray(chat?.message)?chat.message:[];
+   const firstInChat=messages[0]&&['char','assistant'].includes(messages[0].role)
+     &&index>0?txt(messages[0].data):'';
+   // Prefer the selected opening message actually used in this chat, not a
+   // different greeting branch. Never reinsert it into the chat.
+   const fullOpening=clean(firstInChat||canonical.firstMessage||fallback.firstMessage||'');
+   const opening=fullOpening.length>2400?fullOpening.slice(0,1700)+'\n[중간 생략]\n'
+     +fullOpening.slice(-650):fullOpening;
+   const personality=clean(canonical.personality||fallback.personality||'').slice(0,700);
+   const description=clean(canonical.desc||fallback.desc||'').slice(0,700);
+   return {
+     name,opening,personality,description,
+     recent:context(chat,index,canonical.name?canonical:fallback),
+     // For backwards compatibility with older simulated hosts.
+     baselineSource:firstInChat?'chat-selected-first-message':'character-firstMessage'
+   };
+ }
+ function normalizedReference(background){
+   if(background&&typeof background==='object'){
+     return {name:txt(background.name),opening:txt(background.opening),
+       personality:txt(background.personality),description:txt(background.description),
+       recent:txt(background.recent)};
+   }
+   return {name:'',opening:'',personality:'',description:'',recent:txt(background)};
+ }
+ function anchorPrompt(reference){
+   if(!conf.voiceGuard||!reference.opening)return '';
+   return [
+     '# ORIGINAL FIRST MESSAGE — READ-ONLY CHARACTER VOICE ANCHOR',
+     'The following is how this character was initially written, NOT a scene to repeat.',
+     'Compare stable temperament, personal motives, speaking texture and specificity.',
+     'Allow organic relationship development, different emotional states and shorter SMS.',
+     'Do not force original shyness, opening POV, actions or events back into later scenes.',
+     reference.name?'Character: '+reference.name:'',
+     reference.personality?'Personality: '+reference.personality:'',
+     reference.description?'Description: '+reference.description:'',
+     reference.opening
+   ].filter(Boolean).join('\n');
+ }
+ function keepOtherSpeakerTurns(original,rewrite,npc){
+   if(!npc)return '';
+   const preserved=t=>namedTurns(t).filter(x=>x.speaker!==npc)
+     .map(x=>x.speaker+'\t'+x.text);
+   const a=preserved(original),b=preserved(rewrite);
+   // Only compare tagged dialogue when both versions retain structured turns.
+   if(a.length && (a.length!==b.length||a.some((x,i)=>x!==b[i])))
+     return '플레이어 또는 타 인물의 기존 대사가 변경됨';
+   return '';
+ }
+
  const suspicious=source=>{
    const m=dialogueSignals(source);
    return m.dialogueLoop||m.exactRepeats>=1||m.stockGestures>=5||(m.recycledBeatMentions>=12&&m.passiveAnswers>=4);
  };
- const verify=(original,rewrite)=>{
+ const verify=(original,rewrite,reference=null)=>{
    const a=clean(original),b=clean(rewrite);
    if(!b||b.length<a.length*.64||b.length>a.length*1.45)return '문장 분량 변경 범위 초과';
    const tokens=t=>(t.match(/<[^<>]{1,120}>|\{\{[^{}\n]{1,120}\}\}|\[[A-Z][A-Z0-9 _:\-=.]{1,140}\]/gi)||[]).join('|');
@@ -76,6 +183,7 @@
    const nums=t=>(t.match(/(?<![A-Za-z가-힣])\d+(?:\.\d+)?(?:%|kg|km|cm|초|분|시간|원)?/g)||[]).join('|');
    if(nums(a)!==nums(b))return '숫자/수치 변경';
    if(/<(?:think|reasoning|thoughts)\b/i.test(b))return '사고과정 출력';
+   if(reference?.name){const changed=keepOtherSpeakerTurns(a,b,reference.name);if(changed)return changed;}
    const oldDialogue=dialogueSignals(a),newDialogue=dialogueSignals(b);
    if(oldDialogue.turns>=10&&newDialogue.turns>=8
      && newDialogue.lowInformation>oldDialogue.lowInformation+3)
@@ -149,7 +257,17 @@
    if(messages.some(x=>typeof x?.content==='string' && x.content.includes(INLINE_HINT_ID)))return messages;
    const amended=messages.map(message=>({...message}));
    const index=amended.findIndex(x=>x?.role==='system' && typeof x.content==='string');
-   const guidance=INLINE_GUIDANCE+(conf.momentum?MOMENTUM_GUIDANCE:'');
+   let voiceHint='';
+   if(conf.voiceGuard&&typeof risuai.getCharacter==='function'){
+     try{
+       const currentChar=await risuai.getCharacter();
+       const lines=quoteLines(currentChar?.firstMessage||'').slice(0,2);
+       const sample=lines.join(' / ').slice(0,420);
+       if(sample)voiceHint='\nRead-only opening speech reference for '+txt(currentChar?.name).slice(0,60)
+         +': '+sample+'\nPreserve enduring individuality only. Never copy this dialogue or force the character to remain shy, stuttering or unchanged after development.';
+     }catch(error){console.log('[EditorLab] prompt reference unavailable',error)}
+   }
+   const guidance=INLINE_GUIDANCE+(conf.momentum?MOMENTUM_GUIDANCE:'')+voiceHint;
    if(index>=0)amended[index].content+='\n\n'+guidance;
    else amended.unshift({role:'system',content:guidance});
    return amended;
@@ -159,7 +277,16 @@
    if(unloaded||!conf.auto||!conf.realEditor||type!=='model'||typeof response!=='string')return response;
    if(alreadyPreSaved(response))return response;
    try{
-     const result=await pipeline(response,'');
+     let reference={};
+     try{
+       const live=await current();
+       const nextIndex=Array.isArray(live.chat?.message)?live.chat.message.length:0;
+       reference=await editorialReference(live.chat,nextIndex,null);
+     }catch(error){
+       console.log('[EditorLab] first-message reference unavailable for pre-save',error);
+       reference=await editorialReference(null,0,null).catch(()=>({}));
+     }
+     const result=await pipeline(response,reference);
      const final=result.revised||response;
      const outcome=!eligible(response)?'skipped':result.revised?'pending':'unchanged';
      const id=await recordAutomatic({phase:'저장 전 편집',outcome,reason:result.reason,
@@ -211,64 +338,85 @@
  }
  async function pipeline(draft,background=''){
    const raw=txt(draft),source=clean(raw);
-   const original={original:raw,revised:'',issues:[],reason:'원문 유지',calls:0};
-   if(!eligible(source))return {...original,reason:'짧은 응답·비서사·입력 길이 초과'};
+   const ref=normalizedReference(background);
+   const opening=conf.voiceGuard?ref.opening:'';
+   const drift=voiceDriftSignals(source,opening,ref.name);
+   const base={original:raw,revised:'',issues:[],reason:'원문 유지',calls:0};
+   if(!eligible(source))return {...base,reason:'짧은 응답·비서사·입력 길이 초과'};
    const normalizedOnly=raw.trim()!==source&&!verify(raw,source)?source:'';
-   if(conf.mode==='economy'&&!suspicious(source))
-     return {...original,revised:normalizedOnly,reason:normalizedOnly?'출력 메타만 제거':'저비용 선별: 실질적 반복 징후 없음'};
+   if(conf.mode==='economy'&&!suspicious(source)&&!drift.severe)
+     return {...base,revised:normalizedOnly,reason:normalizedOnly?'출력 메타만 제거':'저비용 선별: 실질적 반복 징후 없음'};
    const metrics=dialogueSignals(source);
    const currentMomentum=Boolean(conf.momentum)&&source.length>=800;
-   const diagnosis=await request([{role:'system',content:[
-     'You are a professional Korean-fiction dialogue and scene editor, NOT a coauthor. Judge the function of the dialogue, not merely its length.',
-     'Find actionable patterns: interview-like question/yes-answer/confirmation loops; short echoes that add no information; the NPC repeatedly saying I do not know or the same excuse; a protagonist reduced to a therapist or interviewer; everyone speaking with the same cool clipped voice; narration repeatedly diagnosing an emotion that action already shows; recycled body/gesture details; postponed scene objectives.',
-     'A sharp short line, repeated personal catchphrase, hesitation or quiet character is NOT automatically bad. Do not inflate word count, erase a character quirk, or make everyone clever, sarcastic or aggressive. Distinguish useful tension from stagnant repetition.',
-     'Evaluate scene movement: compare the START and END, not just physical activities. Did a meaningful relationship dynamic, fact, boundary, personal decision, practical goal, or next-step change? Repeated compliments, blushes, offers declined, and a visitor leaving as they arrived may constitute stasis.',
-     'Progress can be modest and grounded in an existing thread (for example an NPC makes a specific practical request, sets a boundary, proposes a next step, or changes their earlier decision). Do NOT require sex, sudden intrusion, spectacular conflict, new cast members, or arbitrary twists. Respect intentional rest and transitions.',
-     'If the scene is long but nothing actually changed and the quietness is not purposeful, mark revise=true and include ONE concrete stasis issue using an EXACT excerpt from the draft. Clearly explain a plausible NPC-initiated causal beat without taking control of the player character.',
-     'When there is a substantial issue grounded in the text, report the exact excerpt and a targeted editorial instruction. Respect established characterization, dialogue hierarchy, world canon, player agency and unresolved scene endings.',
-     'Return ONLY JSON: {"revise":boolean,"sceneProgress":{"material":boolean,"evidence":string,"intentionalStillness":boolean},"issues":[{"excerpt":string,"problem":string,"instruction":string}],"strengths":[string],"summary":string}. Up to four issues. If effective or intentionally quiet as written, revise=false.'
-   ].join(' ')},{role:'user',content:
-      '# HEURISTIC SIGNALS (not absolute judgments)\n'+JSON.stringify(metrics)
-      +'\n# ASSESS_SCENE_MOMENTUM\n'+(currentMomentum?'YES, scene must earn a modest material change unless intentionally still':'NO, preserve the current progress; assess only dialogue and style')
-      +'\n\n# PREVIOUS CONTINUITY FACTS (never imitate previous stylistic flaws)\n'+background
-      +'\n\n# CURRENT FINISHED FICTION TO EVALUATE\n'+source}]);
-   const verdict=obj(diagnosis);
+   const referenceText=anchorPrompt(ref);
+   const diagnosticSystem=[
+     'You are a professional Korean-fiction dialogue, characterization and scene editor, NOT a coauthor. Evaluate dialogue FUNCTION, individuality and stable temperament, not line length.',
+     'Watch for repeated question/echo/confirmation patterns, identical hesitations or apologies, a passive NPC offering no independent perspective, and non-advancing scene beats.',
+     'When an opening reference exists, compare the stable persona, motivation, unique speech and concrete observations against the draft. Later confidence or intimacy can be character development. SMS is allowed to be short. But repeated one-word filler messages with no new information can constitute severe erosion even in SMS.',
+     'Do not force the original scene, initial shyness, viewpoint, dialogue length, or chronology back into the current scene. The reference is read-only evidence, not a writing template.',
+     'A quiet or unusual character and an intentional pause are not errors. One purposeful decision or meaningful boundary can advance a scene without romance, sex, forced drama or an invented crisis.',
+     'Ground every reported problem in an EXACT excerpt from CURRENT draft. Return ONLY JSON {"revise":boolean,"characterFidelity":{"status":"faithful|degrading|developing|insufficient_reference","evidence":string,"justification":string},"sceneProgress":{"material":boolean,"evidence":string,"intentionalStillness":boolean},"issues":[{"excerpt":string,"problem":string,"instruction":string}],"strengths":[string],"summary":string}. At most four issues.'
+   ].join(' ');
+   const diagnosticUser='# HEURISTIC SIGNALS (NOT VERDICTS)\n'+JSON.stringify(metrics)
+     +'\n# ORIGINAL-VOICE DRIFT MEASURES (NOT VERDICTS)\n'+JSON.stringify(drift)
+     +'\n# SCENE MOMENTUM\n'+(currentMomentum?'Evaluate material change unless intentionally quiet':'Short scene: do not force progress')
+     +'\n\n'+(referenceText||'# OPENING VOICE REFERENCE NOT AVAILABLE')
+     +'\n\n# RECENT STORY FACTS (continuity, do not imitate prose flaws)\n'+ref.recent
+     +'\n\n# FINISHED DRAFT TO REVIEW\n'+source;
+   const diagnostic=await request([{role:'system',content:diagnosticSystem},{role:'user',content:diagnosticUser}]);
+   const verdict=obj(diagnostic);
    if(!verdict||typeof verdict.revise!=='boolean'||!Array.isArray(verdict.issues))
      throw Error('편집장 진단 형식 오류');
-   // Treat semantic progress assessment as a signal, never as an unconditional
-   // instruction to fabricate events. Legacy critic JSON without this field
-   // remains supported.
    const momentumGap=currentMomentum&&verdict.sceneProgress?.material===false
      &&verdict.sceneProgress?.intentionalStillness!==true;
-   const issues=verdict.issues.filter(x=>x&&typeof x.excerpt==='string'&&typeof x.problem==='string'&&typeof x.instruction==='string')
-     .map(x=>({excerpt:x.excerpt.trim().slice(0,180),problem:x.problem.trim().slice(0,280),instruction:x.instruction.trim().slice(0,280)}))
+   const issues=verdict.issues.filter(x=>x&&typeof x.excerpt==='string'
+       &&typeof x.problem==='string'&&typeof x.instruction==='string')
+     .map(x=>({excerpt:x.excerpt.trim().slice(0,180),problem:x.problem.trim().slice(0,280),
+       instruction:x.instruction.trim().slice(0,350)}))
      .filter(x=>x.problem&&x.instruction&&(!x.excerpt||source.includes(x.excerpt))).slice(0,4);
-   if(momentumGap&&!issues.length){
-     const excerpt=source.slice(-Math.min(125,source.length)).trim();
-     issues.push({excerpt,
-       problem:'장면 시작과 끝에 실질적인 상황 변화가 없어서 방문·대화가 제자리걸음 함',
-       instruction:'기존 대화에서 이미 나온 요청·거절·관심사 중 하나를 활용해 NPC가 작은 선택, 분명한 경계, 구체적인 다음 단계 또는 새로운 행동을 만들도록 최소한으로 교정. 플레이어의 선택이나 행동을 새로 작성하지 말 것.'});
+   // An extreme objective decline must not silently pass just because the
+   // critic model answered revise=false. This is a risk signal, not a guarantee.
+   if(conf.voiceGuard&&drift.severe&&!issues.some(x=>/말투|단편|대사|문답|반복|캐릭터|개성/.test(x.problem))){
+     const repeated=namedTurns(source).find(x=>x.speaker===ref.name&&fillerSpeech(x.text));
+     issues.unshift({excerpt:repeated?.text||drift.repeatedExamples[0]?.phrase||'',
+       problem:'초기 캐릭터 표현력에 비해 정보 없는 단편 반응과 동일한 말버릇이 과도하게 반복되어 캐릭터성이 희미해짐',
+       instruction:'독특한 관찰·의견·목적·선택을 현재 관계 변화에 맞게 회복. SMS는 짧아도 되지만 반복되는 빈 문자를 줄일 것. 첫 메시지 장면이나 초기의 수줍음으로 되돌리지는 말 것.'});
+     issues.splice(4);
    }
-   if((!verdict.revise&&!momentumGap)||!issues.length)
-     return {...original,revised:normalizedOnly,issues,calls:1,
-       reason:normalizedOnly?'편집장: 문체 수정 불필요 · 출력 메타만 제거':'편집장: 유의미한 퇴고 불필요'};
-   const revision=await request([{role:'system',content:[
-     'You are a surgical Korean-fiction editor. Return the FULL revised fiction and nothing else. NO analysis, thoughts, Approved, Response, explanations, JSON, or fences.',
-     'Fix ONLY the grounded issues. Preserve exact character identities, distinct speech mannerisms, established facts, motives, relationships, narrative viewpoint, world rules, player utterances, chronology, imagery tags, system/status windows and numbers.',
-     'Remove redundant interrogation and echo exchanges where they perform the same function. A character can answer obliquely, offer a concrete preference, make a small choice, tease, object or redirect depending on personality. Preserve genuine uncertainty but do not repeat it through several turns. Make the NPC a participant rather than a questionnaire respondent.',
-     'Short dialogue is welcome when meaningful. Never pad dialogue or turn the entire cast into cool clipped speakers. Keep the established scene and past facts intact.',
-     'If a grounded scene-stasis issue was diagnosed, you MAY add ONE small, credible, NPC-initiated consequential choice, request, boundary or next step rooted in facts ALREADY PRESENT in the text. Give it a clear result or a concrete unresolved commitment. You may replace repetitive lines/beats to make room; this is not permission to create a new major plot arc.',
-     'Do not invent a spouse confrontation, sudden stranger, crisis, romantic/sexual escalation or coercion as a shortcut. Do not perform new actions, decide emotions, accept requests or give consent on behalf of the player character. Do not contradict established canon or change locations or timeline gratuitously.',
-     'Reduce repeated narration of embarrassment, glances, gestures and body/clothing details when they add no new information. Let an NPC reveal character through distinct intentions and decisions, not narration claiming unspoken thoughts.'
-   ].join(' ')},{role:'user',content:
-      '# GROUNDED ISSUES TO FIX ONLY\n'+JSON.stringify(issues)
-      +'\n\n# CONTINUITY FACTS\n'+background
-      +'\n\n# ORIGINAL FICTION\n'+source}]);
-   const error=verify(raw,revision);
-   if(error)return {...original,revised:normalizedOnly,issues,calls:2,reason:'퇴고본 거부: '+error+(normalizedOnly?' · 메타만 제거':'')};
-   if(revision===source)
-     return {...original,revised:normalizedOnly,issues,calls:2,reason:normalizedOnly?'출력 메타만 제거':'퇴고 원문과 동일'};
-   return {original:raw,revised:revision,issues,calls:2,reason:'대화 기능·세계관 기초 검증 통과'};
+   if(momentumGap&&!issues.length){
+     issues.push({excerpt:source.slice(-Math.min(125,source.length)).trim(),
+       problem:'장면 시작과 끝에 상황 변화가 없어 방문·대화가 제자리걸음 함',
+       instruction:'이미 언급된 요청·거절·관심사 중 하나를 활용해 NPC의 작은 선택, 경계나 구체적인 다음 행동을 만들되 플레이어의 대사를 새로 쓰지 말 것.'});
+   }
+   const shouldRevise=verdict.revise||momentumGap||(conf.voiceGuard&&drift.severe);
+   if(!shouldRevise||!issues.length)
+     return {...base,revised:normalizedOnly,issues,calls:1,
+       reason:normalizedOnly?'수정 불필요 · 출력 메타만 제거':'편집장 진단: 실질적 수정 불필요'};
+   const revisionSystem=[
+     'You are a surgical Korean-fiction editor. Return the FULL revised fiction only, not notes, JSON or analysis.',
+     'Fix ONLY grounded issues. Preserve events, chronology, established voices, canon, user-controlled dialogue, character motivations, relationships, choices, locations, exact status windows, image tags and numerical values.',
+     'Where flagged for voice erosion, recover individuality through concrete character-specific observations, reasons, humor, goals or boundaries. Replace or combine repeated empty fragments. Keep brief SMS when meaningful and do not increase word count mechanically.',
+     'Reference the FIRST MESSAGE only for enduring personality and speaking texture. Do not copy its text or revert developments, emotions, relationships, viewpoint or temporal setting.',
+     'If scene stagnation is grounded, permit only ONE modest NPC-initiated, causally supported beat from already established threads. Do not invent a new major plot, romantic/sexual escalation, spouse confrontation or player choices.',
+     'Never narrate unspoken thoughts of others as certain. Reduce repeated blushing, eyes, fingers and body details when they add nothing. Retain the open ending.'
+   ].join(' ');
+   const revision=await request([{role:'system',content:revisionSystem},{
+     role:'user',content:'# GROUNDED ISSUES\n'+JSON.stringify(issues)
+       +'\n\n'+(referenceText||'# FIRST MESSAGE REFERENCE UNAVAILABLE')
+       +'\n\n# RECENT CONTINUITY\n'+ref.recent+'\n\n# ORIGINAL DRAFT\n'+source
+   }]);
+   const error=verify(raw,revision,ref);
+   if(error)return {...base,revised:normalizedOnly,issues,calls:2,reason:'퇴고본 보류: '+error};
+   const afterDrift=voiceDriftSignals(revision,opening,ref.name);
+   const unresolved=drift.severe&&afterDrift.severe
+     &&afterDrift.lowInformation>=Math.max(5,drift.lowInformation-1)
+     &&afterDrift.repeatedFragments>=Math.max(3,drift.repeatedFragments-1);
+   if(unresolved)return {...base,revised:normalizedOnly,issues,calls:2,
+     reason:'퇴고본 보류: 초기 캐릭터성 대비 반복 단편 대사가 충분히 개선되지 않음'};
+   if(revision===source)return {...base,revised:normalizedOnly,issues,calls:2,
+     reason:drift.severe?'퇴고 미반영: 반복 단편 대사가 여전히 남음':'퇴고 원문과 동일'};
+   return {original:raw,revised:revision,issues,calls:2,
+     reason:drift.severe?'캐릭터성 붕괴 신호 감지 · 교정본 구조 검증 통과':'퇴고본 구조 검증 통과 (실제 문학적 품질은 별도 검토 필요)'};
  }
  const outputKey=(ci,ti,id,i,m)=>[ci,ti,id,i,txt(m?.chatId||m?.time),txt(m?.data).length,txt(m?.data).slice(0,80)].join('|');
  const remember=k=>{seen.add(k);if(seen.size>200)seen.delete(seen.values().next().value)};
@@ -309,7 +457,8 @@
      const message=now.chat?.message?.[state.index];
      if(!message||txt(message.data)!==state.original)throw Error('원본 메시지가 달라졌어');
      state.target={...state.target,index:state.index,messageId:txt(message.chatId||message.time)};
-     const result=await pipeline(state.original,context(now.chat,state.index,{}));
+     const reference=await editorialReference(now.chat,state.index,null);
+     const result=await pipeline(state.original,reference);
      state.issues=result.issues;state.revised=result.revised;state.status=result.reason;
    }catch(e){state.revised='';state.status='원문 유지 · '+txt(e.message||e)}
    finally{state.busy=false;if(uiOpen)await render()}
@@ -337,7 +486,8 @@
        await recordAutomatic({phase:sourceLabel,outcome:'skipped',reason:'짧은 응답·비서사·입력 길이 초과',original,calls:0});
        return;
      }
-     const result=await pipeline(original,context(arg.chat,i,arg.char||{}));
+     const reference=await editorialReference(arg.chat,i,arg.char||{});
+     const result=await pipeline(original,reference);
      if(result.revised){
        await commit({ci,ti,id,index:i,messageId:txt(m.chatId||m.time)},original,result.revised);
        await recordAutomatic({phase:sourceLabel,outcome:'applied',reason:'채팅에 퇴고본 반영 · '+result.reason,
@@ -386,7 +536,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.4</h2>
+  </style><main><h2>Bard Editor Lab v0.3.5</h2>
   <p class="muted">본체·프리셋 수정 없음 · 메인 채팅에 짧은 편집 지침 삽입 + 모델을 이용한 선택적 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
@@ -403,8 +553,9 @@
     <label><input type="checkbox" id="promptassist" ${conf.promptAssist?'checked':''}/> 생성 전 프롬프트에 편집 원칙 추가 (추가 모델 호출 없음)</label>
     <label><input type="checkbox" id="realeditor" ${conf.realEditor?'checked':''}/> 생성 후 편집장 모델로 선택적 검수·퇴고 (모델 호출 비용 발생)</label>
     <label><input type="checkbox" id="momentum" ${conf.momentum?'checked':''}/> 장면 정체 감지·자연스러운 진전 유도 (강제 사건 없음)</label>
+    <label><input type="checkbox" id="voiceguard" ${conf.voiceGuard?'checked':''}/> 첫 메시지 캐릭터성 기준 유지 · 단편 대사 붕괴 감지 (첫 메시지 읽기 전용)</label>
   </div>
-  <p class="muted">장면 정체 방지는 대화를 길게 만드는 게 아니라, NPC의 결정·경계·구체적 행동 등 인과관계가 남는 작은 변화를 유도해. 조용한 휴식 장면은 예외야.</p>
+  <p class="muted">첫 메시지는 수정하지 않고 캐릭터의 고유 말투만 참고해. 문자 대화의 짧은 문장은 허용하되 정보 없는 반복 응답은 감지해. 장면 정체 방지도 무리한 사건을 요구하지 않아.</p>
   <p class="muted">일반 비스트리밍 응답은 저장 전 교정. 스트리밍은 원문 표시가 끝난 뒤 교체될 수 있어. 기존 사용자 설정의 자동 OFF는 유지돼.</p>
   <div class="top">
     <label><input id="srwatch" type="checkbox" ${conf.watchStoryRunner?'checked':''}/> Story Runner 직접 생성도 감시 (수동 삽입 포함 가능)</label>
@@ -442,6 +593,7 @@
   el('promptassist').onchange=async e=>{conf.promptAssist=e.target.checked;await save()};
   el('realeditor').onchange=async e=>{conf.realEditor=e.target.checked;await save()};
   el('momentum').onchange=async e=>{conf.momentum=e.target.checked;await save()};
+  el('voiceguard').onchange=async e=>{conf.voiceGuard=e.target.checked;await save()};
   el('model').onchange=async e=>{conf.model=e.target.value;await save()};
   el('mode').onchange=async e=>{conf.mode=e.target.value;await save()};
   el('max').onchange=async e=>{conf.maxChars=Number(e.target.value);await save()};
