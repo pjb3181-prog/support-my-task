@@ -345,7 +345,9 @@
   <div class="top">
     <label><input type="checkbox" id="promptassist" ${conf.promptAssist?'checked':''}/> 생성 전 프롬프트에 편집 원칙 추가 (추가 모델 호출 없음)</label>
     <label><input type="checkbox" id="realeditor" ${conf.realEditor?'checked':''}/> 생성 후 편집장 모델로 선택적 검수·퇴고 (모델 호출 비용 발생)</label>
+    <label><input type="checkbox" id="momentum" ${conf.momentum?'checked':''}/> 장면 정체 감지·자연스러운 진전 유도 (강제 사건 없음)</label>
   </div>
+  <p class="muted">장면 정체 방지는 대화를 길게 만드는 게 아니라, NPC의 결정·경계·구체적 행동 등 인과관계가 남는 작은 변화를 유도해. 조용한 휴식 장면은 예외야.</p>
   <p class="muted">일반 비스트리밍 응답은 저장 전 교정. 스트리밍은 원문 표시가 끝난 뒤 교체될 수 있어. 기존 사용자 설정의 자동 OFF는 유지돼.</p>
   <div class="top">
     <label><input id="srwatch" type="checkbox" ${conf.watchStoryRunner?'checked':''}/> Story Runner 직접 생성도 감시 (수동 삽입 포함 가능)</label>
@@ -370,6 +372,7 @@
   el('auto').onclick=async()=>{conf.auto=!conf.auto;await save();state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';await render()};
   el('promptassist').onchange=async e=>{conf.promptAssist=e.target.checked;await save()};
   el('realeditor').onchange=async e=>{conf.realEditor=e.target.checked;await save()};
+  el('momentum').onchange=async e=>{conf.momentum=e.target.checked;await save()};
   el('model').onchange=async e=>{conf.model=e.target.value;await save()};
   el('mode').onchange=async e=>{conf.mode=e.target.value;await save()};
   el('max').onchange=async e=>{conf.maxChars=Number(e.target.value);await save()};
