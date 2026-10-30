@@ -179,31 +179,49 @@
    if(conf.mode==='economy'&&!suspicious(source))
      return {...original,revised:normalizedOnly,reason:normalizedOnly?'출력 메타만 제거':'저비용 선별: 실질적 반복 징후 없음'};
    const metrics=dialogueSignals(source);
+   const currentMomentum=Boolean(conf.momentum)&&source.length>=800;
    const diagnosis=await request([{role:'system',content:[
      'You are a professional Korean-fiction dialogue and scene editor, NOT a coauthor. Judge the function of the dialogue, not merely its length.',
      'Find actionable patterns: interview-like question/yes-answer/confirmation loops; short echoes that add no information; the NPC repeatedly saying I do not know or the same excuse; a protagonist reduced to a therapist or interviewer; everyone speaking with the same cool clipped voice; narration repeatedly diagnosing an emotion that action already shows; recycled body/gesture details; postponed scene objectives.',
      'A sharp short line, repeated personal catchphrase, hesitation or quiet character is NOT automatically bad. Do not inflate word count, erase a character quirk, or make everyone clever, sarcastic or aggressive. Distinguish useful tension from stagnant repetition.',
-     'When there is a substantial problem grounded in the text, report the exact excerpt and a targeted editorial instruction. Respect established characterization, dialogue hierarchy, world canon, player agency and unresolved scene endings.',
-     'Return ONLY JSON: {"revise":boolean,"issues":[{"excerpt":string,"problem":string,"instruction":string}],"strengths":[string],"summary":string}. Up to four independent issues. If effective as written, revise=false.'
+     'Evaluate scene movement: compare the START and END, not just physical activities. Did a meaningful relationship dynamic, fact, boundary, personal decision, practical goal, or next-step change? Repeated compliments, blushes, offers declined, and a visitor leaving as they arrived may constitute stasis.',
+     'Progress can be modest and grounded in an existing thread (for example an NPC makes a specific practical request, sets a boundary, proposes a next step, or changes their earlier decision). Do NOT require sex, sudden intrusion, spectacular conflict, new cast members, or arbitrary twists. Respect intentional rest and transitions.',
+     'If the scene is long but nothing actually changed and the quietness is not purposeful, mark revise=true and include ONE concrete stasis issue using an EXACT excerpt from the draft. Clearly explain a plausible NPC-initiated causal beat without taking control of the player character.',
+     'When there is a substantial issue grounded in the text, report the exact excerpt and a targeted editorial instruction. Respect established characterization, dialogue hierarchy, world canon, player agency and unresolved scene endings.',
+     'Return ONLY JSON: {"revise":boolean,"sceneProgress":{"material":boolean,"evidence":string,"intentionalStillness":boolean},"issues":[{"excerpt":string,"problem":string,"instruction":string}],"strengths":[string],"summary":string}. Up to four issues. If effective or intentionally quiet as written, revise=false.'
    ].join(' ')},{role:'user',content:
       '# HEURISTIC SIGNALS (not absolute judgments)\n'+JSON.stringify(metrics)
+      +'\n# ASSESS_SCENE_MOMENTUM\n'+(currentMomentum?'YES, scene must earn a modest material change unless intentionally still':'NO, preserve the current progress; assess only dialogue and style')
       +'\n\n# PREVIOUS CONTINUITY FACTS (never imitate previous stylistic flaws)\n'+background
       +'\n\n# CURRENT FINISHED FICTION TO EVALUATE\n'+source}]);
    const verdict=obj(diagnosis);
    if(!verdict||typeof verdict.revise!=='boolean'||!Array.isArray(verdict.issues))
      throw Error('편집장 진단 형식 오류');
+   // Treat semantic progress assessment as a signal, never as an unconditional
+   // instruction to fabricate events. Legacy critic JSON without this field
+   // remains supported.
+   const momentumGap=currentMomentum&&verdict.sceneProgress?.material===false
+     &&verdict.sceneProgress?.intentionalStillness!==true;
    const issues=verdict.issues.filter(x=>x&&typeof x.excerpt==='string'&&typeof x.problem==='string'&&typeof x.instruction==='string')
      .map(x=>({excerpt:x.excerpt.trim().slice(0,180),problem:x.problem.trim().slice(0,280),instruction:x.instruction.trim().slice(0,280)}))
      .filter(x=>x.problem&&x.instruction&&(!x.excerpt||source.includes(x.excerpt))).slice(0,4);
-   if(!verdict.revise||!issues.length)
+   if(momentumGap&&!issues.length){
+     const excerpt=source.slice(-Math.min(125,source.length)).trim();
+     issues.push({excerpt,
+       problem:'장면 시작과 끝에 실질적인 상황 변화가 없어서 방문·대화가 제자리걸음 함',
+       instruction:'기존 대화에서 이미 나온 요청·거절·관심사 중 하나를 활용해 NPC가 작은 선택, 분명한 경계, 구체적인 다음 단계 또는 새로운 행동을 만들도록 최소한으로 교정. 플레이어의 선택이나 행동을 새로 작성하지 말 것.'});
+   }
+   if((!verdict.revise&&!momentumGap)||!issues.length)
      return {...original,revised:normalizedOnly,issues,
-       reason:normalizedOnly?'편집장: 문체 수정 불필요 · 출력 메타만 제거':'편집장: 실질적 수정 불필요'};
+       reason:normalizedOnly?'편집장: 문체 수정 불필요 · 출력 메타만 제거':'편집장: 유의미한 퇴고 불필요'};
    const revision=await request([{role:'system',content:[
      'You are a surgical Korean-fiction editor. Return the FULL revised fiction and nothing else. NO analysis, thoughts, Approved, Response, explanations, JSON, or fences.',
      'Fix ONLY the grounded issues. Preserve exact character identities, distinct speech mannerisms, established facts, motives, relationships, narrative viewpoint, world rules, player utterances, chronology, imagery tags, system/status windows and numbers.',
      'Remove redundant interrogation and echo exchanges where they perform the same function. A character can answer obliquely, offer a concrete preference, make a small choice, tease, object or redirect depending on personality. Preserve genuine uncertainty but do not repeat it through several turns. Make the NPC a participant rather than a questionnaire respondent.',
-     'Short dialogue is welcome when meaningful. Do NOT mechanically expand every line or shorten everyone into clipped cool replies. Do not add a newly resolved plot, new character, new consent or new event simply to sound dynamic. Use only natural, locally implied micro-actions for rhythm.',
-     'Reduce repeated narration of blushing, trembling, eyes, fingers or body hardware unless it conveys new information. Do not narrate as certain another character’s unspoken thoughts. Show through decisions and varied responses; keep the current scene goal intact.'
+     'Short dialogue is welcome when meaningful. Never pad dialogue or turn the entire cast into cool clipped speakers. Keep the established scene and past facts intact.',
+     'If a grounded scene-stasis issue was diagnosed, you MAY add ONE small, credible, NPC-initiated consequential choice, request, boundary or next step rooted in facts ALREADY PRESENT in the text. Give it a clear result or a concrete unresolved commitment. You may replace repetitive lines/beats to make room; this is not permission to create a new major plot arc.',
+     'Do not invent a spouse confrontation, sudden stranger, crisis, romantic/sexual escalation or coercion as a shortcut. Do not perform new actions, decide emotions, accept requests or give consent on behalf of the player character. Do not contradict established canon or change locations or timeline gratuitously.',
+     'Reduce repeated narration of embarrassment, glances, gestures and body/clothing details when they add no new information. Let an NPC reveal character through distinct intentions and decisions, not narration claiming unspoken thoughts.'
    ].join(' ')},{role:'user',content:
       '# GROUNDED ISSUES TO FIX ONLY\n'+JSON.stringify(issues)
       +'\n\n# CONTINUITY FACTS\n'+background
