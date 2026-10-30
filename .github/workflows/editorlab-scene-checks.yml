@@ -1,0 +1,27 @@
+name: Editor Lab scene momentum regression
+on:
+  push:
+    branches:
+      - fix/editorlab-scene-momentum-033
+    paths:
+      - risubard-updates/bard_editor_lab.js
+      - tests/editorlab-hybrid.test.mjs
+      - tests/editorlab-auto.test.mjs
+      - .github/workflows/editorlab-scene-checks.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  editorlab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Plugin syntax check
+        run: node --check risubard-updates/bard_editor_lab.js
+      - name: Existing editorial regression scenarios
+        run: node tests/editorlab-auto.test.mjs
+      - name: Hybrid and scene momentum regression scenarios
+        run: node tests/editorlab-hybrid.test.mjs
