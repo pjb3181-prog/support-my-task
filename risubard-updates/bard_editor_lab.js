@@ -1,7 +1,7 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.0
+//@version 0.3.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
 //@description Optional automatic selective Korean fiction editing for regular RisuBard chats; no host modifications.
 (async () => {
@@ -13,28 +13,56 @@
  const seen=new Set(),inflight=new Set(),initializedChats=new Set();
  const txt=x=>String(x??'');
  const esc=x=>txt(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
- const clean=s=>txt(s).replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi,'').replace(/<reasoning\b[^>]*>[\s\S]*?<\/reasoning>/gi,'').trim();
+ const clean=s=>{
+   let t=txt(s)
+     .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi,'')
+     .replace(/<reasoning\b[^>]*>[\s\S]*?<\/reasoning>/gi,'');
+   // Some providers expose a complete <Thoughts> prelude as plain response text.
+   // It is not story canon, dialogue or an instruction to the editor.
+   if(/^\s*<Thoughts\b/i.test(t)){
+     const header=t.match(/^\s*<Thoughts\b[^>]*>[\s\S]*?<\/Thoughts>\s*/i);
+     if(header)t=t.slice(header[0].length);
+   }
+   // Remove these exact tool/prose wrappers only when adjacent at the top.
+   t=t.replace(/^\s*#\s*Approved\s*\r?\n\s*##\s*Response\s*(?:\r?\n)+/i,'');
+   return t.trim();
+ };
  const sig=s=>(txt(s).match(/<\/?[A-Z][A-Z0-9_]*(?:\s+[^<>]*?)?\s*\/?\s*>|\[[^\]\n]{1,36}:[^\]\n]{1,120}\]/g)||[]).join('\n');
  const obj=s=>{const t=clean(s).replace(/^\s*```(?:json)?/i,'').replace(/```\s*$/,'').trim();try{return JSON.parse(t)}catch(_){const i=t.indexOf('{'),j=t.lastIndexOf('}');if(i<0||j<=i)throw Error('편집장 JSON 응답 오류');return JSON.parse(t.slice(i,j+1))}};
 
  const eligible=source=>{
-   const t=txt(source).trim();
+   const t=clean(source);
    if(t.length<240||t.length>conf.maxChars||(t.match(/[가-힣]/g)||[]).length<65)return false;
-   if(/<(?:think|reasoning|tool_call|function_call)\b/i.test(t))return false;
+   if(/<(?:think|reasoning|thoughts|tool_call|function_call)\b/i.test(t))return false;
    if(/^\s*[\[{][\s\S]+[\]}]\s*$/.test(t)&&t.includes('":'))return false;
    const lines=t.split('\n').filter(x=>x.trim());
    if(lines.length>5&&lines.filter(x=>/^\s*(?:\d+\.|[-*]\s|#{1,5}\s|\|.*\|)/.test(x)).length>lines.length*.6)return false;
    return true;
  };
+ function dialogueSignals(source){
+   const t=clean(source);
+   const turns=t.split(/\r?\n/).map(x=>x.trim())
+     .filter(x=>/^(?:["“「『])[\s\S]{1,650}(?:["”」』])$/.test(x))
+     .map(x=>x.slice(1,-1).replace(/[.…\s]+/g,' ').trim());
+   const low=turns.filter(x=>x.length<=16
+     && (/^(?:네|예|응|아|에|그래|그렇|맞|모르겠|뭐|왜|정말|진짜|그럼|그러면|그래서|아니면|두 번째|세 번째|첫 번째)/.test(x)
+       || (x.length<=10&&/[?？]$/.test(x)))).length;
+   const echo=turns.filter(x=>x.length<=18&&/[?？]$/.test(x)
+      && /^(?:뭐|왜|그래|그렇|그럼|그러면|그래서|정말|진짜|아니면|다음|두 번째|세 번째|처음|보통|그게|이게|둘 다)/.test(x)).length;
+   const repeatedMarkers=(t.match(/보통은|모르겠(?:어요|어|습니다)?|둘 다(?:요)?|만화(?:를)? 읽/g)||[]).length;
+   const stockGestures=(t.match(/입꼬리|눈동자|손가락|시선을 피했|고개를 끄덕였|울면서 웃었다|볼이 빨개|손이 떨/g)||[]).length;
+   const sentences=t.split(/[.!?。！？\n]+/).map(x=>x.trim()).filter(x=>x.length>16);
+   const exactRepeats=sentences.length-new Set(sentences).size;
+   const dialogueLoop=turns.length>=12&&(echo>=4||low>=7||repeatedMarkers>=8);
+   return {turns:turns.length,lowInformation:low,echoQuestions:echo,
+     repeatedMarkers,stockGestures,exactRepeats,dialogueLoop};
+ }
  const suspicious=source=>{
-   const t=txt(source),parts=t.split(/[.!?。！？\n]+/).map(x=>x.trim()).filter(x=>x.length>14);
-   const repeated=parts.length-new Set(parts).size;
-   const gestures=(t.match(/입꼬리|눈동자|손가락|시선을 피했|고개를 끄덕였|울면서 웃었다/g)||[]).length;
-   const echoes=(t.match(/그랬어\?|좋았어\?|왜\?|뭐라고\?|그런가\?/g)||[]).length;
-   return repeated>0||gestures>=5||echoes>=5;
+   const m=dialogueSignals(source);
+   return m.dialogueLoop||m.exactRepeats>=1||m.stockGestures>=5;
  };
  const verify=(original,rewrite)=>{
-   const a=txt(original),b=clean(rewrite);
+   const a=clean(original),b=clean(rewrite);
    if(!b||b.length<a.length*.64||b.length>a.length*1.45)return '문장 분량 변경 범위 초과';
    const tokens=t=>(t.match(/<[^<>]{1,120}>|\{\{[^{}\n]{1,120}\}\}|\[[A-Z][A-Z0-9 _:\-=.]{1,140}\]/gi)||[]).join('|');
    if(tokens(a)!==tokens(b))return '시스템 태그/상태 토큰 변경';
@@ -42,7 +70,11 @@
    if(stats(a)!==stats(b))return '상태창 내용 변경';
    const nums=t=>(t.match(/(?<![A-Za-z가-힣])\d+(?:\.\d+)?(?:%|kg|km|cm|초|분|시간|원)?/g)||[]).join('|');
    if(nums(a)!==nums(b))return '숫자/수치 변경';
-   if(/<(?:think|reasoning)\b/i.test(b))return '사고과정 출력';
+   if(/<(?:think|reasoning|thoughts)\b/i.test(b))return '사고과정 출력';
+   const oldDialogue=dialogueSignals(a),newDialogue=dialogueSignals(b);
+   if(oldDialogue.turns>=10&&newDialogue.turns>=8
+     && newDialogue.lowInformation>oldDialogue.lowInformation+3)
+     return '퇴고본에서 단순 문답이 크게 증가함';
    return '';
  };
  async function save(){await risuai.pluginStorage.setItem(STORE,conf)}
@@ -79,45 +111,63 @@
      +'\nPrevious messages are continuity FACTS, not prose examples.\n'+lines).slice(-3200);
  }
  async function pipeline(draft,background=''){
-   const source=txt(draft),original={original:source,revised:'',issues:[],reason:'원문 유지'};
+   const raw=txt(draft),source=clean(raw);
+   const original={original:raw,revised:'',issues:[],reason:'원문 유지'};
    if(!eligible(source))return {...original,reason:'짧은 응답·비서사·입력 길이 초과'};
-   if(conf.mode==='economy'&&!suspicious(source))return {...original,reason:'저비용 선별: 반복 징후 없음'};
+   const normalizedOnly=raw.trim()!==source&&!verify(raw,source)?source:'';
+   if(conf.mode==='economy'&&!suspicious(source))
+     return {...original,revised:normalizedOnly,reason:normalizedOnly?'출력 메타만 제거':'저비용 선별: 실질적 반복 징후 없음'};
+   const metrics=dialogueSignals(source);
    const diagnosis=await request([{role:'system',content:[
-     'You are a discerning editor of Korean character-driven fiction, NOT a coauthor. Identify only real actionable defects: echoed questions, mechanically mirrored replies, everyone speaking with the same cold cadence, repetitive emotional confirmations, stock gestures, translated-sounding prose and stalled immediate action.',
-     'Respect each character’s individual voice, habits, relationships, motivations, established lore and player decisions. An unusual habit or a quiet character is NOT automatically a flaw.',
-     'Return ONLY JSON: {"revise":boolean,"issues":[{"excerpt":string,"problem":string,"instruction":string}],"strengths":[string],"summary":string}. At most four issues. If the prose is good enough, revise=false. Do NOT rewrite yet.'
-   ].join(' ')},{role:'user',content:'# PREVIOUS FACTS (do not copy style)\n'+background+'\n\n# FINISHED FICTION\n'+source}]);
+     'You are a professional Korean-fiction dialogue and scene editor, NOT a coauthor. Judge the function of the dialogue, not merely its length.',
+     'Find actionable patterns: interview-like question/yes-answer/confirmation loops; short echoes that add no information; the NPC repeatedly saying I do not know or the same excuse; a protagonist reduced to a therapist or interviewer; everyone speaking with the same cool clipped voice; narration repeatedly diagnosing an emotion that action already shows; recycled body/gesture details; postponed scene objectives.',
+     'A sharp short line, repeated personal catchphrase, hesitation or quiet character is NOT automatically bad. Do not inflate word count, erase a character quirk, or make everyone clever, sarcastic or aggressive. Distinguish useful tension from stagnant repetition.',
+     'When there is a substantial problem grounded in the text, report the exact excerpt and a targeted editorial instruction. Respect established characterization, dialogue hierarchy, world canon, player agency and unresolved scene endings.',
+     'Return ONLY JSON: {"revise":boolean,"issues":[{"excerpt":string,"problem":string,"instruction":string}],"strengths":[string],"summary":string}. Up to four independent issues. If effective as written, revise=false.'
+   ].join(' ')},{role:'user',content:
+      '# HEURISTIC SIGNALS (not absolute judgments)\n'+JSON.stringify(metrics)
+      +'\n\n# PREVIOUS CONTINUITY FACTS (never imitate previous stylistic flaws)\n'+background
+      +'\n\n# CURRENT FINISHED FICTION TO EVALUATE\n'+source}]);
    const verdict=obj(diagnosis);
-   if(typeof verdict.revise!=='boolean'||!Array.isArray(verdict.issues))throw Error('편집장 진단 형식 오류');
+   if(!verdict||typeof verdict.revise!=='boolean'||!Array.isArray(verdict.issues))
+     throw Error('편집장 진단 형식 오류');
    const issues=verdict.issues.filter(x=>x&&typeof x.excerpt==='string'&&typeof x.problem==='string'&&typeof x.instruction==='string')
      .map(x=>({excerpt:x.excerpt.trim().slice(0,180),problem:x.problem.trim().slice(0,280),instruction:x.instruction.trim().slice(0,280)}))
      .filter(x=>x.problem&&x.instruction&&(!x.excerpt||source.includes(x.excerpt))).slice(0,4);
-   if(!verdict.revise||!issues.length)return {...original,issues,reason:'편집장: 수정 불필요'};
+   if(!verdict.revise||!issues.length)
+     return {...original,revised:normalizedOnly,issues,
+       reason:normalizedOnly?'편집장: 문체 수정 불필요 · 출력 메타만 제거':'편집장: 실질적 수정 불필요'};
    const revision=await request([{role:'system',content:[
-     'You are a surgical editor. Rewrite ONLY the verified defects. Output the ENTIRE revised Korean fiction only; no explanation, critique, JSON or fences.',
-     'Preserve named characters, distinct personalities and speech patterns, past events, relationships, world rules, player choices, immediate scene purpose and unresolved endings.',
-     'Preserve system messages, status displays, choice blocks, all tags and numerical values exactly. Do not add a new event or resolve a scene to make it sound polished.',
-     'Do not make everybody short, cool, cynical or emotionally flat. Vary genuine reactions while maintaining who each person is.'
-   ].join(' ')},{role:'user',content:'# VERIFIED ISSUES\n'+JSON.stringify(issues)+'\n\n# RECENT CANON\n'+background+'\n\n# ORIGINAL\n'+source}]);
-   const error=verify(source,revision);
-   if(error)return {...original,issues,reason:'퇴고본 거부: '+error};
-   if(revision===source)return {...original,issues,reason:'원본과 동일'};
-   return {original:source,revised:revision,issues,reason:'교정본 검증 통과'};
+     'You are a surgical Korean-fiction editor. Return the FULL revised fiction and nothing else. NO analysis, thoughts, Approved, Response, explanations, JSON, or fences.',
+     'Fix ONLY the grounded issues. Preserve exact character identities, distinct speech mannerisms, established facts, motives, relationships, narrative viewpoint, world rules, player utterances, chronology, imagery tags, system/status windows and numbers.',
+     'Remove redundant interrogation and echo exchanges where they perform the same function. A character can answer obliquely, offer a concrete preference, make a small choice, tease, object or redirect depending on personality. Preserve genuine uncertainty but do not repeat it through several turns. Make the NPC a participant rather than a questionnaire respondent.',
+     'Short dialogue is welcome when meaningful. Do NOT mechanically expand every line or shorten everyone into clipped cool replies. Do not add a newly resolved plot, new character, new consent or new event simply to sound dynamic. Use only natural, locally implied micro-actions for rhythm.',
+     'Reduce repeated narration of blushing, trembling, eyes, fingers or body hardware unless it conveys new information. Do not narrate as certain another character’s unspoken thoughts. Show through decisions and varied responses; keep the current scene goal intact.'
+   ].join(' ')},{role:'user',content:
+      '# GROUNDED ISSUES TO FIX ONLY\n'+JSON.stringify(issues)
+      +'\n\n# CONTINUITY FACTS\n'+background
+      +'\n\n# ORIGINAL FICTION\n'+source}]);
+   const error=verify(raw,revision);
+   if(error)return {...original,revised:normalizedOnly,issues,reason:'퇴고본 거부: '+error+(normalizedOnly?' · 메타만 제거':'')};
+   if(revision===source)
+     return {...original,revised:normalizedOnly,issues,reason:normalizedOnly?'출력 메타만 제거':'퇴고 원문과 동일'};
+   return {original:raw,revised:revision,issues,reason:'대화 기능·세계관 기초 검증 통과'};
  }
-
  const outputKey=(ci,ti,id,i,m)=>[ci,ti,id,i,txt(m?.chatId||m?.time),txt(m?.data).length,txt(m?.data).slice(0,80)].join('|');
  const remember=k=>{seen.add(k);if(seen.size>200)seen.delete(seen.values().next().value)};
  const same=(meta,live)=>meta&&meta.ci===live.ci&&meta.ti===live.ti&&meta.id===live.id;
  async function backup(meta,original,revised){
-   try{
-     const old=await risuai.pluginStorage.getItem(BACKUP_STORE);
-     const records=Array.isArray(old)?old:[];
-     records.unshift({ci:meta.ci,ti:meta.ti,id:meta.id,index:meta.index,messageId:meta.messageId,
-       original:original.slice(0,conf.maxChars),revised:revised.slice(0,conf.maxChars),at:Date.now()});
-     await risuai.pluginStorage.setItem(BACKUP_STORE,records.slice(0,5));
-   }catch(e){console.log('[EditorLab] backup write failed',e)}
+   if(original.length>200000||revised.length>200000)
+     throw Error('원문이 백업 용량 안전 한도를 초과하여 수정하지 않았어');
+   const old=await risuai.pluginStorage.getItem(BACKUP_STORE);
+   const records=Array.isArray(old)?old:[];
+   // Store the ENTIRE raw response, including any removed reasoning prelude.
+   // Truncating by the editor's input limit could make restoration impossible.
+   records.unshift({ci:meta.ci,ti:meta.ti,id:meta.id,index:meta.index,messageId:meta.messageId,
+     original,revised,at:Date.now()});
+   await risuai.pluginStorage.setItem(BACKUP_STORE,records.slice(0,5));
  }
- async function commit(meta,original,revised,recordBackup=true){
+ async function commit(meta,original,revised,recordBackup=true,knownRestore=false){
    const live=await current();
    if(!same(meta,live))throw Error('다른 채팅으로 바뀌어 적용하지 않았어');
    const messages=live.chat?.message;
@@ -125,11 +175,12 @@
    const m=messages[meta.index];
    if(!m||!['char','assistant'].includes(m.role)||txt(m.data)!==original)throw Error('원문이 변경되어 적용하지 않았어');
    if(meta.messageId&&txt(m.chatId||m.time)!==meta.messageId)throw Error('메시지 식별자 변경');
-   const fail=verify(original,revised);if(fail)throw Error('검증 실패 · '+fail);
+   if(!knownRestore){const fail=verify(original,revised);if(fail)throw Error('검증 실패 · '+fail);}
+   // Fail closed if safe storage fails: do not alter chat before backup succeeds.
+   if(recordBackup)await backup(meta,original,revised);
    const next=JSON.parse(JSON.stringify(live.chat));next.message[meta.index].data=revised;
    await risuai.setChatToIndex(meta.ci,meta.ti,next);
    remember(outputKey(meta.ci,meta.ti,meta.id,meta.index,next.message[meta.index]));
-   if(recordBackup)await backup(meta,original,revised);
  }
  async function run(){
    if(state.busy)return;
@@ -185,7 +236,7 @@
    const old=await risuai.pluginStorage.getItem(BACKUP_STORE);
    if(!Array.isArray(old)||!old.length)throw Error('복원할 원문 백업 없음');
    const last=old[0];
-   await commit(last,last.revised,last.original,false);
+   await commit(last,last.revised,last.original,false,true);
    old.shift();await risuai.pluginStorage.setItem(BACKUP_STORE,old);
    state.status='최근 퇴고를 원문으로 복원했어';
  }
@@ -199,7 +250,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.0</h2>
+  </style><main><h2>Bard Editor Lab v0.3.1</h2>
   <p class="muted">RisuBard 본체·프리셋 변경 없음 · 일반 채팅의 AI 메시지를 자동 검사하고 필요할 때만 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
@@ -229,7 +280,7 @@
     <section><h3>퇴고본 (미적용)</h3><textarea readonly>${esc(state.revised)}</textarea></section>
   </div>
   <h3>편집장 진단</h3><pre>${esc(state.issues.map((x,i)=>`${i+1}. ${x.problem} — ${x.instruction}`).join('\n')||'진단 기록 없음')}</pre>
-  <p class="muted">한 응답당 최대 2회 모델 호출. 자동 퇴고 실패·검증 실패 시 원문 유지. 최근 5건은 플러그인 저장소에 백업해.
+  <p class="muted">한 응답당 최대 2회 모델 호출. 사고과정/메타 출력은 본문과 분리해 검사해. 실패 시 원문 유지. 최근 5건의 원문 전체를 플러그인 저장소에 백업해.
   타임아웃은 대기를 중단하지만 모델 과금 취소를 보장하지 않아.</p></main>`;
   const el=id=>document.getElementById(id);
   el('auto').onclick=async()=>{conf.auto=!conf.auto;await save();state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';await render()};
