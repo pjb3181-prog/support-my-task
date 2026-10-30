@@ -1,16 +1,18 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.1
+//@version 0.3.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
-//@description Optional automatic selective Korean fiction editing for regular RisuBard chats; no host modifications.
+//@description Prompt-like automatic editorial guidance plus selective model-backed correction; no host patches.
 (async () => {
  const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups';
- const DEFAULT={model:'otherAx',mode:'selective',auto:false,watchStoryRunner:false,timeoutMs:90000,maxChars:9000};
+ const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,watchStoryRunner:false,timeoutMs:90000,maxChars:9000};
  let conf={...DEFAULT};
  let state={target:null,index:-1,original:'',revised:'',issues:[],status:'자동 퇴고 OFF',busy:false,lastAuto:'없음'};
  let uiOpen=false;let unloaded=false;let pollTimer=null;
  const seen=new Set(),inflight=new Set(),initializedChats=new Set();
+ const preSaveReviewed=new Map();
+ const INLINE_HINT_ID='[BARD_EDITOR_LAB_STYLE_V032]';
  const txt=x=>String(x??'');
  const esc=x=>txt(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
  const clean=s=>{
@@ -77,6 +79,62 @@
      return '퇴고본에서 단순 문답이 크게 증가함';
    return '';
  };
+
+ // This is transient model-input style guidance, not a change to any saved preset,
+ // lorebook, character card, world rule or user utterance.
+ const INLINE_GUIDANCE=INLINE_HINT_ID+'\n'
+   +'Editorial style guidance only; all pre-existing world/canon/character instructions and player choices remain authoritative.\n'
+   +'Avoid mechanical question -> echo -> confirmation loops, repeated admissions of uncertainty, and characters reduced to passive interview subjects.\n'
+   +'Preserve meaningful short dialogue, each character’s distinct voice and personal mannerisms. An NPC may choose, object, tease or redirect naturally without inventing new events.\n'
+   +'Avoid repeating stock gestures and explaining emotions already shown in action. Keep pacing and unresolved scene endings intact.\n'
+   +'Produce ONLY the story, never planning notes, <Thoughts>, # Approved or ## Response. This is not a new plot objective.';
+
+ function sourceFingerprint(value){
+   const valueText=clean(value),str=valueText.length+'|'+valueText;
+   let hash=2166136261;for(let i=0;i<str.length;i++)hash=Math.imul(hash^str.charCodeAt(i),16777619);
+   return (hash>>>0).toString(16)+':'+valueText.length;
+ }
+ function markPreSave(value){
+   const now=Date.now();
+   for(const [k,t] of preSaveReviewed)if(now-t>120000)preSaveReviewed.delete(k);
+   preSaveReviewed.set(sourceFingerprint(value),now);
+   while(preSaveReviewed.size>80)preSaveReviewed.delete(preSaveReviewed.keys().next().value);
+ }
+ function alreadyPreSaved(value){
+   const k=sourceFingerprint(value),at=preSaveReviewed.get(k);
+   return typeof at==='number' && Date.now()-at<120000;
+ }
+
+ async function injectStyleBeforeRequest(messages,type){
+   if(unloaded||!conf.auto||!conf.promptAssist||type!=='model'||!Array.isArray(messages))return messages;
+   // Only amend normal text-chat model prompts, not a structured task.
+   if(messages.length<2||!messages.some(x=>x?.role==='user' && typeof x.content==='string'))return messages;
+   if(messages.some(x=>typeof x?.content==='string' && x.content.includes(INLINE_HINT_ID)))return messages;
+   const amended=messages.map(message=>({...message}));
+   const index=amended.findIndex(x=>x?.role==='system' && typeof x.content==='string');
+   if(index>=0)amended[index].content+='\n\n'+INLINE_GUIDANCE;
+   else amended.unshift({role:'system',content:INLINE_GUIDANCE});
+   return amended;
+ }
+
+ async function reviseBeforeSave(response,type){
+   if(unloaded||!conf.auto||!conf.realEditor||type!=='model'||typeof response!=='string')return response;
+   if(alreadyPreSaved(response))return response;
+   try{
+     const result=await pipeline(response,'');
+     const final=result.revised||response;
+     // Even a "no changes" verdict was already reviewed, so the output
+     // listener must not charge for a second review after the host commits it.
+     markPreSave(response);markPreSave(final);
+     state.lastAuto='저장 전 편집 · '+result.reason;
+     return final;
+   }catch(error){
+     markPreSave(response);
+     state.lastAuto='저장 전 편집 실패 · 원문 유지 · '+txt(error?.message||error);
+     return response;
+   }
+ }
+
  async function save(){await risuai.pluginStorage.setItem(STORE,conf)}
  async function current(){const ci=await risuai.getCurrentCharacterIndex(),ti=await risuai.getCurrentChatIndex(),chat=await risuai.getChatFromIndex(ci,ti);return {ci,ti,chat,id:txt(chat?.id)}}
  async function load(){const c=await current(),messages=Array.isArray(c.chat?.message)?c.chat.message:[];let i=-1;for(let j=messages.length-1;j>=0;j--)if(['char','assistant'].includes(messages[j]?.role)){i=j;break}if(i<0)throw Error('AI 메시지가 없음');state={...state,target:{ci:c.ci,ti:c.ti,id:c.id},index:i,original:txt(messages[i].data),revised:'',issues:[],status:'원문 준비 완료'};}
@@ -250,7 +308,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.1</h2>
+  </style><main><h2>Bard Editor Lab v0.3.2</h2>
   <p class="muted">RisuBard 본체·프리셋 변경 없음 · 일반 채팅의 AI 메시지를 자동 검사하고 필요할 때만 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
