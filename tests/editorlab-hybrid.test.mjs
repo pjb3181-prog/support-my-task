@@ -181,7 +181,7 @@ await check('v0.3.3 prompt nudges causal scene change, not a forced incident',as
   const t=await create({diagnostic:'skip'});
   const r=await t.hooks.beforeRequest(messageSet,'model');
   assert.match(r[0].content,/Scene momentum:/);
-  assert.match(r[0].content,/a concrete fact, choice, boundary, relationship, task/);
+  assert.match(r[0].content,/one concrete fact, choice, boundary, relationship, task/);
   assert.match(r[0].content,/Do not force romance, sex/);
 });
 await check('momentum can be disabled without disabling other editorial functions',async()=>{
