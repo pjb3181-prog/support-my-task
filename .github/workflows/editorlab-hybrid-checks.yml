@@ -6,6 +6,7 @@ on:
     paths:
       - risubard-updates/bard_editor_lab.js
       - tests/editorlab-hybrid.test.mjs
+      - tests/editorlab-auto.test.mjs
       - .github/workflows/editorlab-hybrid-checks.yml
   workflow_dispatch:
 permissions:
@@ -21,4 +22,6 @@ jobs:
       - name: JavaScript syntax validation
         run: node --check risubard-updates/bard_editor_lab.js
       - name: Hybrid generation tests
-        run: node tests/editorlab-hybrid.test.mjs
+        run: |
+          node tests/editorlab-auto.test.mjs
+          node tests/editorlab-hybrid.test.mjs
