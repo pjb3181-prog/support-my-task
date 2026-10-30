@@ -203,9 +203,9 @@ await check('long stagnant scene triggers grounded NPC beat even if critic forge
   const after=await t.hooks.afterRequest(stagnant,'model');
   assert.equal(after,progressed);
   assert.equal(t.calls(),2);
-  assert.match(t.modelArgs[0].messages[0].content,/scene movement/);
-  assert.match(t.modelArgs[1].messages[0].content,/ONE small, credible, NPC-initiated/);
-  assert.match(t.modelArgs[1].messages[1].content,/장면 시작과 끝에 실질적인 상황 변화/);
+  assert.match(t.modelArgs[0].messages[0].content,/scene beats|scene editor/);
+  assert.match(t.modelArgs[1].messages[0].content,/ONE modest NPC-initiated/);
+  assert.match(t.modelArgs[1].messages[1].content,/장면 시작과 끝에 상황 변화/);
 });
 await check('purposeful quiet scene stays quiet rather than manufacturing plot',async()=>{
   const quiet=story.repeat(3);
