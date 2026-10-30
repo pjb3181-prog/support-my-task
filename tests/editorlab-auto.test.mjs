@@ -125,10 +125,20 @@ async function scenario({enabled=true,reply='revise',stream=false,replace=revise
   assert.equal(t.current(),raw);
 }
 {
-  const t=await scenario({mode:'economy'});
+  const natural=[
+    '하은은 도서관 창가에 걸린 작은 안내문을 발견하고 먼저 무슨 전시인지 물었다.',
+    '직원이 전시의 마지막 날이라고 설명하자 그녀는 시간을 확인하고 메모를 꺼냈다.',
+    '그날 예정된 회의는 늦은 오후에 시작하므로 관람할 여유가 충분하다고 판단했다.',
+    '옆에 있던 친구는 구경만 하지 말고 포스터 사진도 남기자며 웃었다.',
+    '하은은 오래된 마을 지도 앞에 멈춰 서서 낯익은 거리 이름을 읽기 시작했다.',
+    '거리는 지금과 달리 넓은 광장이었고 그 옆에 작은 시장이 있었다고 적혀 있었다.',
+    '그녀는 돌아가면 조부모님께 이 장소를 기억하시는지 물어봐야겠다고 생각했다.'
+  ].join(' ');
+  assert.ok(natural.length>240);
+  const t=await scenario({mode:'economy',body:natural});
   await t.fire();
-  assert.equal(t.calls(),0); // A plain narrative without real repetitive-dialogue evidence is not forced into rewriting.
-  assert.equal(t.current(),story);
+  assert.equal(t.calls(),0); // No forced rewriting merely because natural prose contains short clauses.
+  assert.equal(t.current(),natural);
 }
 {
   // Repeated two-word replies and interrogative echoes are a defect even without exact sentence repeats.
