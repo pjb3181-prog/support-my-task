@@ -1,6 +1,18 @@
-# Bard Editor Lab v0.3.3 — inline automatic editor + scene momentum
+# Bard Editor Lab v0.3.4 — visible automatic editing history
 
 A standalone RisuBard plugin (Plugin API 3.0) combining **prompt-like style guidance** with **real LLM-backed selective editorial review**. No RisuBard host patch or user preset rewrite.
+
+## v0.3.4 — automatic editing results are now visible
+
+- Corrects the misleading default status: v0.3.3 could display **자동 퇴고 OFF** even while the actual toggle was ON. Current state is now derived from saved configuration.
+- The **최근 자동 퇴고 결과** view automatically shows the most recent reviewed story, revised output (if any), critic issues, reason and approximate extra model-call count.
+- Stores the five most recent automatic activity previews in local plugin storage. They can be revisited after closing the panel or reloading the app; older v0.3.3 results cannot be reconstructed.
+- Distinguishes `pending` (pre-save response returned to host), `applied` (a committed message was observed or streaming post-save replacement succeeded), `unchanged` (the critic chose to keep source), `skipped` (too short/non-narrative or prompt-only mode), and `error` (failure; original preserved).
+- **수동 검수 화면** remains a separate tab. Only manual mode can use **수동 퇴고본 적용**. The auto preview is read-only and will not double-apply a revised response.
+- The visible record may include story text; recent activity is stored in the plugin's local RisuBard storage, not uploaded separately. Only the latest five auto-preview records are kept.
+- New records start after updating and generating a new response with **자동 퇴고 ON**. The v0.3.3 log label alone did not retain full before/after bodies.
+- Passed 10 isolated local mock tests for visibility, backup-state preservation, streaming/post-save handling, persistence, failure, and OFF behavior; [34 original generation regression checks](https://github.com/pjb3181-prog/support-my-task/actions/runs/41053020348) and syntax checks also passed.
+- RisuBard core, Mutation, Story Runner and the user prompt presets are unchanged. Actual model/provider integration on a live device has not yet been verified.
 
 ## v0.3.3 — scene momentum instead of repeated static scenes
 
