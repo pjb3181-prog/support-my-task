@@ -267,7 +267,16 @@
    if(unloaded||!conf.auto||!conf.realEditor||type!=='model'||typeof response!=='string')return response;
    if(alreadyPreSaved(response))return response;
    try{
-     const result=await pipeline(response,'');
+     let reference={};
+     try{
+       const live=await current();
+       const nextIndex=Array.isArray(live.chat?.message)?live.chat.message.length:0;
+       reference=await editorialReference(live.chat,nextIndex,null);
+     }catch(error){
+       console.log('[EditorLab] first-message reference unavailable for pre-save',error);
+       reference=await editorialReference(null,0,null).catch(()=>({}));
+     }
+     const result=await pipeline(response,reference);
      const final=result.revised||response;
      const outcome=!eligible(response)?'skipped':result.revised?'pending':'unchanged';
      const id=await recordAutomatic({phase:'저장 전 편집',outcome,reason:result.reason,
@@ -319,64 +328,85 @@
  }
  async function pipeline(draft,background=''){
    const raw=txt(draft),source=clean(raw);
-   const original={original:raw,revised:'',issues:[],reason:'원문 유지',calls:0};
-   if(!eligible(source))return {...original,reason:'짧은 응답·비서사·입력 길이 초과'};
+   const ref=normalizedReference(background);
+   const opening=conf.voiceGuard?ref.opening:'';
+   const drift=voiceDriftSignals(source,opening,ref.name);
+   const base={original:raw,revised:'',issues:[],reason:'원문 유지',calls:0};
+   if(!eligible(source))return {...base,reason:'짧은 응답·비서사·입력 길이 초과'};
    const normalizedOnly=raw.trim()!==source&&!verify(raw,source)?source:'';
-   if(conf.mode==='economy'&&!suspicious(source))
-     return {...original,revised:normalizedOnly,reason:normalizedOnly?'출력 메타만 제거':'저비용 선별: 실질적 반복 징후 없음'};
+   if(conf.mode==='economy'&&!suspicious(source)&&!drift.severe)
+     return {...base,revised:normalizedOnly,reason:normalizedOnly?'출력 메타만 제거':'저비용 선별: 실질적 반복 징후 없음'};
    const metrics=dialogueSignals(source);
    const currentMomentum=Boolean(conf.momentum)&&source.length>=800;
-   const diagnosis=await request([{role:'system',content:[
-     'You are a professional Korean-fiction dialogue and scene editor, NOT a coauthor. Judge the function of the dialogue, not merely its length.',
-     'Find actionable patterns: interview-like question/yes-answer/confirmation loops; short echoes that add no information; the NPC repeatedly saying I do not know or the same excuse; a protagonist reduced to a therapist or interviewer; everyone speaking with the same cool clipped voice; narration repeatedly diagnosing an emotion that action already shows; recycled body/gesture details; postponed scene objectives.',
-     'A sharp short line, repeated personal catchphrase, hesitation or quiet character is NOT automatically bad. Do not inflate word count, erase a character quirk, or make everyone clever, sarcastic or aggressive. Distinguish useful tension from stagnant repetition.',
-     'Evaluate scene movement: compare the START and END, not just physical activities. Did a meaningful relationship dynamic, fact, boundary, personal decision, practical goal, or next-step change? Repeated compliments, blushes, offers declined, and a visitor leaving as they arrived may constitute stasis.',
-     'Progress can be modest and grounded in an existing thread (for example an NPC makes a specific practical request, sets a boundary, proposes a next step, or changes their earlier decision). Do NOT require sex, sudden intrusion, spectacular conflict, new cast members, or arbitrary twists. Respect intentional rest and transitions.',
-     'If the scene is long but nothing actually changed and the quietness is not purposeful, mark revise=true and include ONE concrete stasis issue using an EXACT excerpt from the draft. Clearly explain a plausible NPC-initiated causal beat without taking control of the player character.',
-     'When there is a substantial issue grounded in the text, report the exact excerpt and a targeted editorial instruction. Respect established characterization, dialogue hierarchy, world canon, player agency and unresolved scene endings.',
-     'Return ONLY JSON: {"revise":boolean,"sceneProgress":{"material":boolean,"evidence":string,"intentionalStillness":boolean},"issues":[{"excerpt":string,"problem":string,"instruction":string}],"strengths":[string],"summary":string}. Up to four issues. If effective or intentionally quiet as written, revise=false.'
-   ].join(' ')},{role:'user',content:
-      '# HEURISTIC SIGNALS (not absolute judgments)\n'+JSON.stringify(metrics)
-      +'\n# ASSESS_SCENE_MOMENTUM\n'+(currentMomentum?'YES, scene must earn a modest material change unless intentionally still':'NO, preserve the current progress; assess only dialogue and style')
-      +'\n\n# PREVIOUS CONTINUITY FACTS (never imitate previous stylistic flaws)\n'+background
-      +'\n\n# CURRENT FINISHED FICTION TO EVALUATE\n'+source}]);
-   const verdict=obj(diagnosis);
+   const referenceText=anchorPrompt(ref);
+   const diagnosticSystem=[
+     'You are a professional Korean-fiction dialogue, characterization and scene editor, NOT a coauthor. Evaluate dialogue FUNCTION, individuality and stable temperament, not line length.',
+     'Watch for repeated question/echo/confirmation patterns, identical hesitations or apologies, a passive NPC offering no independent perspective, and non-advancing scene beats.',
+     'When an opening reference exists, compare the stable persona, motivation, unique speech and concrete observations against the draft. Later confidence or intimacy can be character development. SMS is allowed to be short. But repeated one-word filler messages with no new information can constitute severe erosion even in SMS.',
+     'Do not force the original scene, initial shyness, viewpoint, dialogue length, or chronology back into the current scene. The reference is read-only evidence, not a writing template.',
+     'A quiet or unusual character and an intentional pause are not errors. One purposeful decision or meaningful boundary can advance a scene without romance, sex, forced drama or an invented crisis.',
+     'Ground every reported problem in an EXACT excerpt from CURRENT draft. Return ONLY JSON {"revise":boolean,"characterFidelity":{"status":"faithful|degrading|developing|insufficient_reference","evidence":string,"justification":string},"sceneProgress":{"material":boolean,"evidence":string,"intentionalStillness":boolean},"issues":[{"excerpt":string,"problem":string,"instruction":string}],"strengths":[string],"summary":string}. At most four issues.'
+   ].join(' ');
+   const diagnosticUser='# HEURISTIC SIGNALS (NOT VERDICTS)\n'+JSON.stringify(metrics)
+     +'\n# ORIGINAL-VOICE DRIFT MEASURES (NOT VERDICTS)\n'+JSON.stringify(drift)
+     +'\n# SCENE MOMENTUM\n'+(currentMomentum?'Evaluate material change unless intentionally quiet':'Short scene: do not force progress')
+     +'\n\n'+(referenceText||'# OPENING VOICE REFERENCE NOT AVAILABLE')
+     +'\n\n# RECENT STORY FACTS (continuity, do not imitate prose flaws)\n'+ref.recent
+     +'\n\n# FINISHED DRAFT TO REVIEW\n'+source;
+   const diagnostic=await request([{role:'system',content:diagnosticSystem},{role:'user',content:diagnosticUser}]);
+   const verdict=obj(diagnostic);
    if(!verdict||typeof verdict.revise!=='boolean'||!Array.isArray(verdict.issues))
      throw Error('편집장 진단 형식 오류');
-   // Treat semantic progress assessment as a signal, never as an unconditional
-   // instruction to fabricate events. Legacy critic JSON without this field
-   // remains supported.
    const momentumGap=currentMomentum&&verdict.sceneProgress?.material===false
      &&verdict.sceneProgress?.intentionalStillness!==true;
-   const issues=verdict.issues.filter(x=>x&&typeof x.excerpt==='string'&&typeof x.problem==='string'&&typeof x.instruction==='string')
-     .map(x=>({excerpt:x.excerpt.trim().slice(0,180),problem:x.problem.trim().slice(0,280),instruction:x.instruction.trim().slice(0,280)}))
+   const issues=verdict.issues.filter(x=>x&&typeof x.excerpt==='string'
+       &&typeof x.problem==='string'&&typeof x.instruction==='string')
+     .map(x=>({excerpt:x.excerpt.trim().slice(0,180),problem:x.problem.trim().slice(0,280),
+       instruction:x.instruction.trim().slice(0,350)}))
      .filter(x=>x.problem&&x.instruction&&(!x.excerpt||source.includes(x.excerpt))).slice(0,4);
-   if(momentumGap&&!issues.length){
-     const excerpt=source.slice(-Math.min(125,source.length)).trim();
-     issues.push({excerpt,
-       problem:'장면 시작과 끝에 실질적인 상황 변화가 없어서 방문·대화가 제자리걸음 함',
-       instruction:'기존 대화에서 이미 나온 요청·거절·관심사 중 하나를 활용해 NPC가 작은 선택, 분명한 경계, 구체적인 다음 단계 또는 새로운 행동을 만들도록 최소한으로 교정. 플레이어의 선택이나 행동을 새로 작성하지 말 것.'});
+   // An extreme objective decline must not silently pass just because the
+   // critic model answered revise=false. This is a risk signal, not a guarantee.
+   if(conf.voiceGuard&&drift.severe&&!issues.some(x=>/말투|단편|대사|문답|반복|캐릭터|개성/.test(x.problem))){
+     const repeated=namedTurns(source).find(x=>x.speaker===ref.name&&fillerSpeech(x.text));
+     issues.unshift({excerpt:repeated?.text||drift.repeatedExamples[0]?.phrase||'',
+       problem:'초기 캐릭터 표현력에 비해 정보 없는 단편 반응과 동일한 말버릇이 과도하게 반복되어 캐릭터성이 희미해짐',
+       instruction:'독특한 관찰·의견·목적·선택을 현재 관계 변화에 맞게 회복. SMS는 짧아도 되지만 반복되는 빈 문자를 줄일 것. 첫 메시지 장면이나 초기의 수줍음으로 되돌리지는 말 것.'});
+     issues.splice(4);
    }
-   if((!verdict.revise&&!momentumGap)||!issues.length)
-     return {...original,revised:normalizedOnly,issues,calls:1,
-       reason:normalizedOnly?'편집장: 문체 수정 불필요 · 출력 메타만 제거':'편집장: 유의미한 퇴고 불필요'};
-   const revision=await request([{role:'system',content:[
-     'You are a surgical Korean-fiction editor. Return the FULL revised fiction and nothing else. NO analysis, thoughts, Approved, Response, explanations, JSON, or fences.',
-     'Fix ONLY the grounded issues. Preserve exact character identities, distinct speech mannerisms, established facts, motives, relationships, narrative viewpoint, world rules, player utterances, chronology, imagery tags, system/status windows and numbers.',
-     'Remove redundant interrogation and echo exchanges where they perform the same function. A character can answer obliquely, offer a concrete preference, make a small choice, tease, object or redirect depending on personality. Preserve genuine uncertainty but do not repeat it through several turns. Make the NPC a participant rather than a questionnaire respondent.',
-     'Short dialogue is welcome when meaningful. Never pad dialogue or turn the entire cast into cool clipped speakers. Keep the established scene and past facts intact.',
-     'If a grounded scene-stasis issue was diagnosed, you MAY add ONE small, credible, NPC-initiated consequential choice, request, boundary or next step rooted in facts ALREADY PRESENT in the text. Give it a clear result or a concrete unresolved commitment. You may replace repetitive lines/beats to make room; this is not permission to create a new major plot arc.',
-     'Do not invent a spouse confrontation, sudden stranger, crisis, romantic/sexual escalation or coercion as a shortcut. Do not perform new actions, decide emotions, accept requests or give consent on behalf of the player character. Do not contradict established canon or change locations or timeline gratuitously.',
-     'Reduce repeated narration of embarrassment, glances, gestures and body/clothing details when they add no new information. Let an NPC reveal character through distinct intentions and decisions, not narration claiming unspoken thoughts.'
-   ].join(' ')},{role:'user',content:
-      '# GROUNDED ISSUES TO FIX ONLY\n'+JSON.stringify(issues)
-      +'\n\n# CONTINUITY FACTS\n'+background
-      +'\n\n# ORIGINAL FICTION\n'+source}]);
-   const error=verify(raw,revision);
-   if(error)return {...original,revised:normalizedOnly,issues,calls:2,reason:'퇴고본 거부: '+error+(normalizedOnly?' · 메타만 제거':'')};
-   if(revision===source)
-     return {...original,revised:normalizedOnly,issues,calls:2,reason:normalizedOnly?'출력 메타만 제거':'퇴고 원문과 동일'};
-   return {original:raw,revised:revision,issues,calls:2,reason:'대화 기능·세계관 기초 검증 통과'};
+   if(momentumGap&&!issues.length){
+     issues.push({excerpt:source.slice(-Math.min(125,source.length)).trim(),
+       problem:'장면 시작과 끝에 상황 변화가 없어 방문·대화가 제자리걸음 함',
+       instruction:'이미 언급된 요청·거절·관심사 중 하나를 활용해 NPC의 작은 선택, 경계나 구체적인 다음 행동을 만들되 플레이어의 대사를 새로 쓰지 말 것.'});
+   }
+   const shouldRevise=verdict.revise||momentumGap||(conf.voiceGuard&&drift.severe);
+   if(!shouldRevise||!issues.length)
+     return {...base,revised:normalizedOnly,issues,calls:1,
+       reason:normalizedOnly?'수정 불필요 · 출력 메타만 제거':'편집장 진단: 실질적 수정 불필요'};
+   const revisionSystem=[
+     'You are a surgical Korean-fiction editor. Return the FULL revised fiction only, not notes, JSON or analysis.',
+     'Fix ONLY grounded issues. Preserve events, chronology, established voices, canon, user-controlled dialogue, character motivations, relationships, choices, locations, exact status windows, image tags and numerical values.',
+     'Where flagged for voice erosion, recover individuality through concrete character-specific observations, reasons, humor, goals or boundaries. Replace or combine repeated empty fragments. Keep brief SMS when meaningful and do not increase word count mechanically.',
+     'Reference the FIRST MESSAGE only for enduring personality and speaking texture. Do not copy its text or revert developments, emotions, relationships, viewpoint or temporal setting.',
+     'If scene stagnation is grounded, permit only ONE modest NPC-initiated, causally supported beat from already established threads. Do not invent a new major plot, romantic/sexual escalation, spouse confrontation or player choices.',
+     'Never narrate unspoken thoughts of others as certain. Reduce repeated blushing, eyes, fingers and body details when they add nothing. Retain the open ending.'
+   ].join(' ');
+   const revision=await request([{role:'system',content:revisionSystem},{
+     role:'user',content:'# GROUNDED ISSUES\n'+JSON.stringify(issues)
+       +'\n\n'+(referenceText||'# FIRST MESSAGE REFERENCE UNAVAILABLE')
+       +'\n\n# RECENT CONTINUITY\n'+ref.recent+'\n\n# ORIGINAL DRAFT\n'+source
+   }]);
+   const error=verify(raw,revision,ref);
+   if(error)return {...base,revised:normalizedOnly,issues,calls:2,reason:'퇴고본 보류: '+error};
+   const afterDrift=voiceDriftSignals(revision,opening,ref.name);
+   const unresolved=drift.severe&&afterDrift.severe
+     &&afterDrift.lowInformation>=Math.max(5,drift.lowInformation-1)
+     &&afterDrift.repeatedFragments>=Math.max(3,drift.repeatedFragments-1);
+   if(unresolved)return {...base,revised:normalizedOnly,issues,calls:2,
+     reason:'퇴고본 보류: 초기 캐릭터성 대비 반복 단편 대사가 충분히 개선되지 않음'};
+   if(revision===source)return {...base,revised:normalizedOnly,issues,calls:2,
+     reason:drift.severe?'퇴고 미반영: 반복 단편 대사가 여전히 남음':'퇴고 원문과 동일'};
+   return {original:raw,revised:revision,issues,calls:2,
+     reason:drift.severe?'캐릭터성 붕괴 신호 감지 · 교정본 구조 검증 통과':'퇴고본 구조 검증 통과 (실제 문학적 품질은 별도 검토 필요)'};
  }
  const outputKey=(ci,ti,id,i,m)=>[ci,ti,id,i,txt(m?.chatId||m?.time),txt(m?.data).length,txt(m?.data).slice(0,80)].join('|');
  const remember=k=>{seen.add(k);if(seen.size>200)seen.delete(seen.values().next().value)};
@@ -417,7 +447,8 @@
      const message=now.chat?.message?.[state.index];
      if(!message||txt(message.data)!==state.original)throw Error('원본 메시지가 달라졌어');
      state.target={...state.target,index:state.index,messageId:txt(message.chatId||message.time)};
-     const result=await pipeline(state.original,context(now.chat,state.index,{}));
+     const reference=await editorialReference(now.chat,state.index,null);
+     const result=await pipeline(state.original,reference);
      state.issues=result.issues;state.revised=result.revised;state.status=result.reason;
    }catch(e){state.revised='';state.status='원문 유지 · '+txt(e.message||e)}
    finally{state.busy=false;if(uiOpen)await render()}
@@ -445,7 +476,8 @@
        await recordAutomatic({phase:sourceLabel,outcome:'skipped',reason:'짧은 응답·비서사·입력 길이 초과',original,calls:0});
        return;
      }
-     const result=await pipeline(original,context(arg.chat,i,arg.char||{}));
+     const reference=await editorialReference(arg.chat,i,arg.char||{});
+     const result=await pipeline(original,reference);
      if(result.revised){
        await commit({ci,ti,id,index:i,messageId:txt(m.chatId||m.time)},original,result.revised);
        await recordAutomatic({phase:sourceLabel,outcome:'applied',reason:'채팅에 퇴고본 반영 · '+result.reason,
