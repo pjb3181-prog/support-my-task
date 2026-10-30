@@ -257,7 +257,17 @@
    if(messages.some(x=>typeof x?.content==='string' && x.content.includes(INLINE_HINT_ID)))return messages;
    const amended=messages.map(message=>({...message}));
    const index=amended.findIndex(x=>x?.role==='system' && typeof x.content==='string');
-   const guidance=INLINE_GUIDANCE+(conf.momentum?MOMENTUM_GUIDANCE:'');
+   let voiceHint='';
+   if(conf.voiceGuard&&typeof risuai.getCharacter==='function'){
+     try{
+       const currentChar=await risuai.getCharacter();
+       const lines=quoteLines(currentChar?.firstMessage||'').slice(0,2);
+       const sample=lines.join(' / ').slice(0,420);
+       if(sample)voiceHint='\nRead-only opening speech reference for '+txt(currentChar?.name).slice(0,60)
+         +': '+sample+'\nPreserve enduring individuality only. Never copy this dialogue or force the character to remain shy, stuttering or unchanged after development.';
+     }catch(error){console.log('[EditorLab] prompt reference unavailable',error)}
+   }
+   const guidance=INLINE_GUIDANCE+(conf.momentum?MOMENTUM_GUIDANCE:'')+voiceHint;
    if(index>=0)amended[index].content+='\n\n'+guidance;
    else amended.unshift({role:'system',content:guidance});
    return amended;
@@ -543,8 +553,9 @@
     <label><input type="checkbox" id="promptassist" ${conf.promptAssist?'checked':''}/> 생성 전 프롬프트에 편집 원칙 추가 (추가 모델 호출 없음)</label>
     <label><input type="checkbox" id="realeditor" ${conf.realEditor?'checked':''}/> 생성 후 편집장 모델로 선택적 검수·퇴고 (모델 호출 비용 발생)</label>
     <label><input type="checkbox" id="momentum" ${conf.momentum?'checked':''}/> 장면 정체 감지·자연스러운 진전 유도 (강제 사건 없음)</label>
+    <label><input type="checkbox" id="voiceguard" ${conf.voiceGuard?'checked':''}/> 첫 메시지 캐릭터성 기준 유지 · 단편 대사 붕괴 감지 (첫 메시지 읽기 전용)</label>
   </div>
-  <p class="muted">장면 정체 방지는 대화를 길게 만드는 게 아니라, NPC의 결정·경계·구체적 행동 등 인과관계가 남는 작은 변화를 유도해. 조용한 휴식 장면은 예외야.</p>
+  <p class="muted">첫 메시지는 수정하지 않고 캐릭터의 고유 말투만 참고해. 문자 대화의 짧은 문장은 허용하되 정보 없는 반복 응답은 감지해. 장면 정체 방지도 무리한 사건을 요구하지 않아.</p>
   <p class="muted">일반 비스트리밍 응답은 저장 전 교정. 스트리밍은 원문 표시가 끝난 뒤 교체될 수 있어. 기존 사용자 설정의 자동 OFF는 유지돼.</p>
   <div class="top">
     <label><input id="srwatch" type="checkbox" ${conf.watchStoryRunner?'checked':''}/> Story Runner 직접 생성도 감시 (수동 삽입 포함 가능)</label>
@@ -582,6 +593,7 @@
   el('promptassist').onchange=async e=>{conf.promptAssist=e.target.checked;await save()};
   el('realeditor').onchange=async e=>{conf.realEditor=e.target.checked;await save()};
   el('momentum').onchange=async e=>{conf.momentum=e.target.checked;await save()};
+  el('voiceguard').onchange=async e=>{conf.voiceGuard=e.target.checked;await save()};
   el('model').onchange=async e=>{conf.model=e.target.value;await save()};
   el('mode').onchange=async e=>{conf.mode=e.target.value;await save()};
   el('max').onchange=async e=>{conf.maxChars=Number(e.target.value);await save()};
