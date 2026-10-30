@@ -157,15 +157,17 @@
  const remember=k=>{seen.add(k);if(seen.size>200)seen.delete(seen.values().next().value)};
  const same=(meta,live)=>meta&&meta.ci===live.ci&&meta.ti===live.ti&&meta.id===live.id;
  async function backup(meta,original,revised){
-   try{
-     const old=await risuai.pluginStorage.getItem(BACKUP_STORE);
-     const records=Array.isArray(old)?old:[];
-     records.unshift({ci:meta.ci,ti:meta.ti,id:meta.id,index:meta.index,messageId:meta.messageId,
-       original:original.slice(0,conf.maxChars),revised:revised.slice(0,conf.maxChars),at:Date.now()});
-     await risuai.pluginStorage.setItem(BACKUP_STORE,records.slice(0,5));
-   }catch(e){console.log('[EditorLab] backup write failed',e)}
+   if(original.length>200000||revised.length>200000)
+     throw Error('원문이 백업 용량 안전 한도를 초과하여 수정하지 않았어');
+   const old=await risuai.pluginStorage.getItem(BACKUP_STORE);
+   const records=Array.isArray(old)?old:[];
+   // Store the ENTIRE raw response, including any removed reasoning prelude.
+   // Truncating by the editor's input limit could make restoration impossible.
+   records.unshift({ci:meta.ci,ti:meta.ti,id:meta.id,index:meta.index,messageId:meta.messageId,
+     original,revised,at:Date.now()});
+   await risuai.pluginStorage.setItem(BACKUP_STORE,records.slice(0,5));
  }
- async function commit(meta,original,revised,recordBackup=true){
+ async function commit(meta,original,revised,recordBackup=true,knownRestore=false){
    const live=await current();
    if(!same(meta,live))throw Error('다른 채팅으로 바뀌어 적용하지 않았어');
    const messages=live.chat?.message;
@@ -173,11 +175,12 @@
    const m=messages[meta.index];
    if(!m||!['char','assistant'].includes(m.role)||txt(m.data)!==original)throw Error('원문이 변경되어 적용하지 않았어');
    if(meta.messageId&&txt(m.chatId||m.time)!==meta.messageId)throw Error('메시지 식별자 변경');
-   const fail=verify(original,revised);if(fail)throw Error('검증 실패 · '+fail);
+   if(!knownRestore){const fail=verify(original,revised);if(fail)throw Error('검증 실패 · '+fail);}
+   // Fail closed if safe storage fails: do not alter chat before backup succeeds.
+   if(recordBackup)await backup(meta,original,revised);
    const next=JSON.parse(JSON.stringify(live.chat));next.message[meta.index].data=revised;
    await risuai.setChatToIndex(meta.ci,meta.ti,next);
    remember(outputKey(meta.ci,meta.ti,meta.id,meta.index,next.message[meta.index]));
-   if(recordBackup)await backup(meta,original,revised);
  }
  async function run(){
    if(state.busy)return;
@@ -233,7 +236,7 @@
    const old=await risuai.pluginStorage.getItem(BACKUP_STORE);
    if(!Array.isArray(old)||!old.length)throw Error('복원할 원문 백업 없음');
    const last=old[0];
-   await commit(last,last.revised,last.original,false);
+   await commit(last,last.revised,last.original,false,true);
    old.shift();await risuai.pluginStorage.setItem(BACKUP_STORE,old);
    state.status='최근 퇴고를 원문으로 복원했어';
  }
@@ -277,7 +280,7 @@
     <section><h3>퇴고본 (미적용)</h3><textarea readonly>${esc(state.revised)}</textarea></section>
   </div>
   <h3>편집장 진단</h3><pre>${esc(state.issues.map((x,i)=>`${i+1}. ${x.problem} — ${x.instruction}`).join('\n')||'진단 기록 없음')}</pre>
-  <p class="muted">한 응답당 최대 2회 모델 호출. 자동 퇴고 실패·검증 실패 시 원문 유지. 최근 5건은 플러그인 저장소에 백업해.
+  <p class="muted">한 응답당 최대 2회 모델 호출. 사고과정/메타 출력은 본문과 분리해 검사해. 실패 시 원문 유지. 최근 5건의 원문 전체를 플러그인 저장소에 백업해.
   타임아웃은 대기를 중단하지만 모델 과금 취소를 보장하지 않아.</p></main>`;
   const el=id=>document.getElementById(id);
   el('auto').onclick=async()=>{conf.auto=!conf.auto;await save();state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';await render()};
