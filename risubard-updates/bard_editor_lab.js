@@ -1,7 +1,7 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.0
+//@version 0.3.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
 //@description Optional automatic selective Korean fiction editing for regular RisuBard chats; no host modifications.
 (async () => {
@@ -13,28 +13,56 @@
  const seen=new Set(),inflight=new Set(),initializedChats=new Set();
  const txt=x=>String(x??'');
  const esc=x=>txt(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
- const clean=s=>txt(s).replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi,'').replace(/<reasoning\b[^>]*>[\s\S]*?<\/reasoning>/gi,'').trim();
+ const clean=s=>{
+   let t=txt(s)
+     .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi,'')
+     .replace(/<reasoning\b[^>]*>[\s\S]*?<\/reasoning>/gi,'');
+   // Some providers expose a complete <Thoughts> prelude as plain response text.
+   // It is not story canon, dialogue or an instruction to the editor.
+   if(/^\s*<Thoughts\b/i.test(t)){
+     const header=t.match(/^\s*<Thoughts\b[^>]*>[\s\S]*?<\/Thoughts>\s*/i);
+     if(header)t=t.slice(header[0].length);
+   }
+   // Remove these exact tool/prose wrappers only when adjacent at the top.
+   t=t.replace(/^\s*#\s*Approved\s*\r?\n\s*##\s*Response\s*(?:\r?\n)+/i,'');
+   return t.trim();
+ };
  const sig=s=>(txt(s).match(/<\/?[A-Z][A-Z0-9_]*(?:\s+[^<>]*?)?\s*\/?\s*>|\[[^\]\n]{1,36}:[^\]\n]{1,120}\]/g)||[]).join('\n');
  const obj=s=>{const t=clean(s).replace(/^\s*```(?:json)?/i,'').replace(/```\s*$/,'').trim();try{return JSON.parse(t)}catch(_){const i=t.indexOf('{'),j=t.lastIndexOf('}');if(i<0||j<=i)throw Error('편집장 JSON 응답 오류');return JSON.parse(t.slice(i,j+1))}};
 
  const eligible=source=>{
-   const t=txt(source).trim();
+   const t=clean(source);
    if(t.length<240||t.length>conf.maxChars||(t.match(/[가-힣]/g)||[]).length<65)return false;
-   if(/<(?:think|reasoning|tool_call|function_call)\b/i.test(t))return false;
+   if(/<(?:think|reasoning|thoughts|tool_call|function_call)\b/i.test(t))return false;
    if(/^\s*[\[{][\s\S]+[\]}]\s*$/.test(t)&&t.includes('":'))return false;
    const lines=t.split('\n').filter(x=>x.trim());
    if(lines.length>5&&lines.filter(x=>/^\s*(?:\d+\.|[-*]\s|#{1,5}\s|\|.*\|)/.test(x)).length>lines.length*.6)return false;
    return true;
  };
+ function dialogueSignals(source){
+   const t=clean(source);
+   const turns=t.split(/\r?\n/).map(x=>x.trim())
+     .filter(x=>/^(?:["“「『])[\s\S]{1,650}(?:["”」』])$/.test(x))
+     .map(x=>x.slice(1,-1).replace(/[.…\s]+/g,' ').trim());
+   const low=turns.filter(x=>x.length<=16
+     && (/^(?:네|예|응|아|에|그래|그렇|맞|모르겠|뭐|왜|정말|진짜|그럼|그러면|그래서|아니면|두 번째|세 번째|첫 번째)/.test(x)
+       || (x.length<=10&&/[?？]$/.test(x)))).length;
+   const echo=turns.filter(x=>x.length<=18&&/[?？]$/.test(x)
+      && /^(?:뭐|왜|그래|그렇|그럼|그러면|그래서|정말|진짜|아니면|다음|두 번째|세 번째|처음|보통|그게|이게|둘 다)/.test(x)).length;
+   const repeatedMarkers=(t.match(/보통은|모르겠(?:어요|어|습니다)?|둘 다(?:요)?|만화(?:를)? 읽/g)||[]).length;
+   const stockGestures=(t.match(/입꼬리|눈동자|손가락|시선을 피했|고개를 끄덕였|울면서 웃었다|볼이 빨개|손이 떨/g)||[]).length;
+   const sentences=t.split(/[.!?。！？\n]+/).map(x=>x.trim()).filter(x=>x.length>16);
+   const exactRepeats=sentences.length-new Set(sentences).size;
+   const dialogueLoop=turns.length>=12&&(echo>=4||low>=7||repeatedMarkers>=8);
+   return {turns:turns.length,lowInformation:low,echoQuestions:echo,
+     repeatedMarkers,stockGestures,exactRepeats,dialogueLoop};
+ }
  const suspicious=source=>{
-   const t=txt(source),parts=t.split(/[.!?。！？\n]+/).map(x=>x.trim()).filter(x=>x.length>14);
-   const repeated=parts.length-new Set(parts).size;
-   const gestures=(t.match(/입꼬리|눈동자|손가락|시선을 피했|고개를 끄덕였|울면서 웃었다/g)||[]).length;
-   const echoes=(t.match(/그랬어\?|좋았어\?|왜\?|뭐라고\?|그런가\?/g)||[]).length;
-   return repeated>0||gestures>=5||echoes>=5;
+   const m=dialogueSignals(source);
+   return m.dialogueLoop||m.exactRepeats>=1||m.stockGestures>=5;
  };
  const verify=(original,rewrite)=>{
-   const a=txt(original),b=clean(rewrite);
+   const a=clean(original),b=clean(rewrite);
    if(!b||b.length<a.length*.64||b.length>a.length*1.45)return '문장 분량 변경 범위 초과';
    const tokens=t=>(t.match(/<[^<>]{1,120}>|\{\{[^{}\n]{1,120}\}\}|\[[A-Z][A-Z0-9 _:\-=.]{1,140}\]/gi)||[]).join('|');
    if(tokens(a)!==tokens(b))return '시스템 태그/상태 토큰 변경';
@@ -42,7 +70,11 @@
    if(stats(a)!==stats(b))return '상태창 내용 변경';
    const nums=t=>(t.match(/(?<![A-Za-z가-힣])\d+(?:\.\d+)?(?:%|kg|km|cm|초|분|시간|원)?/g)||[]).join('|');
    if(nums(a)!==nums(b))return '숫자/수치 변경';
-   if(/<(?:think|reasoning)\b/i.test(b))return '사고과정 출력';
+   if(/<(?:think|reasoning|thoughts)\b/i.test(b))return '사고과정 출력';
+   const oldDialogue=dialogueSignals(a),newDialogue=dialogueSignals(b);
+   if(oldDialogue.turns>=10&&newDialogue.turns>=8
+     && newDialogue.lowInformation>oldDialogue.lowInformation+3)
+     return '퇴고본에서 단순 문답이 크게 증가함';
    return '';
  };
  async function save(){await risuai.pluginStorage.setItem(STORE,conf)}
@@ -199,7 +231,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.0</h2>
+  </style><main><h2>Bard Editor Lab v0.3.1</h2>
   <p class="muted">RisuBard 본체·프리셋 변경 없음 · 일반 채팅의 AI 메시지를 자동 검사하고 필요할 때만 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
