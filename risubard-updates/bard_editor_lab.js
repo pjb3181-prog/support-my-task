@@ -1,15 +1,16 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.3
+//@version 0.3.4
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
-//@description Scene-momentum and dialogue-quality guidance with optional model-backed revision; no RisuBard core changes.
+//@description Automatic editorial activity history, original vs revision comparisons, scene-momentum review; host-independent.
 (async () => {
- const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups';
+ const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups'; const ACTIVITY_STORE='bard_editor_lab_v034_activity';
  const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,watchStoryRunner:false,timeoutMs:90000,maxChars:9000};
  let conf={...DEFAULT};
  let state={target:null,index:-1,original:'',revised:'',issues:[],status:'자동 퇴고 OFF',busy:false,lastAuto:'없음'};
  let uiOpen=false;let unloaded=false;let pollTimer=null;
+ let recentActivity=[],activityView='auto',pickedActivity=0,activitySequence=0;
  const seen=new Set(),inflight=new Set(),initializedChats=new Set();
  const preSaveReviewed=new Map();
  const INLINE_HINT_ID='[BARD_EDITOR_LAB_STYLE_V033]';
@@ -96,15 +97,49 @@
    let hash=2166136261;for(let i=0;i<str.length;i++)hash=Math.imul(hash^str.charCodeAt(i),16777619);
    return (hash>>>0).toString(16)+':'+valueText.length;
  }
- function markPreSave(value){
+ function markPreSave(value,activityId=''){
    const now=Date.now();
-   for(const [k,t] of preSaveReviewed)if(now-t>120000)preSaveReviewed.delete(k);
-   preSaveReviewed.set(sourceFingerprint(value),now);
+   for(const [k,entry] of preSaveReviewed)if(now-(entry?.at||0)>120000)preSaveReviewed.delete(k);
+   preSaveReviewed.set(sourceFingerprint(value),{at:now,activityId});
    while(preSaveReviewed.size>80)preSaveReviewed.delete(preSaveReviewed.keys().next().value);
  }
  function alreadyPreSaved(value){
-   const k=sourceFingerprint(value),at=preSaveReviewed.get(k);
-   return typeof at==='number' && Date.now()-at<120000;
+   const entry=preSaveReviewed.get(sourceFingerprint(value));
+   return !!entry && Date.now()-entry.at<120000;
+ }
+ const recordText=value=>{
+   const s=clean(value),limit=19000;
+   return s.length>limit?s.slice(0,limit)+'\n\n[자동 기록 미리보기: 이후 본문 생략]':s;
+ };
+ async function recordAutomatic({phase,outcome,reason,original='',revised='',issues=[],calls=0}){
+   const now=Date.now();
+   const record={id:String(now)+'-'+(++activitySequence),at:now,
+     phase:txt(phase),outcome:txt(outcome),reason:txt(reason).slice(0,900),
+     original:recordText(original),revised:recordText(revised),
+     issues:(Array.isArray(issues)?issues:[]).filter(x=>x&&typeof x.problem==='string')
+       .slice(0,4).map(x=>({problem:txt(x.problem).slice(0,350),instruction:txt(x.instruction).slice(0,350)})),
+     calls:Math.max(0,Math.min(2,Number(calls)||0)),committed:outcome==='applied'};
+   recentActivity.unshift(record);
+   recentActivity=recentActivity.slice(0,5);
+   pickedActivity=0;
+   state.lastAuto=record.phase+' · '+record.reason;
+   try{await risuai.pluginStorage.setItem(ACTIVITY_STORE,recentActivity)}
+   catch(error){console.log('[EditorLab] automatic activity persistence unavailable',error)}
+   if(uiOpen&&activityView==='auto')void render().catch(error=>console.log('[EditorLab] activity view',error));
+   return record.id;
+ }
+ async function confirmAutoCommitted(text){
+   const entry=preSaveReviewed.get(sourceFingerprint(text));
+   if(!entry?.activityId)return;
+   const record=recentActivity.find(x=>x.id===entry.activityId);
+   if(!record||record.committed)return;
+   record.committed=true;
+   if(record.outcome==='pending')record.outcome='applied';
+   record.reason+=' · 채팅 저장 확인';
+   state.lastAuto=record.phase+' · '+record.reason;
+   try{await risuai.pluginStorage.setItem(ACTIVITY_STORE,recentActivity)}
+   catch(error){console.log('[EditorLab] confirmed activity write failed',error)}
+   if(uiOpen&&activityView==='auto')void render().catch(()=>{});
  }
 
  async function injectStyleBeforeRequest(messages,type){
@@ -126,14 +161,17 @@
    try{
      const result=await pipeline(response,'');
      const final=result.revised||response;
-     // Even a "no changes" verdict was already reviewed, so the output
-     // listener must not charge for a second review after the host commits it.
-     markPreSave(response);markPreSave(final);
-     state.lastAuto='저장 전 편집 · '+result.reason;
+     const outcome=!eligible(response)?'skipped':result.revised?'pending':'unchanged';
+     const id=await recordAutomatic({phase:'저장 전 편집',outcome,reason:result.reason,
+       original:response,revised:result.revised,issues:result.issues,calls:result.calls||0});
+     // The output hook may later confirm actual chat persistence. Do not call
+     // this 'applied' until a committed message has been observed.
+     markPreSave(response,id);markPreSave(final,id);
      return final;
    }catch(error){
-     markPreSave(response);
-     state.lastAuto='저장 전 편집 실패 · 원문 유지 · '+txt(error?.message||error);
+     const id=await recordAutomatic({phase:'저장 전 편집',outcome:'error',
+       reason:'원문 유지 · '+txt(error?.message||error),original:response,calls:0});
+     markPreSave(response,id);
      return response;
    }
  }
@@ -173,7 +211,7 @@
  }
  async function pipeline(draft,background=''){
    const raw=txt(draft),source=clean(raw);
-   const original={original:raw,revised:'',issues:[],reason:'원문 유지'};
+   const original={original:raw,revised:'',issues:[],reason:'원문 유지',calls:0};
    if(!eligible(source))return {...original,reason:'짧은 응답·비서사·입력 길이 초과'};
    const normalizedOnly=raw.trim()!==source&&!verify(raw,source)?source:'';
    if(conf.mode==='economy'&&!suspicious(source))
@@ -212,7 +250,7 @@
        instruction:'기존 대화에서 이미 나온 요청·거절·관심사 중 하나를 활용해 NPC가 작은 선택, 분명한 경계, 구체적인 다음 단계 또는 새로운 행동을 만들도록 최소한으로 교정. 플레이어의 선택이나 행동을 새로 작성하지 말 것.'});
    }
    if((!verdict.revise&&!momentumGap)||!issues.length)
-     return {...original,revised:normalizedOnly,issues,
+     return {...original,revised:normalizedOnly,issues,calls:1,
        reason:normalizedOnly?'편집장: 문체 수정 불필요 · 출력 메타만 제거':'편집장: 유의미한 퇴고 불필요'};
    const revision=await request([{role:'system',content:[
      'You are a surgical Korean-fiction editor. Return the FULL revised fiction and nothing else. NO analysis, thoughts, Approved, Response, explanations, JSON, or fences.',
@@ -227,10 +265,10 @@
       +'\n\n# CONTINUITY FACTS\n'+background
       +'\n\n# ORIGINAL FICTION\n'+source}]);
    const error=verify(raw,revision);
-   if(error)return {...original,revised:normalizedOnly,issues,reason:'퇴고본 거부: '+error+(normalizedOnly?' · 메타만 제거':'')};
+   if(error)return {...original,revised:normalizedOnly,issues,calls:2,reason:'퇴고본 거부: '+error+(normalizedOnly?' · 메타만 제거':'')};
    if(revision===source)
-     return {...original,revised:normalizedOnly,issues,reason:normalizedOnly?'출력 메타만 제거':'퇴고 원문과 동일'};
-   return {original:raw,revised:revision,issues,reason:'대화 기능·세계관 기초 검증 통과'};
+     return {...original,revised:normalizedOnly,issues,calls:2,reason:normalizedOnly?'출력 메타만 제거':'퇴고 원문과 동일'};
+   return {original:raw,revised:revision,issues,calls:2,reason:'대화 기능·세계관 기초 검증 통과'};
  }
  const outputKey=(ci,ti,id,i,m)=>[ci,ti,id,i,txt(m?.chatId||m?.time),txt(m?.data).length,txt(m?.data).slice(0,80)].join('|');
  const remember=k=>{seen.add(k);if(seen.size>200)seen.delete(seen.values().next().value)};
@@ -282,21 +320,35 @@
    state.original=state.revised;state.revised='';state.status='사용자 승인 퇴고본 적용 · 원문 백업됨';
  }
  async function automatic(arg,sourceLabel){
-   if(!conf.auto||!conf.realEditor||unloaded||!arg||!Number.isInteger(arg.messageIndex)||!Array.isArray(arg.chat?.message))return;
+   if(!conf.auto||unloaded||!arg||!Number.isInteger(arg.messageIndex)||!Array.isArray(arg.chat?.message))return;
    const i=arg.messageIndex,m=arg.chat.message[i],ci=arg.characterIndex,ti=arg.chatIndex;
    if(!Number.isInteger(ci)||!Number.isInteger(ti)||!m||!['char','assistant'].includes(m.role)||i!==arg.chat.message.length-1)return;
-   const original=txt(m.data);if(alreadyPreSaved(original)||!eligible(original))return;
+   const original=txt(m.data);
+   if(alreadyPreSaved(original)){await confirmAutoCommitted(original);return}
    const id=txt(arg.chat.id),k=outputKey(ci,ti,id,i,m);
    if(seen.has(k)||inflight.has(k))return;
    remember(k);inflight.add(k);
    try{
+     if(!conf.realEditor){
+       await recordAutomatic({phase:sourceLabel,outcome:'skipped',reason:'프롬프트 보조만 활성화 · 별도 편집 모델 호출 안 함',original,calls:0});
+       return;
+     }
+     if(!eligible(original)){
+       await recordAutomatic({phase:sourceLabel,outcome:'skipped',reason:'짧은 응답·비서사·입력 길이 초과',original,calls:0});
+       return;
+     }
      const result=await pipeline(original,context(arg.chat,i,arg.char||{}));
      if(result.revised){
        await commit({ci,ti,id,index:i,messageId:txt(m.chatId||m.time)},original,result.revised);
-       state.lastAuto=sourceLabel+' · 실제 퇴고 반영 ('+result.issues.length+'건)';
-     }else state.lastAuto=sourceLabel+' · '+result.reason;
-   }catch(e){state.lastAuto=sourceLabel+' · 원문 유지 · '+txt(e.message||e)}
-   finally{inflight.delete(k);if(uiOpen)void render()}
+       await recordAutomatic({phase:sourceLabel,outcome:'applied',reason:'채팅에 퇴고본 반영 · '+result.reason,
+         original,revised:result.revised,issues:result.issues,calls:result.calls||0});
+     }else{
+       await recordAutomatic({phase:sourceLabel,outcome:'unchanged',reason:result.reason,
+         original,issues:result.issues,calls:result.calls||0});
+     }
+   }catch(error){
+     await recordAutomatic({phase:sourceLabel,outcome:'error',reason:'원문 유지 · '+txt(error?.message||error),original,calls:0});
+   }finally{inflight.delete(k);if(uiOpen&&activityView==='auto')void render().catch(()=>{})}
  }
  async function pollStoryRunner(){
    if(!conf.auto||!conf.realEditor||!conf.watchStoryRunner||unloaded)return;
@@ -320,8 +372,13 @@
    state.status='최근 퇴고를 원문으로 복원했어';
  }
  async function render(){
-  if(!uiOpen)return;
-  document.body.innerHTML=`<style>
+   if(!uiOpen)return;
+   const activity=recentActivity[pickedActivity]||null;
+   const showingAuto=activityView==='auto';
+   const visibleOriginal=showingAuto?(activity?.original||'') : state.original;
+   const visibleRevised=showingAuto?(activity?.revised||'') : state.revised;
+   const visibleIssues=showingAuto?(activity?.issues||[]) : state.issues;
+   document.body.innerHTML=`<style>
     body{background:#171d2b;color:#edf0ff;font:14px/1.6 system-ui;margin:0;padding:18px}main{max-width:1100px;margin:auto}
     button,select{color:#fff;background:#334568;border:1px solid #63769d;border-radius:8px;padding:9px;cursor:pointer;font:inherit}
     button:disabled{opacity:.4;cursor:not-allowed}
@@ -329,7 +386,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.3</h2>
+  </style><main><h2>Bard Editor Lab v0.3.4</h2>
   <p class="muted">본체·프리셋 수정 없음 · 메인 채팅에 짧은 편집 지침 삽입 + 모델을 이용한 선택적 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
@@ -354,22 +411,34 @@
     <label>최대 입력 <select id="max">${[4500,7000,9000,12000,18000].map(n=>`<option value="${n}" ${conf.maxChars===n?'selected':''}>${n.toLocaleString()}자</option>`).join('')}</select></label>
     <button id="restore">가장 최근 퇴고 원본 복원</button>
   </div>
-  <p class="status">${esc(state.status)}<span class="muted"><br/>최근 자동 작업: ${esc(state.lastAuto)}</span></p>
+  <p class="status">현재 설정: <strong>${conf.auto?'자동 퇴고 ON':'자동 퇴고 OFF'}</strong> · ${conf.realEditor?'편집장 모델 검수 ON':'편집장 모델 검수 OFF'}<span class="muted"><br/>최근 자동 작업: ${esc(state.lastAuto)}</span></p>
   <div class="top">
+    <button id="viewauto" ${showingAuto?'disabled':''}>최근 자동 퇴고 결과</button>
+    <button id="viewmanual" ${!showingAuto?'disabled':''}>수동 검수 화면</button>
     <button id="load">마지막 AI 본문 불러오기</button>
-    <button id="run" ${state.busy?'disabled':''}>수동 검수</button>
-    <button id="apply" ${!state.revised||state.busy?'disabled':''}>퇴고본 직접 적용</button>
+    <button id="run" ${state.busy?'disabled':''}>수동 검수 실행</button>
+    <button id="apply" ${showingAuto||!state.revised||state.busy?'disabled':''}>수동 퇴고본 적용</button>
     <button id="close">닫기</button>
   </div>
+  ${showingAuto?`<div class="status"><strong>자동 작업 내역 (최근 ${recentActivity.length}건)</strong><br/>
+    ${recentActivity.length?`<select id="activity-select" style="max-width:100%;margin:8px 0">
+      ${recentActivity.map((x,i)=>`<option value="${i}" ${i===pickedActivity?'selected':''}>${esc(new Date(x.at).toLocaleString('ko-KR'))} · ${esc(x.phase)} · ${esc(x.outcome)}</option>`).join('')}
+      </select><div>${esc(activity?.reason||'')}</div><small class="muted">상태: ${esc(activity?.outcome||'')} · 추가 모델 호출 ${activity?.calls??0}회 · ${activity?.committed?'채팅 저장 확인 또는 교정 반영':'채팅 저장 확인 전/미적용'}</small>`
+      :'<p>자동 작업 기록이 없어. 자동 퇴고를 ON으로 켜고 새 채팅 응답을 생성하면 여기 표시돼.</p>'}
+    </div>`:''}
   <div class="pair">
-    <section><h3>원문</h3><textarea readonly>${esc(state.original)}</textarea></section>
-    <section><h3>퇴고본 (미적용)</h3><textarea readonly>${esc(state.revised)}</textarea></section>
+    <section><h3>${showingAuto?'자동 검사 원문':'수동 검사 원문'}</h3><textarea readonly placeholder="아직 검사된 원문 없음">${esc(visibleOriginal)}</textarea></section>
+    <section><h3>${showingAuto?'자동 퇴고 결과':'수동 퇴고본 (미적용)'}</h3><textarea readonly placeholder="${showingAuto?'교정 불필요·검사 제외·실패 시 비어 있어':'수동 검수 후 표시'}">${esc(visibleRevised)}</textarea></section>
   </div>
-  <h3>편집장 진단</h3><pre>${esc(state.issues.map((x,i)=>`${i+1}. ${x.problem} — ${x.instruction}`).join('\n')||'진단 기록 없음')}</pre>
+  <h3>편집장 진단</h3><pre>${esc(visibleIssues.map((x,i)=>`${i+1}. ${x.problem} — ${x.instruction}`).join('\n')||(showingAuto?(activity?.reason||'자동 진단 기록 없음'):'수동 진단 기록 없음'))}</pre>
   <p class="muted">한 응답당 최대 2회 모델 호출. 사고과정/메타 출력은 본문과 분리해 검사해. 실패 시 원문 유지. 최근 5건의 원문 전체를 플러그인 저장소에 백업해.
   타임아웃은 대기를 중단하지만 모델 과금 취소를 보장하지 않아.</p></main>`;
   const el=id=>document.getElementById(id);
-  el('auto').onclick=async()=>{conf.auto=!conf.auto;await save();state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';await render()};
+   el('auto').onclick=async()=>{conf.auto=!conf.auto;await save();state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';await render()};
+   el('viewauto').onclick=async()=>{activityView='auto';pickedActivity=0;await render()};
+   el('viewmanual').onclick=async()=>{activityView='manual';await render()};
+   const activitySelect=el('activity-select');
+   if(activitySelect)activitySelect.onchange=async e=>{pickedActivity=Number(e.target.value)||0;await render()};
   el('promptassist').onchange=async e=>{conf.promptAssist=e.target.checked;await save()};
   el('realeditor').onchange=async e=>{conf.realEditor=e.target.checked;await save()};
   el('momentum').onchange=async e=>{conf.momentum=e.target.checked;await save()};
@@ -377,9 +446,9 @@
   el('mode').onchange=async e=>{conf.mode=e.target.value;await save()};
   el('max').onchange=async e=>{conf.maxChars=Number(e.target.value);await save()};
   el('srwatch').onchange=async e=>{conf.watchStoryRunner=e.target.checked;initializedChats.clear();await save()};
-  el('load').onclick=()=>load().then(render).catch(e=>{state.status=txt(e.message);render()});
-  el('run').onclick=()=>run();
-  el('apply').onclick=()=>apply().then(render).catch(e=>{state.status='적용 차단 · '+txt(e.message);render()});
+   el('load').onclick=()=>{activityView='manual';return load().then(render).catch(e=>{state.status=txt(e.message);render()})};
+   el('run').onclick=()=>{activityView='manual';return run()};
+   el('apply').onclick=()=>{if(activityView!=='manual')return;return apply().then(render).catch(e=>{state.status='적용 차단 · '+txt(e.message);render()})};
   el('restore').onclick=()=>restoreLast().then(render).catch(e=>{state.status='복원 실패 · '+txt(e.message);render()});
   el('close').onclick=()=>{uiOpen=false;void risuai.hideContainer()};
 }
@@ -392,7 +461,12 @@
    if(![4500,7000,9000,12000,18000].includes(Number(conf.maxChars)))conf.maxChars=9000;
    conf.timeoutMs=90000;
  }
- async function open(){uiOpen=true;await render();await risuai.showContainer('fullscreen')}
+ try{const savedActivity=await risuai.pluginStorage.getItem(ACTIVITY_STORE);
+     if(Array.isArray(savedActivity))recentActivity=savedActivity.filter(x=>x&&typeof x.id==='string'&&typeof x.original==='string').slice(0,5);
+   }catch(error){console.log('[EditorLab] previous automatic activity unavailable',error)}
+ state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';
+ if(recentActivity.length)state.lastAuto=recentActivity[0].phase+' · '+recentActivity[0].reason;
+ async function open(){uiOpen=true;activityView='auto';pickedActivity=0;await render();await risuai.showContainer('fullscreen')}
  await risuai.registerSetting('Bard Editor Lab',open,'✍️','html','bard-editor-lab-settings');
  await risuai.registerButton({name:'Bard Editor Lab',icon:'✍️',iconType:'html',location:'hamburger',id:'bard-editor-lab-hamburger'},open);
  // Register through public plugin APIs; host main/core and prompt presets stay untouched.
