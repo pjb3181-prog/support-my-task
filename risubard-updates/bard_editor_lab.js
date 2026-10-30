@@ -1,18 +1,18 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.2
+//@version 0.3.3
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
-//@description Prompt-like automatic editorial guidance plus selective model-backed correction; no host patches.
+//@description Scene-momentum and dialogue-quality guidance with optional model-backed revision; no RisuBard core changes.
 (async () => {
  const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups';
- const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,watchStoryRunner:false,timeoutMs:90000,maxChars:9000};
+ const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,watchStoryRunner:false,timeoutMs:90000,maxChars:9000};
  let conf={...DEFAULT};
  let state={target:null,index:-1,original:'',revised:'',issues:[],status:'자동 퇴고 OFF',busy:false,lastAuto:'없음'};
  let uiOpen=false;let unloaded=false;let pollTimer=null;
  const seen=new Set(),inflight=new Set(),initializedChats=new Set();
  const preSaveReviewed=new Map();
- const INLINE_HINT_ID='[BARD_EDITOR_LAB_STYLE_V032]';
+ const INLINE_HINT_ID='[BARD_EDITOR_LAB_STYLE_V033]';
  const txt=x=>String(x??'');
  const esc=x=>txt(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
  const clean=s=>{
@@ -56,12 +56,14 @@
    const sentences=t.split(/[.!?。！？\n]+/).map(x=>x.trim()).filter(x=>x.length>16);
    const exactRepeats=sentences.length-new Set(sentences).size;
    const dialogueLoop=turns.length>=12&&(echo>=4||low>=7||repeatedMarkers>=8);
+   const recycledBeatMentions=(t.match(/(?:또|다시|여전히|계속|아까처럼|똑같은 반응|또다시)/g)||[]).length;
+   const passiveAnswers=(t.match(/(?:고개를 숙였|시선을 피했|입을 열었다가|말을 하려다가|그냥.{0,10}웃었다|무슨 말을 해야 할지 몰랐|다시.{0,12}여몄)/g)||[]).length;
    return {turns:turns.length,lowInformation:low,echoQuestions:echo,
-     repeatedMarkers,stockGestures,exactRepeats,dialogueLoop};
+     repeatedMarkers,stockGestures,exactRepeats,dialogueLoop,recycledBeatMentions,passiveAnswers};
  }
  const suspicious=source=>{
    const m=dialogueSignals(source);
-   return m.dialogueLoop||m.exactRepeats>=1||m.stockGestures>=5;
+   return m.dialogueLoop||m.exactRepeats>=1||m.stockGestures>=5||(m.recycledBeatMentions>=12&&m.passiveAnswers>=4);
  };
  const verify=(original,rewrite)=>{
    const a=clean(original),b=clean(rewrite);
@@ -83,11 +85,11 @@
  // This is transient model-input style guidance, not a change to any saved preset,
  // lorebook, character card, world rule or user utterance.
  const INLINE_GUIDANCE=INLINE_HINT_ID+'\n'
-   +'Editorial style guidance only; all pre-existing world/canon/character instructions and player choices remain authoritative.\n'
-   +'Avoid mechanical question -> echo -> confirmation loops, repeated admissions of uncertainty, and characters reduced to passive interview subjects.\n'
-   +'Preserve meaningful short dialogue, each character’s distinct voice and personal mannerisms. An NPC may choose, object, tease or redirect naturally without inventing new events.\n'
-   +'Avoid repeating stock gestures and explaining emotions already shown in action. Keep pacing and unresolved scene endings intact.\n'
-   +'Produce ONLY the story, never planning notes, <Thoughts>, # Approved or ## Response. This is not a new plot objective.';
+   +'Style only: all user decisions, established canon, personalities and world rules take priority.\n'
+   +'Avoid question/echo/confirmation loops, passive interview-like NPCs, repeated apologies, blushes and body-detail descriptions.\n'
+   +'Keep individual character voices, meaningful short lines and intentional quiet beats; do not merely elongate dialogue.\n'
+   +'Output only the fiction, without <Thoughts>, planning, # Approved or ## Response.';
+ const MOMENTUM_GUIDANCE='\nScene momentum: if this is a developed scene, let at least one concrete fact, choice, boundary, relationship, task, or next-step CHANGE on-page. A visit, small talk, repeated embarrassment and a return home alone are not necessarily progress. Use an NPC’s believable agency or an already introduced practical thread to move the scene; make the change have a consequence. Do not force romance, sex, a sudden crisis, player-character actions or a major new plot event. Intentional rest scenes may remain quiet; do not invent drama for its own sake.';
 
  function sourceFingerprint(value){
    const valueText=clean(value),str=valueText.length+'|'+valueText;
@@ -112,8 +114,9 @@
    if(messages.some(x=>typeof x?.content==='string' && x.content.includes(INLINE_HINT_ID)))return messages;
    const amended=messages.map(message=>({...message}));
    const index=amended.findIndex(x=>x?.role==='system' && typeof x.content==='string');
-   if(index>=0)amended[index].content+='\n\n'+INLINE_GUIDANCE;
-   else amended.unshift({role:'system',content:INLINE_GUIDANCE});
+   const guidance=INLINE_GUIDANCE+(conf.momentum?MOMENTUM_GUIDANCE:'');
+   if(index>=0)amended[index].content+='\n\n'+guidance;
+   else amended.unshift({role:'system',content:guidance});
    return amended;
  }
 
@@ -308,7 +311,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.2</h2>
+  </style><main><h2>Bard Editor Lab v0.3.3</h2>
   <p class="muted">본체·프리셋 수정 없음 · 메인 채팅에 짧은 편집 지침 삽입 + 모델을 이용한 선택적 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
