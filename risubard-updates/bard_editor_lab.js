@@ -1,12 +1,12 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.4
+//@version 0.3.5
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
-//@description Automatic editorial activity history, original vs revision comparisons, scene-momentum review; host-independent.
+//@description Read-only first-message character voice anchor, long-term drift detection and grounded selective rewriting.
 (async () => {
  const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups'; const ACTIVITY_STORE='bard_editor_lab_v034_activity';
- const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,watchStoryRunner:false,timeoutMs:90000,maxChars:9000};
+ const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,timeoutMs:90000,maxChars:9000};
  let conf={...DEFAULT};
  let state={target:null,index:-1,original:'',revised:'',issues:[],status:'자동 퇴고 OFF',busy:false,lastAuto:'없음'};
  let uiOpen=false;let unloaded=false;let pollTimer=null;
@@ -62,11 +62,118 @@
    return {turns:turns.length,lowInformation:low,echoQuestions:echo,
      repeatedMarkers,stockGestures,exactRepeats,dialogueLoop,recycledBeatMentions,passiveAnswers};
  }
+
+ // Reads the established first message as a style reference. Never writes to it.
+ // Short texts and SMS are valid; flag repetitive low-information fragments, not length alone.
+ function quoteLines(text){
+   const lines=clean(text).split(/\r?\n/),out=[];
+   for(const row of lines){
+     const m=row.trim().match(/^["“「『]([^"”」』]{2,700})["”」』]$/);
+     if(m)out.push(m[1].trim());
+   }
+   return out;
+ }
+ function namedTurns(text){
+   const lines=clean(text).split(/\r?\n/),out=[];
+   for(let i=0;i<lines.length-1;i++){
+     const speaker=lines[i].trim().match(/^\[([^\]\r\n]{1,42})\]$/);
+     if(!speaker)continue;
+     const speech=lines[i+1].trim().match(/^["“「『]([^"”」』]{1,700})["”」』]$/);
+     if(speech)out.push({speaker:speaker[1],text:speech[1].trim()});
+   }
+   return out;
+ }
+ function fillerSpeech(text){
+   return /^(?:(?:…|\.|·|\s)+|(?:근데|그런데|네|예|응|아|그래|그렇구나|그럼|왜요|진짜요|그러니까|할게요|모르겠어요|알겠어요|알아요)(?:[.…!?？\s]*)|(?:그게|저기)(?:[.…!?？\s]*))$/.test(text.trim());
+ }
+ function voiceDriftSignals(draft,opening,name){
+   const initial=quoteLines(opening);
+   const all=namedTurns(draft);
+   const npc=all.filter(x=>name&&x.speaker===name).map(x=>x.text);
+   const uniqueRepeated=new Map();
+   for(const line of npc){
+     const norm=line.replace(/[.…!?？\s]/g,'');
+     if(fillerSpeech(line))uniqueRepeated.set(norm,(uniqueRepeated.get(norm)||0)+1);
+   }
+   const fillerCount=npc.filter(fillerSpeech).length;
+   const repeatFiller=[...uniqueRepeated.values()].reduce((a,n)=>a+Math.max(0,n-1),0);
+   const baselineAvg=initial.length?initial.reduce((a,x)=>a+x.length,0)/initial.length:0;
+   const currentAvg=npc.length?npc.reduce((a,x)=>a+x.length,0)/npc.length:0;
+   // Several independent signals prevent ordinary brisk SMS from being treated
+   // as degradation. Without a real first-message baseline, return uncertain.
+   const severe=initial.length>=2&&baselineAvg>=24&&npc.length>=12
+     &&fillerCount>=6&&repeatFiller>=4&&fillerCount/npc.length>=0.24
+     &&currentAvg<baselineAvg*.70;
+   return {hasAnchor:initial.length>=2,baselineTurns:initial.length,
+     baselineAverage:Math.round(baselineAvg),npcTurns:npc.length,
+     npcAverage:Math.round(currentAvg),lowInformation:fillerCount,
+     repeatedFragments:repeatFiller,
+     repeatedExamples:[...uniqueRepeated].filter(([,count])=>count>=2)
+       .sort((a,b)=>b[1]-a[1]).slice(0,4).map(([phrase,count])=>({phrase,count})),
+     severe};
+ }
+ async function editorialReference(chat,index,chara){
+   let fromHost=null;
+   try{if(typeof risuai.getCharacter==='function')fromHost=await risuai.getCharacter()}
+   catch(err){console.log('[EditorLab] read-only first-message reference unavailable',err)}
+   const canonical=(fromHost&&typeof fromHost==='object')?fromHost:{};
+   const fallback=(chara&&typeof chara==='object')?chara:{};
+   const name=txt(fallback.name||canonical.name||fallback.charaName||'').trim().slice(0,80);
+   const messages=Array.isArray(chat?.message)?chat.message:[];
+   const firstInChat=messages[0]&&['char','assistant'].includes(messages[0].role)
+     &&index>0?txt(messages[0].data):'';
+   // Prefer the selected opening message actually used in this chat, not a
+   // different greeting branch. Never reinsert it into the chat.
+   const fullOpening=clean(firstInChat||canonical.firstMessage||fallback.firstMessage||'');
+   const opening=fullOpening.length>2400?fullOpening.slice(0,1700)+'\n[중간 생략]\n'
+     +fullOpening.slice(-650):fullOpening;
+   const personality=clean(canonical.personality||fallback.personality||'').slice(0,700);
+   const description=clean(canonical.desc||fallback.desc||'').slice(0,700);
+   return {
+     name,opening,personality,description,
+     recent:context(chat,index,canonical.name?canonical:fallback),
+     // For backwards compatibility with older simulated hosts.
+     baselineSource:firstInChat?'chat-selected-first-message':'character-firstMessage'
+   };
+ }
+ function normalizedReference(background){
+   if(background&&typeof background==='object'){
+     return {name:txt(background.name),opening:txt(background.opening),
+       personality:txt(background.personality),description:txt(background.description),
+       recent:txt(background.recent)};
+   }
+   return {name:'',opening:'',personality:'',description:'',recent:txt(background)};
+ }
+ function anchorPrompt(reference){
+   if(!conf.voiceGuard||!reference.opening)return '';
+   return [
+     '# ORIGINAL FIRST MESSAGE — READ-ONLY CHARACTER VOICE ANCHOR',
+     'The following is how this character was initially written, NOT a scene to repeat.',
+     'Compare stable temperament, personal motives, speaking texture and specificity.',
+     'Allow organic relationship development, different emotional states and shorter SMS.',
+     'Do not force original shyness, opening POV, actions or events back into later scenes.',
+     reference.name?'Character: '+reference.name:'',
+     reference.personality?'Personality: '+reference.personality:'',
+     reference.description?'Description: '+reference.description:'',
+     reference.opening
+   ].filter(Boolean).join('\n');
+ }
+ function keepOtherSpeakerTurns(original,rewrite,npc){
+   if(!npc)return '';
+   const preserved=t=>namedTurns(t).filter(x=>x.speaker!==npc)
+     .map(x=>x.speaker+'\t'+x.text);
+   const a=preserved(original),b=preserved(rewrite);
+   // Only compare tagged dialogue when both versions retain structured turns.
+   if(a.length && (a.length!==b.length||a.some((x,i)=>x!==b[i])))
+     return '플레이어 또는 타 인물의 기존 대사가 변경됨';
+   return '';
+ }
+
  const suspicious=source=>{
    const m=dialogueSignals(source);
    return m.dialogueLoop||m.exactRepeats>=1||m.stockGestures>=5||(m.recycledBeatMentions>=12&&m.passiveAnswers>=4);
  };
- const verify=(original,rewrite)=>{
+ const verify=(original,rewrite,reference=null)=>{
    const a=clean(original),b=clean(rewrite);
    if(!b||b.length<a.length*.64||b.length>a.length*1.45)return '문장 분량 변경 범위 초과';
    const tokens=t=>(t.match(/<[^<>]{1,120}>|\{\{[^{}\n]{1,120}\}\}|\[[A-Z][A-Z0-9 _:\-=.]{1,140}\]/gi)||[]).join('|');
@@ -76,6 +183,7 @@
    const nums=t=>(t.match(/(?<![A-Za-z가-힣])\d+(?:\.\d+)?(?:%|kg|km|cm|초|분|시간|원)?/g)||[]).join('|');
    if(nums(a)!==nums(b))return '숫자/수치 변경';
    if(/<(?:think|reasoning|thoughts)\b/i.test(b))return '사고과정 출력';
+   if(reference?.name){const changed=keepOtherSpeakerTurns(a,b,reference.name);if(changed)return changed;}
    const oldDialogue=dialogueSignals(a),newDialogue=dialogueSignals(b);
    if(oldDialogue.turns>=10&&newDialogue.turns>=8
      && newDialogue.lowInformation>oldDialogue.lowInformation+3)
@@ -386,7 +494,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.4</h2>
+  </style><main><h2>Bard Editor Lab v0.3.5</h2>
   <p class="muted">본체·프리셋 수정 없음 · 메인 채팅에 짧은 편집 지침 삽입 + 모델을 이용한 선택적 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
