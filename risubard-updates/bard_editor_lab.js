@@ -261,10 +261,10 @@
    state.original=state.revised;state.revised='';state.status='사용자 승인 퇴고본 적용 · 원문 백업됨';
  }
  async function automatic(arg,sourceLabel){
-   if(!conf.auto||unloaded||!arg||!Number.isInteger(arg.messageIndex)||!Array.isArray(arg.chat?.message))return;
+   if(!conf.auto||!conf.realEditor||unloaded||!arg||!Number.isInteger(arg.messageIndex)||!Array.isArray(arg.chat?.message))return;
    const i=arg.messageIndex,m=arg.chat.message[i],ci=arg.characterIndex,ti=arg.chatIndex;
    if(!Number.isInteger(ci)||!Number.isInteger(ti)||!m||!['char','assistant'].includes(m.role)||i!==arg.chat.message.length-1)return;
-   const original=txt(m.data);if(!eligible(original))return;
+   const original=txt(m.data);if(alreadyPreSaved(original)||!eligible(original))return;
    const id=txt(arg.chat.id),k=outputKey(ci,ti,id,i,m);
    if(seen.has(k)||inflight.has(k))return;
    remember(k);inflight.add(k);
@@ -278,7 +278,7 @@
    finally{inflight.delete(k);if(uiOpen)void render()}
  }
  async function pollStoryRunner(){
-   if(!conf.auto||!conf.watchStoryRunner||unloaded)return;
+   if(!conf.auto||!conf.realEditor||!conf.watchStoryRunner||unloaded)return;
    try{
      const t=await current(),messages=t.chat?.message;
      if(!Array.isArray(messages)||!messages.length)return;
@@ -309,7 +309,7 @@
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
   </style><main><h2>Bard Editor Lab v0.3.2</h2>
-  <p class="muted">RisuBard 본체·프리셋 변경 없음 · 일반 채팅의 AI 메시지를 자동 검사하고 필요할 때만 퇴고</p>
+  <p class="muted">본체·프리셋 수정 없음 · 메인 채팅에 짧은 편집 지침 삽입 + 모델을 이용한 선택적 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
     <select id="model">
@@ -321,6 +321,11 @@
       <option value="economy" ${conf.mode==='economy'?'selected':''}>저비용 · 반복 징후 있을 때만 진단</option>
     </select>
   </div>
+  <div class="top">
+    <label><input type="checkbox" id="promptassist" ${conf.promptAssist?'checked':''}/> 생성 전 프롬프트에 편집 원칙 추가 (추가 모델 호출 없음)</label>
+    <label><input type="checkbox" id="realeditor" ${conf.realEditor?'checked':''}/> 생성 후 편집장 모델로 선택적 검수·퇴고 (모델 호출 비용 발생)</label>
+  </div>
+  <p class="muted">일반 비스트리밍 응답은 저장 전 교정. 스트리밍은 원문 표시가 끝난 뒤 교체될 수 있어. 기존 사용자 설정의 자동 OFF는 유지돼.</p>
   <div class="top">
     <label><input id="srwatch" type="checkbox" ${conf.watchStoryRunner?'checked':''}/> Story Runner 직접 생성도 감시 (수동 삽입 포함 가능)</label>
     <label>최대 입력 <select id="max">${[4500,7000,9000,12000,18000].map(n=>`<option value="${n}" ${conf.maxChars===n?'selected':''}>${n.toLocaleString()}자</option>`).join('')}</select></label>
@@ -342,6 +347,8 @@
   타임아웃은 대기를 중단하지만 모델 과금 취소를 보장하지 않아.</p></main>`;
   const el=id=>document.getElementById(id);
   el('auto').onclick=async()=>{conf.auto=!conf.auto;await save();state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';await render()};
+  el('promptassist').onchange=async e=>{conf.promptAssist=e.target.checked;await save()};
+  el('realeditor').onchange=async e=>{conf.realEditor=e.target.checked;await save()};
   el('model').onchange=async e=>{conf.model=e.target.value;await save()};
   el('mode').onchange=async e=>{conf.mode=e.target.value;await save()};
   el('max').onchange=async e=>{conf.maxChars=Number(e.target.value);await save()};
@@ -364,7 +371,27 @@
  async function open(){uiOpen=true;await render();await risuai.showContainer('fullscreen')}
  await risuai.registerSetting('Bard Editor Lab',open,'✍️','html','bard-editor-lab-settings');
  await risuai.registerButton({name:'Bard Editor Lab',icon:'✍️',iconType:'html',location:'hamburger',id:'bard-editor-lab-hamburger'},open);
+ // Register through public plugin APIs; host main/core and prompt presets stay untouched.
+ // Main provider -> beforeRequest (all streams) -> afterRequest (nonstream) ->
+ // committed-chat output fallback (streams). Editor LLM uses runLLMModel()
+ // which dispatches through requestChatDataMain, not these replacers.
+ const hooks=[];
+ if(typeof risuai.addRisuReplacer==='function'){
+   try{
+     await risuai.addRisuReplacer('beforeRequest',injectStyleBeforeRequest);
+     hooks.push(['beforeRequest',injectStyleBeforeRequest]);
+     await risuai.addRisuReplacer('afterRequest',reviseBeforeSave);
+     hooks.push(['afterRequest',reviseBeforeSave]);
+   }catch(error){console.log('[EditorLab] prompt/inline hook registration unavailable',error);}
+ }
  await risuai.addRisuChatListener('output',arg=>automatic(arg,'일반 채팅'));
  pollTimer=setInterval(()=>{void pollStoryRunner()},2800);
- await risuai.onUnload(()=>{unloaded=true;if(pollTimer)clearInterval(pollTimer)});
+ await risuai.onUnload(async()=>{
+   unloaded=true;
+   if(pollTimer)clearInterval(pollTimer);
+   if(typeof risuai.removeRisuReplacer==='function'){
+     for(const [type,handler] of hooks)
+       try{await risuai.removeRisuReplacer(type,handler)}catch(_){}
+   }
+ });
 })();
