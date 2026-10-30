@@ -1,41 +1,48 @@
-# Bard Editor Lab v0.3.1
+# Bard Editor Lab v0.3.2 — inline automatic editor
 
-Independent, opt-in automatic Korean fiction editor for RisuBard (Plugin API 3.0). **No RisuBard host/core patch is required.**
+A standalone RisuBard plugin (Plugin API 3.0) combining **prompt-like style guidance** with **real LLM-backed selective editorial review**. No RisuBard host patch or user preset rewrite.
 
-## v0.3.1 — dialogue depth and leak prevention (2026-10-30)
-- Reviews *dialogue function*, not absolute sentence length: repeated question/yes/confirmation loops, low-information echoes, recycled excuses, overly passive NPC responses and repetitive micro-gesture narration.
-- Preserves meaningful short lines, personal habits, player speech and existing plot/canon; no dialogue-length quotas or forced new events.
-- Detects and removes an initial closed `<Thoughts>...</Thoughts>` block and exact `# Approved / ## Response` wrapper before measuring the actual story length. An unclosed block fails safely.
-- Uses semantic critique in **선택적** mode, with optional low-cost repetition prefilter in **저비용**.
-- Backups now store the full raw original text before overwriting chat; quota failures keep the chat unchanged. Rollback uses the stored exact original rather than a shortened fragment.
-- JS syntax and **13 mock scenarios** passed: [CI run](https://github.com/pjb3181-prog/support-my-task/actions/runs/41040852432). Live RisuBard provider/desktop/Android acceptance tests are **not yet run**.
-- This is an isolated plugin change. Story Runner, Mutation and user prompt presets are untouched.
+## Install or update
+- Stable plugin: [bard_editor_lab.js](./bard_editor_lab.js)
+- Raw/update URL: https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
+- Import or update this as the **Bard Editor Lab** plugin only, without replacing Story Runner or Mutation.
+- Open the plugin settings once: `자동 퇴고 ON`, `생성 전 프롬프트에 편집 원칙 추가`, and `생성 후 편집장 모델로 선택적 검수·퇴고` should be enabled for hybrid mode.
+- **Fresh installs start ON** per current integration request. Existing stored `auto:false` stays OFF until the user explicitly turns it ON. This avoids silently overriding previous cost preferences.
 
-## Install
-- Plugin source (stable): [bard_editor_lab.js](./bard_editor_lab.js)
-- Raw file / auto-update URL: https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
-- Import the JavaScript as an independent RisuBard plugin. Do NOT replace Story Runner or Mutation State Router.
-- Open **Bard Editor Lab** from settings or hamburger menu. Toggle **자동 퇴고 OFF — 켜기** once. OFF is the safe installation default.
+## Hybrid pipeline
+1. **beforeRequest**, type `model`: attach a compact, *ephemeral* instruction to the outgoing prompt. It discourages echo/interview loops, flat dialogue, and recurring body/gesture narration. It preserves world canon, roleplay personality, first-message choices, user agency, and any existing prompt. No additional model request, but it increases prompt tokens slightly. Repeated hook calls do not duplicate the marker.
+2. **Main model**: generates fiction as normal.
+3. **afterRequest**, type `model`, only when provider returns a non-stream response: editor critic checks substantial problems. One extra model call for diagnosis; if actionable issues, a second call produces a surgical revised version. A non-stream response can be revised **before first chat commit**.
+4. **Chat output listener**: processes **streaming** responses when the chat turn has completed. Editor Lab checks the exact current message, stores full original backup, and replaces the committed response only after guarded verification. The original stream may be visible until corrected. No host-core modifications.
+5. **Double-review guard**: responses already evaluated by the non-stream hook are skipped by the committed-output listener when text matches.
+6. On model failure, invalid JSON, numerical/tag changes, changed chat/message or backup-storage failure: **keep the original story**.
 
-## Automatic flow
-1. The RisuBard host commits a normal character/assistant response.
-2. Editor Lab checks eligibility (Korean prose, meaningful length, no JSON or tool/reasoning output).
-3. In **선택적** mode the editor model diagnoses each eligible turn; if there are no actionable defects, preserve the original (one model call).
-4. Only when the critic returns grounded, actionable defects does Editor Lab request a full, narrow revision (second model call).
-5. Check exact chat/message identity, status tags, numerical values and length. If validation passes, apply revised text; otherwise preserve original.
-6. Preserve up to five original/revised backups in plugin storage; **가장 최근 퇴고 원본 복원** can roll back the latest matching revision.
+## Options and model routing
+- Master toggle `자동 퇴고`: both automatic stages enabled or disabled.
+- `생성 전 프롬프트`: inexpensive advice, no second model call.
+- `생성 후 편집장 모델`: actual critic/rewrite requests. Can be disabled for prompt-only operation.
+- `선택적`: checks eligible text every time, revises only when needed.
+- `저비용`: lightweight repetition signals gate editor model calls; false negatives are possible.
+- Editor model reuses the host's existing `otherAx` auxiliary or `model` main model. A plugin-selected arbitrary ModelPreset ID is **not supported** by the existing host API. Existing model credentials remain inside RisuBard.
+- Model requests have a 90-second **waiting** timeout; this does not necessarily cancel provider billing.
+- Default eligible-story length limit: **9,000 characters after stripping an initial closed `<Thoughts>` block**. Full original input is backed up without truncation, up to a separate hard safety cap.
+- Actual editorial review can cost 1–2 extra model requests per eligible response. No precise USD cap exists yet.
 
-## Models and cost
-- Reuses the already configured RisuBard `otherAx` auxiliary or `model` main model. API credentials remain in RisuBard.
-- Does not select arbitrary model preset IDs: unmodified RisuBard Plugin API 3.0 does not expose that operation.
-- **저비용** mode first checks repetition/gesture signals and skips low-signal turns.
-- Max two model requests per eligible turn; input limit defaults to 9,000 characters. This is **not a USD cap**.
-- A timeout does not cancel the underlying provider billing.
+## Story Runner
+- **Ordinary native chat** works without Story Runner.
+- Story Runner **direct plugin insertions** bypass RisuBard's normal model replacer/chat-output hook. Optional `Story Runner 직접 생성도 감시` scans a matching message ID, and stays OFF by default.
+- The direct watcher may also catch manual insertions and can run after Story Runner Notebook processing. Verify Notebook/BardWiki consistency before enabling it.
+- Story Runner, Mutation, ContextCore and character cards are **unchanged**.
 
-## Story Runner special case
-Normal chat replies work without Story Runner, whether the host streamed or not. Story Runner's *direct plugin-model insertion* bypasses normal chat output events, so an optional polling checkbox (**Story Runner 직접 생성도 감시**) is available. It is OFF by default because Story Runner manual insertions have the same ID format and because its Notebook may already have processed the draft when the editor applies a late revision. Only enable after checking the impact on a test chat.
+## Testing (2026-10-30)
+- [GitHub Actions: 29 mocked integration/regression scenarios + JavaScript parser checks](https://github.com/pjb3181-prog/support-my-task/actions/runs/41041513313) — **PASS**
+- Covered: prompt injection only for main mode, no preset-message mutation, idempotency, prompt-only mode, pre-save edit, streaming fallback, deduplication, existing OFF preference, failing provider, leaked Thoughts, malformed revision/numerical guard, rollback backup failures, unload cleanup and earlier editing regressions.
+- These are **mock host API tests**. Real PC/Android RisuBard installation, plugin permissions, and live model quality **have not been validated**. Prompt/response hooks can be denied by the host if plugin permissions aren't granted.
+- Non-stream pre-commit rewriting cannot make a streamed completion appear already edited without intercepting/buffering the stream, which the current standalone public API does not provide.
 
-## Validation
-GitHub Actions on experimental branch: [syntax + mock API checks](https://github.com/pjb3181-prog/support-my-task/actions/runs/40532460227) passed. The tests cover disabled mode, selective rewrite, original preservation, provider failure, numeric guard, streaming and UI toggle. **Real RisuBard UI/provider/PC/Android acceptance testing has not yet been performed.**
-
-No edits to Story Runner v0.95.7, Mutation v0.79.3, or `ContextCore v1` preset were made.
+## Safe first run
+1. Make a copy of the chat or export a RisuBard backup.
+2. Update Editor Lab to v0.3.2; enable the master toggle and two hybrid stage toggles if previously OFF.
+3. Use a **test chat**, check that `otherAx` is configured to a reasonably priced editorial model.
+4. Compare normal chat vs. Editor Lab prompts/results and ensure the final edit preserves identities, first choices, tags and numbers.
+5. Leave the Story Runner direct-insert watcher OFF until Notebook consistency is verified.
