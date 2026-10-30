@@ -1,0 +1,27 @@
+name: Bard Editor Lab v0.3.4 auto history regression
+on:
+  push:
+    branches:
+      - fix/editorlab-auto-history-034
+    paths:
+      - risubard-updates/bard_editor_lab.js
+      - tests/editorlab-auto.test.mjs
+      - tests/editorlab-hybrid.test.mjs
+      - .github/workflows/editorlab-history-checks.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  editorlab-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Plugin syntax
+        run: node --check risubard-updates/bard_editor_lab.js
+      - name: Existing editor review cases
+        run: node tests/editorlab-auto.test.mjs
+      - name: Pre-commit, streaming and scene momentum cases
+        run: node tests/editorlab-hybrid.test.mjs
