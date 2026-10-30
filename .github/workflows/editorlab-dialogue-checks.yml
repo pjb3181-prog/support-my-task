@@ -1,0 +1,24 @@
+name: Editor Lab dialogue-depth regression
+on:
+  push:
+    branches:
+      - fix/editorlab-dialogue-depth-031
+    paths:
+      - risubard-updates/bard_editor_lab.js
+      - tests/editorlab-auto.test.mjs
+      - .github/workflows/editorlab-dialogue-checks.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check
+        run: node --check risubard-updates/bard_editor_lab.js
+      - name: Mock output and dialogue quality checks
+        run: node tests/editorlab-auto.test.mjs
