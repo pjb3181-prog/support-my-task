@@ -1,0 +1,30 @@
+name: Bard Editor Lab original-voice regression
+on:
+  push:
+    branches:
+      - fix/editorlab-voice-anchor-035
+    paths:
+      - risubard-updates/bard_editor_lab.js
+      - tests/editorlab-auto.test.mjs
+      - tests/editorlab-hybrid.test.mjs
+      - tests/editorlab-voice-anchor.test.mjs
+      - .github/workflows/editorlab-voice-checks.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  voice-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check
+        run: node --check risubard-updates/bard_editor_lab.js
+      - name: Previous normal chat, stream and rollback tests
+        run: node tests/editorlab-auto.test.mjs
+      - name: Hybrid prompt and scene regression tests
+        run: node tests/editorlab-hybrid.test.mjs
+      - name: Original first-message voice regression
+        run: node tests/editorlab-voice-anchor.test.mjs
