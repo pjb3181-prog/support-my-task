@@ -1,6 +1,15 @@
-# Bard Editor Lab v0.3.0
+# Bard Editor Lab v0.3.1
 
 Independent, opt-in automatic Korean fiction editor for RisuBard (Plugin API 3.0). **No RisuBard host/core patch is required.**
+
+## v0.3.1 — dialogue depth and leak prevention (2026-10-30)
+- Reviews *dialogue function*, not absolute sentence length: repeated question/yes/confirmation loops, low-information echoes, recycled excuses, overly passive NPC responses and repetitive micro-gesture narration.
+- Preserves meaningful short lines, personal habits, player speech and existing plot/canon; no dialogue-length quotas or forced new events.
+- Detects and removes an initial closed `<Thoughts>...</Thoughts>` block and exact `# Approved / ## Response` wrapper before measuring the actual story length. An unclosed block fails safely.
+- Uses semantic critique in **선택적** mode, with optional low-cost repetition prefilter in **저비용**.
+- Backups now store the full raw original text before overwriting chat; quota failures keep the chat unchanged. Rollback uses the stored exact original rather than a shortened fragment.
+- JS syntax and **13 mock scenarios** passed: [CI run](https://github.com/pjb3181-prog/support-my-task/actions/runs/41040852432). Live RisuBard provider/desktop/Android acceptance tests are **not yet run**.
+- This is an isolated plugin change. Story Runner, Mutation and user prompt presets are untouched.
 
 ## Install
 - Plugin source (stable): [bard_editor_lab.js](./bard_editor_lab.js)
