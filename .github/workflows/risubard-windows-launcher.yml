@@ -30,6 +30,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet publish windows-launcher/RisuBardLauncher.csproj -c Release -r win-x64 --no-restore --self-contained true -o windows-launcher/publish -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Real Windows integration test for background Node supervisor
+        shell: pwsh
+        run: ./windows-launcher/Test-ServerHost.ps1
       - name: Confirm EXE and package permanent installer
         shell: pwsh
         run: |
@@ -49,14 +52,14 @@ jobs:
       - name: Make permanent ready-to-install ZIP
         shell: pwsh
         run: |
-          Compress-Archive -Path 'windows-launcher/package/*' -DestinationPath 'windows-launcher/RisuBard_Windows_Launcher_v1.0.0_win-x64.zip' -CompressionLevel Optimal -Force
-          $zip = Get-Item 'windows-launcher/RisuBard_Windows_Launcher_v1.0.0_win-x64.zip'
+          Compress-Archive -Path 'windows-launcher/package/*' -DestinationPath 'windows-launcher/RisuBard_Windows_Launcher_v1.0.1_win-x64.zip' -CompressionLevel Optimal -Force
+          $zip = Get-Item 'windows-launcher/RisuBard_Windows_Launcher_v1.0.1_win-x64.zip'
           if ($zip.Length -lt 1000000) { throw 'Installer ZIP not generated' }
           Write-Host "ZIP ready: $([math]::Round($zip.Length/1MB,1)) MB"
       - name: Upload actual installable Windows app
         uses: actions/upload-artifact@v4
         with:
-          name: RisuBard_Windows_Launcher_v1.0.0_win-x64
+          name: RisuBard_Windows_Launcher_v1.0.1_win-x64
           path: windows-launcher/package/*
           if-no-files-found: error
           retention-days: 90
