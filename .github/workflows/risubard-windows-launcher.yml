@@ -33,6 +33,9 @@ jobs:
       - name: Real Windows integration test for background Node supervisor
         shell: pwsh
         run: ./windows-launcher/Test-ServerHost.ps1
+      - name: Cold-start Windows UI alone with local server stopped
+        shell: pwsh
+        run: ./windows-launcher/Test-ColdStart.ps1
       - name: Confirm EXE and package permanent installer
         shell: pwsh
         run: |
