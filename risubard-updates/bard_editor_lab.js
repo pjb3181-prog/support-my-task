@@ -1,11 +1,11 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.7
+//@version 0.3.8
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
-//@description Automatic story scene briefing, suggested next-turn directions and selective editing; standalone, no core patches.
+//@description Automatic story scene briefing and ready-to-send next-user-turn drafts; standalone with original editor features.
 (async () => {
- const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups'; const ACTIVITY_STORE='bard_editor_lab_v034_activity'; const STYLE_STORE='bard_editor_lab_v036_style_snapshots'; const SCENE_STORE='bard_editor_lab_v037_scene_briefs';
+ const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups'; const ACTIVITY_STORE='bard_editor_lab_v034_activity'; const STYLE_STORE='bard_editor_lab_v036_style_snapshots'; const SCENE_STORE='bard_editor_lab_v038_scene_briefs';
  const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,sceneAssist:true,sceneAuto:true,sceneCard:true,timeoutMs:90000,maxChars:9000};
  let conf={...DEFAULT};
  let state={target:null,index:-1,original:'',revised:'',issues:[],status:'자동 퇴고 OFF',busy:false,lastAuto:'없음'};
@@ -18,9 +18,9 @@
  const sceneInflight=new Set(),sceneReviewed=new Set();
  const INLINE_HINT_ID='[BARD_EDITOR_LAB_STYLE_V033]';
 
- // Scene guidance is an opt-in reader's aid, never a chat entry, system prompt,
- // Story Runner plan, world-state mutation, or automatic user command.
- const SCENE_PANEL_ID='bard-editor-lab-scene-brief-v037';
+ // Scene drafts are copyable alternatives for the NEXT HUMAN USER turn, never
+ // AI instructions, story inserts, automatic user commands, or world mutations.
+ const SCENE_PANEL_ID='bard-editor-lab-scene-brief-v038';
  const sceneShort=(value,max=170)=>txt(value).replace(/<[^>]*>/g,'').replace(/[\u0000-\u001f\u007f]/g,' ')
    .replace(/\s+/g,' ').trim().slice(0,max);
  function latestAiInfo(chat){
@@ -59,6 +59,20 @@
      .map(canonical).filter(x=>x.length>=2);
    return terms.length>=2&&terms.every(x=>source.includes(x));
  }
+
+ function sceneDraftText(value,max=440){
+   // Preserve intentional dialogue paragraphs for easy copy/paste, unlike sceneShort.
+   return txt(value).replace(/<[^>]*>/g,'')
+     .replace(/\r\n?/g,'\n')
+     .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g,'')
+     .replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim().slice(0,max);
+ }
+ function isMetaInstructionDraft(text){
+   const outsideSpeech=text.replace(/"[^"]*"/g,'').replace(/“[^”]*”/g,'')
+     .replace(/「[^」]*」/g,'').replace(/『[^』]*』/g,'');
+   return /(?:해줘|보여줘|진행해줘|묘사해줘|서술해줘|작성해줘|전개해줘|만들어줘|이어줘|시켜줘|하게 해줘)(?:[.!?\s]|$)/.test(outsideSpeech)
+     || /^(?:다음 장면|다음 전개|AI가|NPC가|캐릭터가|이어서 설명|이어서 전개)/.test(outsideSpeech.trim());
+ }
  function cleanSceneResponse(parsed,sourceFooter,sourceText=''){
    if(!parsed||typeof parsed!=='object')throw Error('장면 안내 JSON 응답이 비어 있음');
    const proposedPlace=sceneShort(parsed.place||parsed.location||'',95);
@@ -67,17 +81,23 @@
    const time=sceneShort(sourceFooter.time||(groundedInScene(proposedTime,sourceText)?proposedTime:'미확인'),90)||'미확인';
    const situation=sceneShort(parsed.situation||sourceFooter.situation||'',250);
    if(situation.length<12)throw Error('현재 상황을 설명하는 내용이 부족함');
-   const raw=Array.isArray(parsed.directions)?parsed.directions:parsed.suggestions;
-   if(!Array.isArray(raw))throw Error('추천 지시어 배열이 없음');
-   const directions=[];
-   for(const item of raw){
-     const t=sceneShort(typeof item==='string'?item:item?.instruction||item?.text||'',240);
-     if(t.length>=12&&!directions.includes(t))directions.push(t);
-     if(directions.length===3)break;
+   const raw=parsed.drafts;
+   if(!Array.isArray(raw)||raw.length!==3)throw Error('다음 입력 초안은 서로 다른 3개가 필요해');
+   const kinds=['대사','행동','생각'],drafts=[];
+   for(let i=0;i<3;i++){
+     const entry=raw[i];
+     if(!entry||typeof entry!=='object')throw Error('초안 JSON 형식 오류');
+     const kind=sceneShort(entry.kind||entry.type||'',12);
+     const text=sceneDraftText(entry.text||entry.draft||'',440);
+     if(kind!==kinds[i])throw Error('대사·행동·생각 초안 구성이 올바르지 않아');
+     if(text.length<12||text.length>420||isMetaInstructionDraft(text))
+       throw Error('AI 지시문이 아닌 실제 다음 채팅 입력 초안이 필요해');
+     if(drafts.some(x=>x.text.replace(/\s/g,'')===text.replace(/\s/g,'')))
+       throw Error('서로 다른 다음 입력 초안이 필요해');
+     drafts.push({kind,text});
    }
-   if(directions.length<2)throw Error('근거가 있는 추천 지시어가 부족함');
-   return {place,time,situation,directions,uncertainty:sceneShort(parsed.uncertainty||'',130)};
- }
+   return {place,time,situation,drafts,uncertainty:sceneShort(parsed.uncertainty||'',130)};
+}
  function currentSceneEntry(ci,ti,chat){
    const info=latestAiInfo(chat);
    const entry=sceneBriefs[styleKey(ci,ti,chat)];
@@ -109,7 +129,7 @@
    sceneReviewed.add(unique);sceneInflight.add(unique);
    while(sceneReviewed.size>240)sceneReviewed.delete(sceneReviewed.values().next().value);
    sceneBriefs[k]={signature:sig,index:info.index,at:Date.now(),state:'loading',
-     place:'분석 중',time:'분석 중',situation:'최근 장면을 읽고 있어.',directions:[]};
+     place:'분석 중',time:'분석 중',situation:'최근 장면을 읽고 있어.',drafts:[]};
    void updateScenePanel();
    try{
      const source=briefingSource(chat,info);
@@ -152,7 +172,7 @@
      if(currentRecord&&currentRecord.signature===sig){
        sceneBriefs[k]={...currentRecord,state:'error',
          place:'미확인',time:'미확인',situation:'장면 안내 생성에 실패했어. 설정창에서 다시 분석할 수 있어.',
-         directions:[],error:sceneShort(error?.message||error,170)};
+         drafts:[],error:sceneShort(error?.message||error,170)};
        await persistSceneEntries();
      }
    }finally{
@@ -927,7 +947,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.7</h2>
+  </style><main><h2>Bard Editor Lab v0.3.8</h2>
   <p class="muted">본체·프리셋 수정 없음 · 메인 채팅에 짧은 편집 지침 삽입 + 모델을 이용한 선택적 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
