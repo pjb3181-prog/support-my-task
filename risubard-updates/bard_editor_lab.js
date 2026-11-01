@@ -813,11 +813,16 @@
    state.original=state.revised;state.revised='';state.status='사용자 승인 퇴고본 적용 · 원문 백업됨';
  }
  async function automatic(arg,sourceLabel){
-   if(!conf.auto||unloaded||!arg||!Number.isInteger(arg.messageIndex)||!Array.isArray(arg.chat?.message))return;
+   if(unloaded||!arg||!Number.isInteger(arg.messageIndex)||!Array.isArray(arg.chat?.message))return;
    const i=arg.messageIndex,m=arg.chat.message[i],ci=arg.characterIndex,ti=arg.chatIndex;
    if(!Number.isInteger(ci)||!Number.isInteger(ti)||!m||!['char','assistant'].includes(m.role)||i!==arg.chat.message.length-1)return;
+   if(!conf.auto){void refreshSceneFromEvent(arg);return}
    const original=txt(m.data);
-   if(alreadyPreSaved(original)){await confirmAutoCommitted(original);return}
+   if(alreadyPreSaved(original)){
+     await confirmAutoCommitted(original);
+     void refreshSceneFromEvent(arg);
+     return;
+   }
    const id=txt(arg.chat.id),k=outputKey(ci,ti,id,i,m);
    if(seen.has(k)||inflight.has(k))return;
    remember(k);inflight.add(k);
@@ -842,7 +847,11 @@
      }
    }catch(error){
      await recordAutomatic({phase:sourceLabel,outcome:'error',reason:'원문 유지 · '+txt(error?.message||error),original,calls:0});
-   }finally{inflight.delete(k);if(uiOpen&&activityView==='auto')void render().catch(()=>{})}
+   }finally{
+     inflight.delete(k);
+     if(uiOpen&&activityView==='auto')void render().catch(()=>{});
+     void refreshSceneFromEvent(arg);
+   }
  }
  async function pollStoryRunner(){
    if(!conf.auto||!conf.realEditor||!conf.watchStoryRunner||unloaded)return;
@@ -867,6 +876,7 @@
  }
  async function render(){
    if(!uiOpen)return;
+   if(sceneView){await renderSceneView();return;}
    let styleOptions='<option value="-1">문체가 마음에 들었던 AI 응답 선택…</option>';
    let currentStyle=null;
    try{
@@ -918,6 +928,16 @@
   </div>
   <p class="muted">첫 메시지는 수정하지 않고 캐릭터의 고유 말투만 참고해. 문자 대화의 짧은 문장은 허용하되 정보 없는 반복 응답은 감지해. 장면 정체 방지도 무리한 사건을 요구하지 않아.</p>
    <section class="status" style="margin:12px 0">
+     <strong>🎬 현재 상황 안내 + 추천 지시어</strong>
+     <div class="top">
+       <label><input id="sceneassist" type="checkbox" ${conf.sceneAssist?'checked':''}/> 장면 브리핑 기능 ON</label>
+       <label><input id="sceneauto" type="checkbox" ${conf.sceneAuto?'checked':''}/> 새 응답 완료 시 자동 분석 (별도 모델 호출 최대 1회)</label>
+       <label><input id="scenecard" type="checkbox" ${conf.sceneCard?'checked':''}/> 채팅 화면에 장소·시간·상황·추천 지시어 카드 표시</label>
+       <button id="scene-open">장면 브리핑 열기 · 추천 지시어 복사</button>
+     </div>
+     <p class="muted">요약은 현재 대화 내용을 읽어 생성해. 원본은 수정하지 않고 추천 지시어도 자동 실행하지 않아. 기존 보조/메인 모델 설정을 사용해 별도 비용이 들 수 있어.</p>
+   </section>
+   <section class="status" style="margin:12px 0">
      <strong>문체 기준선 · 대화 기록은 그대로 유지</strong>
      <p class="muted">초반에 마음에 들었던 AI 응답을 등록해. 문체만 리셋하면 다음 약 4회 응답에서 기준 문체를 강하게 참고하고, 이후에도 약하게 유지해.</p>
      <div class="top">
@@ -967,6 +987,14 @@
   el('realeditor').onchange=async e=>{conf.realEditor=e.target.checked;await save()};
   el('momentum').onchange=async e=>{conf.momentum=e.target.checked;await save()};
   el('voiceguard').onchange=async e=>{conf.voiceGuard=e.target.checked;await save()};
+  el('sceneassist').onchange=async e=>{
+    conf.sceneAssist=e.target.checked;await save();await updateScenePanel();await render();
+  };
+  el('sceneauto').onchange=async e=>{conf.sceneAuto=e.target.checked;await save()};
+  el('scenecard').onchange=async e=>{
+    conf.sceneCard=e.target.checked;await save();await updateScenePanel();await render();
+  };
+  el('scene-open').onclick=()=>{sceneView=true;sceneUiStatus='';void render()};
   const styleSelector=el('style-message');
   if(styleSelector)styleSelector.onchange=e=>{const n=Number(e.target.value);styleChosenIndex=Number.isInteger(n)&&n>=0?n:-1;void render()};
   el('style-save').onclick=()=>captureApprovedStyle(styleChosenIndex)
