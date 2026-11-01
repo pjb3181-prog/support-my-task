@@ -142,6 +142,13 @@ await check('unknown time/place remain unknown when none is grounded',async()=>{
  const entry=t.db.get('bard_editor_lab_v037_scene_briefs')['0|chat-a'];
  assert.equal(entry.place,'미확인');assert.equal(entry.time,'미확인');
 });
+await check('unsupported location/time from model are marked 미확인 even without a footer',async()=>{
+ const noStatus=chapter.replace(footer,'');
+ const t=await create({body:noStatus,sceneModelReply:{...response,place:'화성 우주기지',time:'2040년 자정'}});
+ await t.fire();await until(()=>t.db.get('bard_editor_lab_v037_scene_briefs')?.['0|chat-a']?.state==='ready');
+ const item=t.db.get('bard_editor_lab_v037_scene_briefs')['0|chat-a'];
+ assert.equal(item.place,'미확인');assert.equal(item.time,'미확인');
+});
 await check('no chat panel API still exposes a chat-menu scene briefing',async()=>{
  const t=await create({withPanel:false});
  assert.equal(typeof t.buttons.get('bard-editor-lab-scene-menu')?.fn,'function');
