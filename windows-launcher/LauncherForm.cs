@@ -301,6 +301,12 @@ internal sealed class LauncherForm : Form
 
     private async Task OpenBrowserWindowAsync()
     {
+        // WebView2 may cancel CoreWebView2 initialization when it is hidden.
+        // Initialize it with a visible handle, behind the loading overlay.
+        if (!browser.IsHandleCreated) browser.CreateControl();
+        browser.Visible = true;
+        waiting.Visible = true;
+        waiting.BringToFront();
         if (!browserReady)
         {
             try
@@ -311,6 +317,15 @@ internal sealed class LauncherForm : Form
                 await browser.EnsureCoreWebView2Async(env);
                 browser.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
                 browser.CoreWebView2.Settings.AreDevToolsEnabled = true;
+                browser.CoreWebView2.NavigationCompleted += (_, e) =>
+                {
+                    if (!e.IsSuccess)
+                    {
+                        Log("WebView2 navigation failed: " + e.WebErrorStatus);
+                        SetStatus("내장 WebView2 페이지 연결 실패: " + e.WebErrorStatus +
+                                  "\n로그 버튼으로 원인을 확인해 줘.");
+                    }
+                };
                 browser.CoreWebView2.NewWindowRequested += (_, e) =>
                 {
                     e.Handled = true;
