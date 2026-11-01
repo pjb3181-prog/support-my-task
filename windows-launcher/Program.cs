@@ -1,0 +1,47 @@
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Windows.Forms;
+
+namespace RisuBardLauncher;
+
+internal static class Program
+{
+    private const string WindowCaption = "RisuBard Launcher";
+    private static Mutex? appMutex;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindow(string? className, string windowName);
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr handle);
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr handle, int command);
+
+    [STAThread]
+    private static void Main()
+    {
+        appMutex = new Mutex(true, "Local\\RisuBardLauncher.Win64.SingleInstance", out bool first);
+        if (!first)
+        {
+            var window = FindWindow(null, WindowCaption);
+            if (window != IntPtr.Zero)
+            {
+                ShowWindow(window, 9);
+                SetForegroundWindow(window);
+            }
+            appMutex.Dispose();
+            return;
+        }
+
+        try
+        {
+            ApplicationConfiguration.Initialize();
+            Application.Run(new LauncherForm(WindowCaption));
+        }
+        finally
+        {
+            appMutex.ReleaseMutex();
+            appMutex.Dispose();
+        }
+    }
+}
