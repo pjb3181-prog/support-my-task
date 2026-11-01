@@ -226,7 +226,7 @@ internal sealed class LauncherForm : Form
                     return;
                 }
                 SetStatus("꺼져 있는 RisuBard 서버를 자동으로 시작하는 중…\n" + root);
-                StartNodeServer(nodePath, root);
+                await StartNodeServerAsync(nodePath, root);
                 bool ok = false, wrong = false;
                 for (int i = 0; i < 100 && !IsDisposed; i++)
                 {
@@ -341,12 +341,32 @@ internal sealed class LauncherForm : Form
                uri.IsLoopback && uri.Port == 7777;
     }
 
-    private void StartNodeServer(string node, string root)
+    private static string PowerShellLiteral(string text) => text.Replace("'", "''");
+
+    private async Task StartNodeServerAsync(string node, string root)
     {
+        // The server must outlive this window. Directly redirecting a Node child's
+        // stdout to the GUI would close the pipes when the window exits; subsequent
+        // server logging could then fail with EPIPE. A short-lived hidden PowerShell
+        // Start-Process call gives Node independent FILE-backed stdout/stderr handles.
+        // No CMD console or RisuBard source patch is involved.
+        Directory.CreateDirectory(DataDirectory);
+        string sourceFile = Path.Combine(root, "server", "node", "server.cjs");
+        string stdout = Path.Combine(DataDirectory, "server.stdout.log");
+        string stderr = Path.Combine(DataDirectory, "server.stderr.log");
+        var script =
+            "$ErrorActionPreference='Stop';" +
+            "$env:OPEN_BROWSER='0';$env:PORT='7777';" +
+            "$p=Start-Process -FilePath '" + PowerShellLiteral(node) + "' " +
+            "-ArgumentList '\"" + PowerShellLiteral(sourceFile) + "\"' " +
+            "-WorkingDirectory '" + PowerShellLiteral(root) + "' " +
+            "-RedirectStandardOutput '" + PowerShellLiteral(stdout) + "' " +
+            "-RedirectStandardError '" + PowerShellLiteral(stderr) + "' " +
+            "-WindowStyle Hidden -PassThru;" +
+            "Write-Output $p.Id;";
         var psi = new ProcessStartInfo
         {
-            FileName = node,
-            WorkingDirectory = root,
+            FileName = "powershell.exe",
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden,
@@ -355,18 +375,37 @@ internal sealed class LauncherForm : Form
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
-        psi.ArgumentList.Add(Path.Combine(root, "server", "node", "server.cjs"));
-        psi.Environment["PORT"] = "7777";
-        psi.Environment["OPEN_BROWSER"] = "0";
+        psi.ArgumentList.Add("-NoProfile");
+        psi.ArgumentList.Add("-NonInteractive");
+        psi.ArgumentList.Add("-ExecutionPolicy");
+        psi.ArgumentList.Add("Bypass");
+        psi.ArgumentList.Add("-EncodedCommand");
+        psi.ArgumentList.Add(Convert.ToBase64String(Encoding.Unicode.GetBytes(script)));
 
-        server = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        server.OutputDataReceived += (_, e) => { if (e.Data != null) Log("server: " + e.Data); };
-        server.ErrorDataReceived += (_, e) => { if (e.Data != null) Log("server error: " + e.Data); };
-        server.Exited += (_, _) => Log("RisuBard server process stopped.");
-        if (!server.Start()) throw new InvalidOperationException("Node.js 서버 프로세스를 시작할 수 없어.");
-        server.BeginOutputReadLine();
-        server.BeginErrorReadLine();
-        Log("Started Node RisuBard server PID=" + server.Id + ", folder=" + root);
+        using var starter = Process.Start(psi)
+            ?? throw new InvalidOperationException("서버 실행 요청을 시작하지 못했어.");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(14));
+        Task<string> stdOutTask = starter.StandardOutput.ReadToEndAsync(timeout.Token);
+        Task<string> stdErrTask = starter.StandardError.ReadToEndAsync(timeout.Token);
+        await starter.WaitForExitAsync(timeout.Token);
+        string stdOut = await stdOutTask;
+        string stdErr = await stdErrTask;
+        if (starter.ExitCode != 0)
+        {
+            Log("Server start request failed: " + stdErr);
+            throw new InvalidOperationException(
+                "서버 시작 요청이 실패했어. 로그를 확인해 줘.\n" +
+                (stdErr.Length > 350 ? stdErr[..350] : stdErr));
+        }
+
+        string? pidText = stdOut.Split('\r', '\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim()).LastOrDefault(x => int.TryParse(x, out _));
+        if (!int.TryParse(pidText, out int pid) || pid <= 0)
+            throw new InvalidOperationException("서버 프로세스 ID를 확인하지 못했어. 로그를 확인해 줘.");
+
+        server = Process.GetProcessById(pid);
+        Log($"Started standalone Node RisuBard server, PID={pid}, folder={root}. " +
+            "Process logging goes to server.stdout.log / server.stderr.log.");
     }
 
     private string? FindRisuBardRoot()
