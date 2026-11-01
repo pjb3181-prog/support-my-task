@@ -143,7 +143,10 @@ internal sealed class LauncherForm : Form
             try
             {
                 EnsureLogFile();
-                Process.Start(new ProcessStartInfo(LogFile) { UseShellExecute = true });
+                Directory.CreateDirectory(DataDirectory);
+                var psi = new ProcessStartInfo { FileName = "explorer.exe", UseShellExecute = true };
+                psi.ArgumentList.Add(DataDirectory);
+                Process.Start(psi);
             }
             catch (Exception ex) { MessageBox.Show(ex.Message, "로그 열기 실패"); }
         };
