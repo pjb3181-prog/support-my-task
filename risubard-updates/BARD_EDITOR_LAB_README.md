@@ -1,6 +1,40 @@
-# Bard Editor Lab v0.3.6 — approved-style snapshots and non-destructive reset
+# Bard Editor Lab v0.3.7 — automatic scene briefing and next-step suggestions
 
 A standalone RisuBard plugin (Plugin API 3.0) combining **prompt-like style guidance** with **real LLM-backed selective editorial review**. No RisuBard host patch or user preset rewrite.
+
+## v0.3.7 — Situation card and optional recommended instructions
+
+**Purpose:** Give the user a compact, visual-style location/time/current-situation summary after a normal RisuBard AI response, plus three distinct, copyable suggestions for directing the NEXT turn. The system does **not** auto-send those suggestions or write them into the story.
+
+**Native chat display**
+- Uses the customized RisuBard's `risuai.setChatPanel` API (when available) to render a **sanitized, static card** with **📍 장소**, **🕒 시간**, **상황**, and **다음 지시어 추천** adjacent to chat.
+- A separate **🎬 장면 브리핑** entry is registered in the chat menu. It opens an interactive panel with the scene briefing and three **복사** controls.
+- On RisuBard releases without `setChatPanel`, the main-chat card is omitted but the chat-menu entry remains usable. This does **not** inject new text into an assistant response or patch the RisuBard host.
+- Since the chat card is static HTML, copy actions live in the chat-menu panel, not in the card itself.
+
+**How it works**
+1. After a completed ordinary AI response, the plugin reads its final saved text plus a small window of prior dialogue and any explicit scene footer.
+2. It calls the **existing configured editorial model** (otherAx or main) **once** to generate: `place`, `time`, `situation`, exactly three optional `directions`, and any uncertainty.
+3. The model is instructed to report **미확인** when time or place is absent, not to invent facts, and not to introduce content absent from the current scene. If a recognized bracketed date/time/location footer exists, that structured output **overrides** contradicting model output.
+4. All outputs are shown as read-only advice. Recommended prompts are never automatically inserted, sent, or executed. Suggestions are restrained and non-explicit even when the surrounding fiction is mature or set in a school.
+5. Only concise briefing data (not full narrative transcripts) is saved in `bard_editor_lab_v037_scene_briefs` with a stable per-chat identifier and a fingerprint of the last AI response. Up to 24 chat entries are kept; old or cross-chat entries are not shown.
+
+**Controls** (in Editor Lab settings)
+- `장면 브리핑 기능 ON` (new default: ON, independent of automatic proofreading).
+- `새 응답 완료 시 자동 분석` (new default: ON; **up to one additional model call per answer**, with additional provider charges possible).
+- `채팅 화면에 … 카드 표시` (new default: ON when host supports the API).
+- `장면 브리핑 열기` and `현재 장면 다시 분석` allow read-only access and manual refresh (manual refresh also uses one extra request).
+- The main editor, voice guard, approved style snapshots and existing Story Runner/Mutation integrations remain unchanged.
+
+**API limitations / failure handling**
+- Model calls are asynchronous and never block or rewrite the normal chat; a card may temporarily read `분석 중`. Missing host APIs, model errors and absent context fail softly.
+- The plugin does not generate scene background illustrations or attach images to the historical assistant message. The screenshot-like **status chips and recommendation area** are rendered in the chat panel.
+- RisuBard hot reload may leave request hooks stale. If generation becomes unresponsive after updating, reload the RisuBard browser tab after the output has finished.
+- Source text may contain malicious-looking markup or instructions. Scene output is escaped/sanitized, and the briefing model is explicitly told to treat the story as **untrusted data**.
+
+**Validation:** [GitHub Actions: original 49 regression scenarios + 14 scene feature scenarios = 63 passed, along with JS syntax check](https://github.com/pjb3181-prog/support-my-task/actions/runs/41272652310). This verifies mocks and code paths, not appearance on the user's particular running RisuBard environment or real model accuracy.
+
+**Download:** [JS auto-update source](./bard_editor_lab.js) · [TS installer](./Bard_Editor_Lab_v0.3.7.ts).
 
 ## v0.3.6 — Restore approved early style without erasing story
 
