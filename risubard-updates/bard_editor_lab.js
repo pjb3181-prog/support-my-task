@@ -631,6 +631,23 @@
  }
  async function render(){
    if(!uiOpen)return;
+   let styleOptions='<option value="-1">문체가 마음에 들었던 AI 응답 선택…</option>';
+   let currentStyle=null;
+   try{
+     const c=await current(),chatKey=styleKey(c.ci,c.ti,c.chat);
+     if(styleSelectedChat!==chatKey){styleSelectedChat=chatKey;styleChosenIndex=-1}
+     currentStyle=styleSnapshots[chatKey]||null;
+     const messages=Array.isArray(c.chat?.message)?c.chat.message:[];
+     if(styleChosenIndex<0&&Number.isInteger(currentStyle?.index))styleChosenIndex=currentStyle.index;
+     const allowed=messages.map((m,i)=>({m,i}))
+       .filter(x=>['char','assistant'].includes(x.m?.role)&&clean(x.m.data).length>=240);
+     const choices=allowed.length>170?[...allowed.slice(0,100),...allowed.slice(-70)]:allowed;
+     for(const {m,i} of choices){
+       const caption=clean(m.data).replace(/\s+/g,' ').slice(0,67);
+       styleOptions+='<option value="'+i+'" '+(styleChosenIndex===i?'selected':'')+'>'
+         +esc('#'+(i+1)+' · '+caption)+'</option>';
+     }
+   }catch(error){console.log('[EditorLab] style snapshot chooser unavailable',error)}
    const activity=recentActivity[pickedActivity]||null;
    const showingAuto=activityView==='auto';
    const visibleOriginal=showingAuto?(activity?.original||'') : state.original;
@@ -664,6 +681,18 @@
     <label><input type="checkbox" id="voiceguard" ${conf.voiceGuard?'checked':''}/> 첫 메시지 캐릭터성 기준 유지 · 단편 대사 붕괴 감지 (첫 메시지 읽기 전용)</label>
   </div>
   <p class="muted">첫 메시지는 수정하지 않고 캐릭터의 고유 말투만 참고해. 문자 대화의 짧은 문장은 허용하되 정보 없는 반복 응답은 감지해. 장면 정체 방지도 무리한 사건을 요구하지 않아.</p>
+   <section class="status" style="margin:12px 0">
+     <strong>문체 기준선 · 대화 기록은 그대로 유지</strong>
+     <p class="muted">초반에 마음에 들었던 AI 응답을 등록해. 문체만 리셋하면 다음 약 4회 응답에서 기준 문체를 강하게 참고하고, 이후에도 약하게 유지해.</p>
+     <div class="top">
+       <select id="style-message" style="max-width:100%;width:390px">${styleOptions}</select>
+       <button id="style-save" ${styleChosenIndex<0?'disabled':''}>선택 장면을 문체 기준으로 저장</button>
+       <button id="style-reset" ${!currentStyle?.sample?'disabled':''}>문체만 리셋</button>
+       <button id="style-off" ${!currentStyle?.enabled?'disabled':''}>문체 기준 OFF</button>
+     </div>
+     <div class="muted">현재 기준선: ${currentStyle?.sample?(currentStyle.enabled?'ON':'OFF')+' · 메시지 #'+(currentStyle.index+1):'미설정'} · ${esc(styleStatus)}</div>
+     ${currentStyle?.sample?'<details><summary>현재 문체 기준 미리보기</summary><pre>'+esc(currentStyle.sample.slice(0,700))+'</pre></details>':''}
+   </section>
   <p class="muted">일반 비스트리밍 응답은 저장 전 교정. 스트리밍은 원문 표시가 끝난 뒤 교체될 수 있어. 기존 사용자 설정의 자동 OFF는 유지돼.</p>
   <div class="top">
     <label><input id="srwatch" type="checkbox" ${conf.watchStoryRunner?'checked':''}/> Story Runner 직접 생성도 감시 (수동 삽입 포함 가능)</label>
@@ -702,6 +731,14 @@
   el('realeditor').onchange=async e=>{conf.realEditor=e.target.checked;await save()};
   el('momentum').onchange=async e=>{conf.momentum=e.target.checked;await save()};
   el('voiceguard').onchange=async e=>{conf.voiceGuard=e.target.checked;await save()};
+  const styleSelector=el('style-message');
+  if(styleSelector)styleSelector.onchange=e=>{const n=Number(e.target.value);styleChosenIndex=Number.isInteger(n)&&n>=0?n:-1;void render()};
+  el('style-save').onclick=()=>captureApprovedStyle(styleChosenIndex)
+    .then(render).catch(e=>{styleStatus='문체 기준 저장 실패 · '+txt(e.message);render()});
+  el('style-reset').onclick=()=>setStyleReset(true)
+    .then(render).catch(e=>{styleStatus='문체 리셋 실패 · '+txt(e.message);render()});
+  el('style-off').onclick=()=>setStyleReset(false)
+    .then(render).catch(e=>{styleStatus='문체 설정 변경 실패 · '+txt(e.message);render()});
   el('model').onchange=async e=>{conf.model=e.target.value;await save()};
   el('mode').onchange=async e=>{conf.mode=e.target.value;await save()};
   el('max').onchange=async e=>{conf.maxChars=Number(e.target.value);await save()};
@@ -724,6 +761,15 @@
  try{const savedActivity=await risuai.pluginStorage.getItem(ACTIVITY_STORE);
      if(Array.isArray(savedActivity))recentActivity=savedActivity.filter(x=>x&&typeof x.id==='string'&&typeof x.original==='string').slice(0,5);
    }catch(error){console.log('[EditorLab] previous automatic activity unavailable',error)}
+ try{
+   const remembered=await risuai.pluginStorage.getItem(STYLE_STORE);
+   if(remembered&&typeof remembered==='object'&&!Array.isArray(remembered)){
+     for(const [key,value] of Object.entries(remembered)){
+       if(value&&typeof value.sample==='string'&&value.sample.length<=3000
+         &&Number.isInteger(value.index))styleSnapshots[key]=value;
+     }
+   }
+ }catch(error){console.log('[EditorLab] style snapshots unavailable',error)}
  state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';
  if(recentActivity.length)state.lastAuto=recentActivity[0].phase+' · '+recentActivity[0].reason;
  async function open(){uiOpen=true;activityView='auto';pickedActivity=0;await render();await risuai.showContainer('fullscreen')}
