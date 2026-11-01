@@ -8,6 +8,9 @@ on:
       - '.github/workflows/risubard-windows-launcher.yml'
 permissions:
   contents: write
+concurrency:
+  group: risubard-windows-launcher-release
+  cancel-in-progress: true
 jobs:
   windows-installer:
     name: Build and package x64 standalone launcher
