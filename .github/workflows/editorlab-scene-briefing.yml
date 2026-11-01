@@ -1,0 +1,30 @@
+name: Editor Lab scene briefing checks
+on:
+  push:
+    branches:
+      - feature/editorlab-scene-briefing-037
+    paths:
+      - risubard-updates/bard_editor_lab.js
+      - tests/editorlab-*.test.mjs
+      - .github/workflows/editorlab-scene-briefing.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Plugin syntax
+        run: node --check risubard-updates/bard_editor_lab.js
+      - name: Existing 49 editor and style-reset regressions
+        run: |
+          node tests/editorlab-auto.test.mjs
+          node tests/editorlab-hybrid.test.mjs
+          node tests/editorlab-voice-anchor.test.mjs
+          node tests/editorlab-style-reset.test.mjs
+      - name: Scene briefing and safe suggestions regressions
+        run: node tests/editorlab-scene-briefing.test.mjs
