@@ -1,0 +1,52 @@
+name: RisuBard Windows Launcher (Standalone)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'windows-launcher/**'
+      - '.github/workflows/risubard-windows-launcher.yml'
+permissions:
+  contents: read
+jobs:
+  windows-installer:
+    name: Build and package x64 standalone launcher
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Generate RisuBard Launcher icon
+        shell: pwsh
+        run: ./windows-launcher/GenerateIcon.ps1
+      - name: Restore and build self-contained WebView2 EXE
+        shell: pwsh
+        run: |
+          dotnet restore windows-launcher/RisuBardLauncher.csproj -r win-x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet publish windows-launcher/RisuBardLauncher.csproj -c Release -r win-x64 --no-restore --self-contained true -o windows-launcher/publish -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Confirm EXE and package permanent installer
+        shell: pwsh
+        run: |
+          $exe = 'windows-launcher/publish/RisuBardLauncher.exe'
+          if (!(Test-Path $exe)) { throw 'Launcher executable not generated' }
+          $binary = [System.IO.File]::ReadAllBytes((Resolve-Path $exe).Path)
+          if ($binary.Length -lt 1000000 -or $binary[0] -ne 77 -or $binary[1] -ne 90) {
+            throw 'Not a valid Windows PE executable'
+          }
+          $folder = 'windows-launcher/package'
+          New-Item -ItemType Directory -Path $folder -Force | Out-Null
+          Copy-Item -Path 'windows-launcher/publish/*' -Destination $folder -Recurse -Force
+          Copy-Item windows-launcher/Install.ps1,windows-launcher/Install.cmd,windows-launcher/Uninstall.cmd,windows-launcher/README_설치.txt -Destination $folder -Force
+          Write-Host "Executable size $([math]::Round($binary.Length/1MB,1)) MB"
+          Write-Host 'Packaged files:'
+          Get-ChildItem $folder | Select-Object Name,Length | Format-Table
+      - name: Upload actual installable Windows app
+        uses: actions/upload-artifact@v4
+        with:
+          name: RisuBard_Windows_Launcher_v1.0.0_win-x64
+          path: windows-launcher/package/*
+          if-no-files-found: error
+          retention-days: 90
