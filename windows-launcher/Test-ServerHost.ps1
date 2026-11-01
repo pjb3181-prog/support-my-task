@@ -74,6 +74,44 @@ try {
     # This test does not change RisuBard source files, user presets or data.
     if (!(Test-Path -LiteralPath $nodeEntry)) { throw 'Fixture mutated unexpectedly' }
     Write-Host 'PASS 4: existing RisuBard source was not required or patched'
+
+    # Exercise the REAL WinForms GUI + WebView2 against the local test server.
+    # Successful navigation proves initialization did not get canceled
+    # behind the loading overlay.
+    $gui = [System.Diagnostics.Process]::Start($exe)
+    if (!$gui) { throw 'WinForms GUI could not be launched' }
+    $created.Add($gui)
+    $guiLog = Join-Path $env:LOCALAPPDATA 'RisuBardLauncher\launcher.log'
+    $webReady = $false
+    $lastError = ''
+    for ($i = 0; $i -lt 115; $i++) {
+        Start-Sleep -Milliseconds 250
+        if ($gui.HasExited) { break }
+        try {
+            if (Test-Path -LiteralPath $guiLog) {
+                $body = [System.IO.File]::ReadAllText($guiLog)
+                $lastError = $body
+                if ($body.Contains('WebView2 navigation completed successfully.')) {
+                    $webReady = $true
+                    break
+                }
+            }
+        } catch { }
+    }
+    if (!$webReady) {
+        throw ("GUI WebView2 failed to navigate in Windows test. Log:" +
+            [Environment]::NewLine + $lastError)
+    }
+    Write-Host 'PASS 5: GUI WebView2 initializes and navigates to RisuBard without canceled operation'
+
+    # The detached supervisor keeps serving even after the GUI is closed.
+    $gui.Kill($true)
+    if (!$gui.WaitForExit(6000)) { throw 'WinForms GUI process failed to exit' }
+    $response = $client.GetStringAsync('http://127.0.0.1:7777/').GetAwaiter().GetResult()
+    if (!$response.Contains('<title>RisuBard fixture</title>')) {
+        throw 'Background server stopped when GUI closed'
+    }
+    Write-Host 'PASS 6: closing launcher window does not stop Node server'
 }
 finally {
     if ($nodePid -gt 0) {
