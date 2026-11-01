@@ -95,6 +95,7 @@
    if(sceneInflight.has(unique)||(!force&&sceneReviewed.has(unique)))return;
    if(!force&&currentSceneEntry(ci,ti,chat)?.state==='ready')return;
    sceneReviewed.add(unique);sceneInflight.add(unique);
+   while(sceneReviewed.size>240)sceneReviewed.delete(sceneReviewed.values().next().value);
    sceneBriefs[k]={signature:sig,index:info.index,at:Date.now(),state:'loading',
      place:'분석 중',time:'분석 중',situation:'최근 장면을 읽고 있어.',directions:[]};
    void updateScenePanel();
@@ -124,7 +125,14 @@
      let live=null;
      try{live=await current()}catch(_){}
      if(!live||live.ci!==ci||styleKey(live.ci,live.ti,live.chat)!==k
-       ||latestAiInfo(live.chat)?.signature!==sig)return;
+       ||latestAiInfo(live.chat)?.signature!==sig){
+       // The user switched chats or the message was replaced during analysis.
+       // Invalidate the stale pending item so it can be analyzed again.
+       if(sceneBriefs[k]?.signature===sig&&sceneBriefs[k]?.state==='loading')delete sceneBriefs[k];
+       sceneReviewed.delete(unique);
+       return;
+     }
+     if(unloaded||!conf.sceneAssist)return;
      sceneBriefs[k]={signature:sig,index:info.index,at:Date.now(),state:'ready',...guide};
      await persistSceneEntries();
    }catch(error){
