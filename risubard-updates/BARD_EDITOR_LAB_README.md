@@ -36,6 +36,8 @@ A standalone RisuBard plugin (Plugin API 3.0) combining **prompt-like style guid
 
 **Download:** [JS auto-update source](./bard_editor_lab.js) · [TS installer](./Bard_Editor_Lab_v0.3.7.ts).
 
+**ZIP installer:** [Successful JS package workflow (Artifacts → Bard_Editor_Lab_v0.3.7_JS)](https://github.com/pjb3181-prog/support-my-task/actions/runs/41272900998). The artifact includes the unchanged JavaScript plugin as a ZIP download. Future main-branch plugin updates package automatically.
+
 ## v0.3.6 — Restore approved early style without erasing story
 
 **Problem:** Later chat turns may imitate and amplify repetitive or overacted prose. First-message voice anchors alone cannot reproduce the user's preferred rhythm from a specific early chapter.
