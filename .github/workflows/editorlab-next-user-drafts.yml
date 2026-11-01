@@ -1,0 +1,30 @@
+name: Editor Lab next-user-turn draft checks
+on:
+  push:
+    branches:
+      - fix/editorlab-next-user-drafts-038
+    paths:
+      - risubard-updates/bard_editor_lab.js
+      - tests/editorlab-*.test.mjs
+      - .github/workflows/editorlab-next-user-drafts.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Plugin syntax check
+        run: node --check risubard-updates/bard_editor_lab.js
+      - name: Legacy 49 editor and style-reset regression tests
+        run: |
+          node tests/editorlab-auto.test.mjs
+          node tests/editorlab-hybrid.test.mjs
+          node tests/editorlab-voice-anchor.test.mjs
+          node tests/editorlab-style-reset.test.mjs
+      - name: User-authored next-turn draft regression tests
+        run: node tests/editorlab-scene-briefing.test.mjs
