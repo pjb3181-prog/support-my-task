@@ -1,0 +1,36 @@
+name: Bard Editor Lab JS package
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - risubard-updates/bard_editor_lab.js
+      - .github/workflows/editorlab-js-package.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate and prepare JS installer
+        shell: bash
+        run: |
+          node --check risubard-updates/bard_editor_lab.js
+          version="$(sed -n 's#^//@version ##p' risubard-updates/bard_editor_lab.js | head -n 1)"
+          test -n "$version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p dist
+          cp risubard-updates/bard_editor_lab.js "dist/Bard_Editor_Lab_v${version}.js"
+          git hash-object "dist/Bard_Editor_Lab_v${version}.js"
+      - name: Upload ZIP installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bard_Editor_Lab_v${{ env.VERSION }}_JS
+          path: dist/Bard_Editor_Lab_v${{ env.VERSION }}.js
+          if-no-files-found: error
+          retention-days: 90
