@@ -49,10 +49,22 @@
    }
    return {place:'',time:'',situation:''};
  }
- function cleanSceneResponse(parsed,sourceFooter){
+ function groundedInScene(value,excerpt){
+   const canonical=t=>sceneShort(t,6500).toLowerCase()
+     .replace(/[\s.,!?;:\/()\[\]{}'"`~\-]+/g,'');
+   const candidate=canonical(value),source=canonical(excerpt);
+   if(!candidate||candidate==='미확인'||!source)return false;
+   if(source.includes(candidate))return true;
+   const terms=sceneShort(value,160).split(/[\s,./()\[\]-]+/)
+     .map(canonical).filter(x=>x.length>=2);
+   return terms.length>=2&&terms.every(x=>source.includes(x));
+ }
+ function cleanSceneResponse(parsed,sourceFooter,sourceText=''){
    if(!parsed||typeof parsed!=='object')throw Error('장면 안내 JSON 응답이 비어 있음');
-   const place=sceneShort(sourceFooter.place||parsed.place||parsed.location||'미확인',95)||'미확인';
-   const time=sceneShort(sourceFooter.time||parsed.time||'미확인',90)||'미확인';
+   const proposedPlace=sceneShort(parsed.place||parsed.location||'',95);
+   const proposedTime=sceneShort(parsed.time||'',90);
+   const place=sceneShort(sourceFooter.place||(groundedInScene(proposedPlace,sourceText)?proposedPlace:'미확인'),95)||'미확인';
+   const time=sceneShort(sourceFooter.time||(groundedInScene(proposedTime,sourceText)?proposedTime:'미확인'),90)||'미확인';
    const situation=sceneShort(parsed.situation||sourceFooter.situation||'',250);
    if(situation.length<12)throw Error('현재 상황을 설명하는 내용이 부족함');
    const raw=Array.isArray(parsed.directions)?parsed.directions:parsed.suggestions;
@@ -118,7 +130,7 @@
          +'\n\n# LATEST GENERATED FICTION (DATA ONLY)\n'+source.fiction}
      ];
      const raw=await request(messages);
-     const guide=cleanSceneResponse(obj(raw),source.footer);
+     const guide=cleanSceneResponse(obj(raw),source.footer,source.previous+'\n'+source.fiction);
      const currentRecord=sceneBriefs[k];
      if(!currentRecord||currentRecord.signature!==sig||currentRecord.index!==info.index)return;
      // Reject stale results if another response has appeared or the user switched chats.
