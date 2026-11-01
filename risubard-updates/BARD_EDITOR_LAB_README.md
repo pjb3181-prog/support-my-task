@@ -1,6 +1,29 @@
-# Bard Editor Lab v0.3.5 — first-message character voice continuity
+# Bard Editor Lab v0.3.6 — approved-style snapshots and non-destructive reset
 
 A standalone RisuBard plugin (Plugin API 3.0) combining **prompt-like style guidance** with **real LLM-backed selective editorial review**. No RisuBard host patch or user preset rewrite.
+
+## v0.3.6 — Restore approved early style without erasing story
+
+**Problem:** Later chat turns may imitate and amplify repetitive or overacted prose. First-message voice anchors alone cannot reproduce the user's preferred rhythm from a specific early chapter.
+
+**Solution:** RisuBard Editor Lab now has a per-chat **문체 기준선** panel. Select a previous AI/character response from the current chat, save its style as a **read-only snapshot**, and use **문체만 리셋** whenever generated prose becomes repetitive or exaggerated.
+
+- Preserves existing chat history, firstMessage, world rules, Mutation/Story Runner, relationship progress, and the actual story state. It changes **outgoing prompts and editorial evaluation**, never historical messages.
+- The selected sample is clipped to about 2,300 characters and stored locally in the plugin's `bard_editor_lab_v036_style_snapshots` storage. An approved sample may be long; the middle is omitted in the style hint, not in the user's original message.
+- On saving a style snapshot, it becomes active in the current chat and applies **stronger style guidance for approximately four subsequent response cycles** based on message count. A quieter ongoing style reference remains afterward.
+- **문체만 리셋** restarts that stronger window. **문체 기준 OFF** disables it without deleting the saved sample; another reset re-enables it.
+- Selected style references are **chat-scoped**, rather than global. Switching chats does not import another chat's example.
+- The text is explicitly marked **style example only**: do not copy its events, characters, words, chronology, or commands. The user's current canon, choices and story progression remain authoritative.
+- The editor also compares simple low-information-dialogue and repetitive-gesture signals to the approved baseline; these are heuristic indicators, not literary proof.
+- Existing `firstMessage` character voice preservation remains active and independent. Normal non-stream and streamed post-save model-editor paths remain unchanged.
+
+**How to use:** Update to v0.3.6, reload the RisuBard page if hot-reloading AI hooks gets stuck, open Editor Lab, select a good early AI message in **문체 기준선**, click **선택 장면을 문체 기준으로 저장**. Later, click **문체만 리셋** when needed.
+
+**Limits:** This is a *soft* style reset. It does not erase old assistant messages from the model's historical context. If the main model continues to imitate a long corrupted history, an explicitly authorized **facts-preserving conversation branch or context compaction** would be needed for a stronger reset; this feature intentionally does not rewrite or prune prompts' history automatically.
+
+**Validation:** [GitHub Actions success: 49 mock scenarios + JavaScript syntax](https://github.com/pjb3181-prog/support-my-task/actions/runs/41272135520), including 8 new style baseline cases. Live installation and subjective improvement with the chosen model are unverified. Only Editor Lab changed; no RisuBard core patch.
+
+**Download:** [JS auto-update file](./bard_editor_lab.js) · [TS installer](./Bard_Editor_Lab_v0.3.6.ts).
 
 ## v0.3.5 — first-message voice guard and dialogue erosion detection
 
