@@ -15,7 +15,7 @@ A standalone RisuBard plugin (Plugin API 3.0) combining **prompt-like style guid
 **How it works**
 1. After a completed ordinary AI response, the plugin reads its final saved text plus a small window of prior dialogue and any explicit scene footer.
 2. It calls the **existing configured editorial model** (otherAx or main) **once** to generate: `place`, `time`, `situation`, exactly three optional `directions`, and any uncertainty.
-3. The model is instructed to report **미확인** when time or place is absent, not to invent facts, and not to introduce content absent from the current scene. If a recognized bracketed date/time/location footer exists, that structured output **overrides** contradicting model output.
+3. The model is instructed to report **미확인** when time or place is absent, not to invent facts, and not to introduce content absent from the current scene. If a recognized bracketed date/time/location footer exists, that structured output **overrides** contradicting model output. Otherwise unsupported model-proposed places and times are replaced with **미확인** rather than inventing facts.
 4. All outputs are shown as read-only advice. Recommended prompts are never automatically inserted, sent, or executed. Suggestions are restrained and non-explicit even when the surrounding fiction is mature or set in a school.
 5. Only concise briefing data (not full narrative transcripts) is saved in `bard_editor_lab_v037_scene_briefs` with a stable per-chat identifier and a fingerprint of the last AI response. Up to 24 chat entries are kept; old or cross-chat entries are not shown.
 
@@ -32,7 +32,7 @@ A standalone RisuBard plugin (Plugin API 3.0) combining **prompt-like style guid
 - RisuBard hot reload may leave request hooks stale. If generation becomes unresponsive after updating, reload the RisuBard browser tab after the output has finished.
 - Source text may contain malicious-looking markup or instructions. Scene output is escaped/sanitized, and the briefing model is explicitly told to treat the story as **untrusted data**.
 
-**Validation:** [GitHub Actions: original 49 regression scenarios + 14 scene feature scenarios = 63 passed, along with JS syntax check](https://github.com/pjb3181-prog/support-my-task/actions/runs/41272652310). This verifies mocks and code paths, not appearance on the user's particular running RisuBard environment or real model accuracy.
+**Validation:** [GitHub Actions: original 49 regression scenarios + 15 scene feature scenarios = 64 passed, along with JS syntax check](https://github.com/pjb3181-prog/support-my-task/actions/runs/41272837914). This verifies mocks and code paths, not appearance on the user's particular running RisuBard environment or real model accuracy.
 
 **Download:** [JS auto-update source](./bard_editor_lab.js) · [TS installer](./Bard_Editor_Lab_v0.3.7.ts).
 
