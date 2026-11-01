@@ -325,6 +325,10 @@ internal sealed class LauncherForm : Form
                         SetStatus("내장 WebView2 페이지 연결 실패: " + e.WebErrorStatus +
                                   "\n로그 버튼으로 원인을 확인해 줘.");
                     }
+                    else
+                    {
+                        Log("WebView2 navigation completed successfully.");
+                    }
                 };
                 browser.CoreWebView2.NewWindowRequested += (_, e) =>
                 {
