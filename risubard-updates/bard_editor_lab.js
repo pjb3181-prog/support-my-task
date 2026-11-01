@@ -202,20 +202,23 @@
  }
  function sceneCardHtml(entry){
    if(!entry)return '<div style="padding:10px;border:1px solid #465570;border-radius:11px">'
-     +'<b>🎬 장면 브리핑</b><div>새 AI 응답이 생성되면 현재 상황과 추천 지시어가 나타나.</div></div>';
+     +'<b>🎬 장면 브리핑</b><div>새 AI 응답이 생성되면 현재 상황과 다음 입력 초안이 나타나.</div></div>';
    const place=esc(sceneShort(entry.place,95)),time=esc(sceneShort(entry.time,90));
    const summary=esc(sceneShort(entry.situation,250));
-   const lines=entry.state==='ready'&&Array.isArray(entry.directions)
-     ?'<ol style="margin:5px 0 0;padding-left:22px">'
-       +entry.directions.slice(0,3).map(x=>'<li style="margin:3px 0">'+esc(sceneShort(x,170))+'</li>').join('')
-       +'</ol>':'<small>추천 지시어는 분석이 끝나면 표시돼.</small>';
+   const drafts=entry.state==='ready'&&Array.isArray(entry.drafts)
+     ?entry.drafts.slice(0,3).map(item=>
+       '<div style="padding:7px 0;border-bottom:1px solid rgba(244,127,154,.23)">'
+       +'<b>'+esc(item.kind)+'</b>'
+       +'<div style="white-space:pre-wrap;margin-top:3px">'+esc(sceneDraftText(item.text,420))+'</div>'
+       +'</div>').join('')
+     :'<small>다음 채팅에 넣을 초안을 작성하고 있어.</small>';
    return '<section style="border:1px solid #f47f9a;border-radius:13px;padding:12px;margin:8px 0;background:rgba(255,240,245,.06);line-height:1.55">'
-     +'<strong>🎬 현재 장면 · 선택 가능한 다음 지시어</strong>'
+     +'<strong>🎬 현재 장면 · 다음 채팅 초안</strong>'
      +'<div style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0">'
      +'<span style="border-radius:12px;padding:4px 8px;border:1px solid #f47f9a">📍 장소　'+place+'</span>'
      +'<span style="border-radius:12px;padding:4px 8px;border:1px solid #f47f9a">🕒 시간　'+time+'</span></div>'
-     +'<div><b>상황</b>　'+summary+'</div><div style="margin-top:8px"><b>다음 지시어 추천</b>'+lines+'</div>'
-     +'<small style="opacity:.8">채팅 메뉴의 ‘장면 브리핑’에서 지시어 복사 · 자동 전개되지 않음</small>'
+     +'<div><b>상황</b>　'+summary+'</div><div style="margin-top:8px"><b>다음 입력 초안 3개</b>'+drafts+'</div>'
+     +'<small style="opacity:.8">대사·행동·생각 중 선택 · 채팅 메뉴의 ‘장면 브리핑’에서 복사 · 자동 입력/전송하지 않음</small>'
      +'</section>';
  }
  async function updateScenePanel(){
@@ -238,10 +241,10 @@
      scenePanelLast='';
    }
  }
- async function copySceneDirection(i){
+ async function copySceneDraft(i){
    const c=await current(),record=currentSceneEntry(c.ci,c.ti,c.chat);
-   const instruction=record?.directions?.[Number(i)];
-   if(!instruction)throw Error('복사할 추천 지시어가 없어');
+   const instruction=record?.drafts?.[Number(i)]?.text;
+   if(!instruction)throw Error('복사할 다음 입력 초안이 없어');
    let done=false;
    try{if(typeof navigator!=='undefined'&&navigator.clipboard?.writeText){
      await navigator.clipboard.writeText(instruction);done=true;
@@ -251,8 +254,8 @@
      if(area){area.value=instruction;area.focus();area.select();
        try{done=Boolean(document.execCommand?.('copy'))}catch(_){}}
    }
-   sceneUiStatus=done?'지시어를 복사했어. 채팅 입력창에 붙여넣어서 사용할 수 있어.'
-     :'자동 복사가 제한돼 있어. 아래 선택된 텍스트를 직접 복사해줘.';
+   sceneUiStatus=done?'다음 채팅 초안을 복사했어. 입력창에 붙여넣고 수정해서 사용하면 돼.'
+     :'자동 복사가 제한돼 있어. 아래 선택된 초안을 직접 복사해줘.';
    await render();
    if(!done){
      const area=document.getElementById('scene-copy-text');
@@ -263,7 +266,7 @@
    if(!uiOpen)return;
    let entry=null;
    try{const c=await current();entry=currentSceneEntry(c.ci,c.ti,c.chat)}catch(_){}
-   const list=entry?.directions||[];
+   const list=entry?.drafts||[];
    const status=entry?.state==='ready'?'분석 완료':entry?.state==='loading'?'분석 중'
      :entry?.state==='error'?'분석 실패':'현재 대화의 안내 기록 없음';
    document.body.innerHTML='<style>body{background:#171d2b;color:#edf0ff;font:14px/1.7 system-ui;margin:0;padding:20px}'
@@ -275,18 +278,19 @@
      +'　🕒 시간: '+esc(entry?.time||'미확인')+'</p><p>'+esc(entry?.situation||'최근 응답을 분석하면 이곳에 표시돼.')+'</p>'
      +'<button id="scene-refresh">현재 장면 다시 분석 (추가 모델 호출)</button>'
      +'<button id="scene-back">편집장 설정으로</button><button id="scene-close">닫기</button></div>'
-     +'<div class="panel"><h3>다음 지시어 추천 · 선택사항</h3>'
-     +(list.length?list.map((line,i)=>'<div style="border-bottom:1px solid #475875;padding:9px 0"><b>'
-       +(i+1)+'.</b> '+esc(line)+' <button data-copy-direction="'+i+'">복사</button></div>').join('')
-       :'<p>아직 추천된 지시어가 없어.</p>')
-     +'<p>'+esc(sceneUiStatus)+'</p><textarea id="scene-copy-text" readonly placeholder="복사할 지시어가 여기 표시돼."></textarea>'
-     +'<p style="opacity:.72">추천은 자동으로 채팅에 전송되지 않아. 현재 사건과 관계는 보존하고, 다음 행동은 네가 결정해.</p></div></main>';
+     +'<div class="panel"><h3>다음 채팅 입력 초안 · 선택사항</h3>'
+     +(list.length?list.map((draft,i)=>'<div style="border-bottom:1px solid #475875;padding:9px 0"><b>'
+       +(i+1)+'. '+esc(draft.kind)+'</b><p style="white-space:pre-wrap">'+esc(draft.text)+'</p>'
+       +'<button data-copy-direction="'+i+'">이 초안 복사</button></div>').join('')
+       :'<p>아직 작성된 입력 초안이 없어.</p>')
+     +'<p>'+esc(sceneUiStatus)+'</p><textarea id="scene-copy-text" readonly placeholder="선택한 초안이 여기 표시돼."></textarea>'
+     +'<p style="opacity:.72">세 가지는 서로 다른 다음 입력안이야. 복사하거나 고친 뒤 네가 직접 전송해야 반영돼.</p></div></main>';
    document.getElementById('scene-refresh').onclick=()=>manuallyRefreshScene()
      .catch(e=>{sceneUiStatus=txt(e.message||e);render()});
    document.getElementById('scene-back').onclick=()=>{sceneView=false;void render()};
    document.getElementById('scene-close').onclick=()=>{uiOpen=false;void risuai.hideContainer()};
    for(const button of document.querySelectorAll?.('[data-copy-direction]')||[]){
-     button.onclick=()=>copySceneDirection(button.getAttribute('data-copy-direction'))
+     button.onclick=()=>copySceneDraft(button.getAttribute('data-copy-direction'))
        .catch(e=>{sceneUiStatus=txt(e.message||e);render()});
    }
  }
