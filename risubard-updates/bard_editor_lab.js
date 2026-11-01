@@ -1034,11 +1034,33 @@
      }
    }
  }catch(error){console.log('[EditorLab] style snapshots unavailable',error)}
+ try{
+   const prev=await risuai.pluginStorage.getItem(SCENE_STORE);
+   if(prev&&typeof prev==='object'&&!Array.isArray(prev)){
+     for(const [key,item] of Object.entries(prev)){
+       if(item?.state==='ready'&&typeof item.situation==='string'
+         &&Array.isArray(item.directions)&&item.directions.length>=2
+         &&typeof item.signature==='string'){
+         sceneBriefs[key]={
+           ...item,place:sceneShort(item.place||'미확인',95),
+           time:sceneShort(item.time||'미확인',90),
+           situation:sceneShort(item.situation,250),
+           directions:item.directions.slice(0,3).map(x=>sceneShort(x,240))
+         };
+       }
+     }
+   }
+ }catch(error){console.log('[EditorLab] previous scene briefings unavailable',error)}
  state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';
  if(recentActivity.length)state.lastAuto=recentActivity[0].phase+' · '+recentActivity[0].reason;
- async function open(){uiOpen=true;activityView='auto';pickedActivity=0;await render();await risuai.showContainer('fullscreen')}
+ async function open(){uiOpen=true;sceneView=false;activityView='auto';pickedActivity=0;await render();await risuai.showContainer('fullscreen')}
+ async function openScene(){uiOpen=true;sceneView=true;sceneUiStatus='';await render();await risuai.showContainer('fullscreen')}
  await risuai.registerSetting('Bard Editor Lab',open,'✍️','html','bard-editor-lab-settings');
  await risuai.registerButton({name:'Bard Editor Lab',icon:'✍️',iconType:'html',location:'hamburger',id:'bard-editor-lab-hamburger'},open);
+ await risuai.registerButton({name:'장면 브리핑',icon:'🎬',iconType:'html',location:'chat',id:'bard-editor-lab-scene-menu'},openScene);
+ // The customized RisuBard exposes a sanitized static chat panel;
+ // other versions still have a separate chat-menu entry.
+ void updateScenePanel();
  // Register through public plugin APIs; host main/core and prompt presets stay untouched.
  // Main provider -> beforeRequest (all streams) -> afterRequest (nonstream) ->
  // committed-chat output fallback (streams). Editor LLM uses runLLMModel()
@@ -1053,10 +1075,13 @@
    }catch(error){console.log('[EditorLab] prompt/inline hook registration unavailable',error);}
  }
  await risuai.addRisuChatListener('output',arg=>automatic(arg,'일반 채팅'));
- pollTimer=setInterval(()=>{void pollStoryRunner()},2800);
+ pollTimer=setInterval(()=>{void pollStoryRunner();void updateScenePanel()},2800);
  await risuai.onUnload(async()=>{
    unloaded=true;
    if(pollTimer)clearInterval(pollTimer);
+   if(typeof risuai.setChatPanel==='function'){
+     try{await risuai.setChatPanel(null,{id:SCENE_PANEL_ID})}catch(_){}
+   }
    if(typeof risuai.removeRisuReplacer==='function'){
      for(const [type,handler] of hooks)
        try{await risuai.removeRisuReplacer(type,handler)}catch(_){}
