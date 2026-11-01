@@ -1,4 +1,4 @@
-RisuBard Launcher v1.0.0 (Windows 10/11 x64)
+RisuBard Launcher v1.0.1 (Windows 10/11 x64)
 ===================================================
 
 목적
@@ -36,3 +36,13 @@ RisuBard Launcher v1.0.0 (Windows 10/11 x64)
 
 개발 및 소스: support-my-task/windows-launcher
 빌드: dotnet publish -c Release -r win-x64 --self-contained true
+
+
+v1.0.1 변경 사항
+- 실행 단계에서 The operation was canceled가 발생할 수 있던 14초 PowerShell 대기 제거
+- 독립된 서버 관리 프로세스를 직접 실행하여 서버 표준출력을 유지
+- 런처가 종료되어도 서버를 유지하고 서버/진단 로그는 %LOCALAPPDATA%\\RisuBardLauncher 에 저장
+- 앱 창에서 WebView2를 초기화하는 동안 보이는 상태로 생성해 취소 오류 예방
+- 오류 발생 시 어느 단계인지 표시. 로그 버튼을 누르면 로그 폴더가 열림
+- 기존 1.0.0 사용자: 창을 닫고 압축을 푼 뒤 Install.cmd로 덮어쓰기 설치
+- 최초 서버 실행 시 설치 폴더의 node.exe와 node_modules, dist가 여전히 필요
