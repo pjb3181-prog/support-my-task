@@ -1,6 +1,25 @@
-# Bard Editor Lab v0.3.7 — automatic scene briefing and next-step suggestions
+# Bard Editor Lab v0.3.8 — next-player-message drafts and scene briefing
 
 A standalone RisuBard plugin (Plugin API 3.0) combining **prompt-like style guidance** with **real LLM-backed selective editorial review**. No RisuBard host patch or user preset rewrite.
+
+## v0.3.8 — Real user input drafts, not AI instructions
+
+**Design correction:** The v0.3.7 suggestions such as "서연이 부른 이유를 설명하게 해줘" were commands to the model. The user actually wants **copy-ready drafts of their next chat message**, including their own dialogue, actions, and private thoughts.
+
+- After the current AI response, the card still summarizes **location, time, current situation**. The next section now presents three **alternative, ready-to-send human-player turns**: **대사**, **행동**, **생각**.
+- Examples: "나는 서연 선생님을 따라 복도로 나갔다. \"선생님, 왜 저를 부르셨어요?\"" / "교실 문을 닫고 상대가 먼저 말할 때까지 기다렸다." / "왜 따로 부른 걸까. 나는 선생님의 표정을 살펴봤다."
+- These are **not three sequential events** and none is sent automatically. Choose any one, use **🎬 장면 브리핑 → 이 초안 복사**, optionally edit, and paste into the normal RisuBard input.
+- The backend now asks the editorial model for exactly three `drafts: [{kind:"대사",text:"..."}, ...]`. It rejects directive-style output (e.g. "설명해줘", "보여줘", "진행해줘") and malformed or repetitive sets rather than presenting them as usable input.
+- It preserves line breaks in copied player drafts, and escapes markup in the chat card.
+- **Cache version is new:** `bard_editor_lab_v038_scene_briefs`. Old v0.3.7 AI-instruction suggestions are intentionally not reused; the next generated AI turn creates the new format. Existing story messages and previous chat data remain intact.
+- Drafts respect current scene/canon and do not write NPC reactions or unshown events as established facts. Suggested next user turns are non-explicit, including in school scenes.
+- Existing editor, original-character voice baseline, per-chat style snapshot/reset and Story Runner/Mutation behavior remain unchanged.
+
+**How to use:** Update the Editor Lab plugin to v0.3.8 and reload the RisuBard browser tab if plugin hot reload stalls. Keep `장면 브리핑 기능`, `새 응답 완료 시 자동 분석`, and `채팅 화면에 카드 표시` ON. Normal chat automatically produces the card after the completed AI response, with up to one extra model call. The chat panel is static; the detailed scene-menu window offers actual copy controls.
+
+**Verification:** [GitHub Actions — original 49 regressions + 18 next-user-draft cases = 67 mocked scenarios, JS syntax passed](https://github.com/pjb3181-prog/support-my-task/actions/runs/41273512141). Actual RisuBard provider rendering and the creative quality of real model completions still require live testing.
+
+**Files:** [JS auto-update source](./bard_editor_lab.js) · [TS installer](./Bard_Editor_Lab_v0.3.8.ts) · [JS ZIP release workflow](https://github.com/pjb3181-prog/support-my-task/actions/workflows/editorlab-js-package.yml).
 
 ## v0.3.7 — Situation card and optional recommended instructions
 
