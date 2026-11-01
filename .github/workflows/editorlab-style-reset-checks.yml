@@ -1,0 +1,33 @@
+name: Editor Lab v0.3.6 style-only reset checks
+on:
+  push:
+    branches:
+      - feature/editorlab-style-reset-036
+    paths:
+      - risubard-updates/bard_editor_lab.js
+      - tests/editorlab-auto.test.mjs
+      - tests/editorlab-hybrid.test.mjs
+      - tests/editorlab-voice-anchor.test.mjs
+      - tests/editorlab-style-reset.test.mjs
+      - .github/workflows/editorlab-style-reset-checks.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check plugin JavaScript syntax
+        run: node --check risubard-updates/bard_editor_lab.js
+      - name: Existing automatic editing regressions
+        run: node tests/editorlab-auto.test.mjs
+      - name: Existing hybrid and pacing regressions
+        run: node tests/editorlab-hybrid.test.mjs
+      - name: Existing original voice regressions
+        run: node tests/editorlab-voice-anchor.test.mjs
+      - name: New style snapshot and style reset regressions
+        run: node tests/editorlab-style-reset.test.mjs
