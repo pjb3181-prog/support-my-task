@@ -73,8 +73,12 @@ async function create({
    },
    querySelectorAll(pattern){
      if(pattern!=='[data-copy-direction]')return[];
-     return [...this.body.innerHTML.matchAll(/<button data-copy-direction="(\d+)">/g)]
-       .map(m=>({getAttribute:()=>m[1],onclick:null}));
+     if(this.lastCopyHtml!==this.body.innerHTML){
+       this.lastCopyHtml=this.body.innerHTML;
+       this.copyNodes=[...this.body.innerHTML.matchAll(/<button data-copy-direction="(\d+)">/g)]
+         .map(m=>({getAttribute:()=>m[1],onclick:null}));
+     }
+     return this.copyNodes;
    }
  };
  const context={risuai:api,document,console,Date,setTimeout,clearTimeout,
@@ -151,9 +155,9 @@ await check('copying a recommendation does NOT send or edit a chat entry',async(
  await until(()=>t.db.get('bard_editor_lab_v037_scene_briefs')?.['0|chat-a']?.state==='ready');
  await t.openScene();
  const btn=t.document.querySelectorAll('[data-copy-direction]')[0];
- assert.ok(btn);
- await btn.onclick?.(); // button handler installed on the instance returned by render
- // querySelectorAll mock returns new transient nodes; test the UI shell instead.
+ assert.ok(btn&&typeof btn.onclick==='function');
+ await btn.onclick();
+ assert.match(t.clipboard,/서연이 복도로 부른 구체적인 이유/);
  assert.equal(t.writes(),0);assert.equal(t.sends(),0);
 });
 await check('disabled auto analysis makes no model requests but manual refresh works',async()=>{
