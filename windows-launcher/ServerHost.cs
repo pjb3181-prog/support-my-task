@@ -58,7 +58,10 @@ internal static class ServerHost
             return 2;
         }
 
-        using var mutex = new Mutex(true, @"Local\RisuBardLauncher.ServerHost.7777", out bool first);
+        // A named Semaphore (rather than Mutex) may be released after async
+        // continuations move threads. This lock is process-wide.
+        using var gate = new Semaphore(1, 1, @"Local\RisuBardLauncher.ServerHost.7777");
+        bool first = gate.WaitOne(0);
         if (!first)
         {
             Log("server-host.log", "Another server supervisor is already running; reusing it.");
@@ -135,7 +138,7 @@ internal static class ServerHost
         }
         finally
         {
-            mutex.ReleaseMutex();
+            gate.Release();
         }
     }
 }
