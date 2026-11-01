@@ -193,6 +193,13 @@
    return {
      name,opening,personality,description,
      recent:context(chat,index,canonical.name?canonical:fallback),
+     styleSnapshot:await (async()=>{
+       try{
+         const ci=await risuai.getCurrentCharacterIndex(),ti=await risuai.getCurrentChatIndex();
+         return styleSnapshotFor(ci,ti,chat)
+       }catch(_){return null}
+     })(),
+     currentMessageCount:messages.length,
      // For backwards compatibility with older simulated hosts.
      baselineSource:firstInChat?'chat-selected-first-message':'character-firstMessage'
    };
@@ -201,9 +208,10 @@
    if(background&&typeof background==='object'){
      return {name:txt(background.name),opening:txt(background.opening),
        personality:txt(background.personality),description:txt(background.description),
-       recent:txt(background.recent)};
+       recent:txt(background.recent),styleSnapshot:background.styleSnapshot||null,
+       currentMessageCount:Number(background.currentMessageCount)||0};
    }
-   return {name:'',opening:'',personality:'',description:'',recent:txt(background)};
+   return {name:'',opening:'',personality:'',description:'',recent:txt(background),styleSnapshot:null,currentMessageCount:0};
  }
  function anchorPrompt(reference){
    if(!conf.voiceGuard||!reference.opening)return '';
@@ -219,6 +227,25 @@
      reference.opening
    ].filter(Boolean).join('\n');
  }
+
+ function styleRegressionSignals(draft,snapshot){
+   if(!snapshot?.sample)return {hasSnapshot:false,severe:false};
+   const a=dialogueSignals(snapshot.sample),b=dialogueSignals(draft);
+   const sourceLength=Math.max(1,clean(draft).length)/1000;
+   const baseLength=Math.max(1,clean(snapshot.sample).length)/1000;
+   const lowRate=b.lowInformation/Math.max(1,b.turns),baselineLow=a.lowInformation/Math.max(1,a.turns);
+   const gestureRate=b.stockGestures/sourceLength,baselineGesture=a.stockGestures/baseLength;
+   const repeatedGestures=b.stockGestures>=7&&gestureRate>=Math.max(4,baselineGesture*2.4)
+     &&b.recycledBeatMentions>=7;
+   const sparseDialogue=b.turns>=12&&a.turns>=4&&b.lowInformation>=7
+     &&lowRate>=Math.max(.42,baselineLow+.23)&&b.echoQuestions>=2;
+   return {hasSnapshot:true,severe:Boolean(repeatedGestures||sparseDialogue),
+     overactedGesture:Boolean(repeatedGestures),fragmentedDialogue:Boolean(sparseDialogue),
+     baselineLowRate:Number(baselineLow.toFixed(2)),currentLowRate:Number(lowRate.toFixed(2)),
+     baselineGestureDensity:Number(baselineGesture.toFixed(2)),
+     currentGestureDensity:Number(gestureRate.toFixed(2))};
+ }
+
  function keepOtherSpeakerTurns(original,rewrite,npc){
    if(!npc)return '';
    const preserved=t=>namedTurns(t).filter(x=>x.speaker!==npc)
@@ -328,7 +355,13 @@
          +': '+sample+'\nPreserve enduring individuality only. Never copy this dialogue or force the character to remain shy, stuttering or unchanged after development.';
      }catch(error){console.log('[EditorLab] prompt reference unavailable',error)}
    }
-   const guidance=INLINE_GUIDANCE+(conf.momentum?MOMENTUM_GUIDANCE:'')+voiceHint;
+   let styleHint='';
+   try{
+     const c=await current();
+     styleHint=snapshotHint(styleSnapshotFor(c.ci,c.ti,c.chat),c.chat?.message?.length||0);
+   }catch(error){console.log('[EditorLab] optional style snapshot unavailable',error)}
+   const guidance=INLINE_GUIDANCE+(conf.momentum?MOMENTUM_GUIDANCE:'')+voiceHint
+     +(styleHint?'\n\n'+styleHint:'');
    if(index>=0)amended[index].content+='\n\n'+guidance;
    else amended.unshift({role:'system',content:guidance});
    return amended;
@@ -402,26 +435,32 @@
    const ref=normalizedReference(background);
    const opening=conf.voiceGuard?ref.opening:'';
    const drift=voiceDriftSignals(source,opening,ref.name);
+   const styleDrift=styleRegressionSignals(source,ref.styleSnapshot);
    const base={original:raw,revised:'',issues:[],reason:'원문 유지',calls:0};
    if(!eligible(source))return {...base,reason:'짧은 응답·비서사·입력 길이 초과'};
    const normalizedOnly=raw.trim()!==source&&!verify(raw,source)?source:'';
-   if(conf.mode==='economy'&&!suspicious(source)&&!drift.severe)
+   if(conf.mode==='economy'&&!suspicious(source)&&!drift.severe&&!styleDrift.severe)
      return {...base,revised:normalizedOnly,reason:normalizedOnly?'출력 메타만 제거':'저비용 선별: 실질적 반복 징후 없음'};
    const metrics=dialogueSignals(source);
    const currentMomentum=Boolean(conf.momentum)&&source.length>=800;
    const referenceText=anchorPrompt(ref);
+   const selectedStyle=snapshotHint(ref.styleSnapshot,ref.currentMessageCount);
    const diagnosticSystem=[
      'You are a professional Korean-fiction dialogue, characterization and scene editor, NOT a coauthor. Evaluate dialogue FUNCTION, individuality and stable temperament, not line length.',
      'Watch for repeated question/echo/confirmation patterns, identical hesitations or apologies, a passive NPC offering no independent perspective, and non-advancing scene beats.',
      'When an opening reference exists, compare the stable persona, motivation, unique speech and concrete observations against the draft. Later confidence or intimacy can be character development. SMS is allowed to be short. But repeated one-word filler messages with no new information can constitute severe erosion even in SMS.',
      'Do not force the original scene, initial shyness, viewpoint, dialogue length, or chronology back into the current scene. The reference is read-only evidence, not a writing template.',
+     'When the user has saved an APPROVED STYLE SNAPSHOT, compare restraint, narrative rhythm, character voice variety and reaction intensity to it. It is a style reference, NOT canon; do not repeat scenes, events, words or relationships from its excerpt.',
+     'Concise banter and intentionally expressive moments are allowed. A single dramatic line is not exaggeration; inspect repeated patterns over the whole chapter.',
      'A quiet or unusual character and an intentional pause are not errors. One purposeful decision or meaningful boundary can advance a scene without romance, sex, forced drama or an invented crisis.',
      'Ground every reported problem in an EXACT excerpt from CURRENT draft. Return ONLY JSON {"revise":boolean,"characterFidelity":{"status":"faithful|degrading|developing|insufficient_reference","evidence":string,"justification":string},"sceneProgress":{"material":boolean,"evidence":string,"intentionalStillness":boolean},"issues":[{"excerpt":string,"problem":string,"instruction":string}],"strengths":[string],"summary":string}. At most four issues.'
    ].join(' ');
    const diagnosticUser='# HEURISTIC SIGNALS (NOT VERDICTS)\n'+JSON.stringify(metrics)
      +'\n# ORIGINAL-VOICE DRIFT MEASURES (NOT VERDICTS)\n'+JSON.stringify(drift)
+     +'\n# APPROVED-STYLE REGRESSION SIGNALS (NOT VERDICTS)\n'+JSON.stringify(styleDrift)
      +'\n# SCENE MOMENTUM\n'+(currentMomentum?'Evaluate material change unless intentionally quiet':'Short scene: do not force progress')
      +'\n\n'+(referenceText||'# OPENING VOICE REFERENCE NOT AVAILABLE')
+     +'\n\n'+(selectedStyle||'# NO USER-APPROVED STYLE SNAPSHOT')
      +'\n\n# RECENT STORY FACTS (continuity, do not imitate prose flaws)\n'+ref.recent
      +'\n\n# FINISHED DRAFT TO REVIEW\n'+source;
    const diagnostic=await request([{role:'system',content:diagnosticSystem},{role:'user',content:diagnosticUser}]);
@@ -444,12 +483,18 @@
        instruction:'독특한 관찰·의견·목적·선택을 현재 관계 변화에 맞게 회복. SMS는 짧아도 되지만 반복되는 빈 문자를 줄일 것. 첫 메시지 장면이나 초기의 수줍음으로 되돌리지는 말 것.'});
      issues.splice(4);
    }
+   if(styleDrift.severe&&!issues.some(x=>/문체|반복|대화|말투|표정|몸짓|과장/.test(x.problem))){
+     issues.unshift({excerpt:source.slice(0,Math.min(125,source.length)),
+       problem:'승인한 초기 문체 기준보다 대화 단편화 또는 상투적인 반응 묘사가 과도하게 증가함',
+       instruction:'기준 장면의 절제와 인물별 표현 차이를 회복하되 기존 사건·대사·관계·시점을 보존할 것. 분량만 늘리거나 새 사건을 만들어 해결하지 말 것.'});
+     issues.splice(4);
+   }
    if(momentumGap&&!issues.length){
      issues.push({excerpt:source.slice(-Math.min(125,source.length)).trim(),
        problem:'장면 시작과 끝에 상황 변화가 없어 방문·대화가 제자리걸음 함',
        instruction:'이미 언급된 요청·거절·관심사 중 하나를 활용해 NPC의 작은 선택, 경계나 구체적인 다음 행동을 만들되 플레이어의 대사를 새로 쓰지 말 것.'});
    }
-   const shouldRevise=verdict.revise||momentumGap||(conf.voiceGuard&&drift.severe);
+   const shouldRevise=verdict.revise||momentumGap||(conf.voiceGuard&&drift.severe)||styleDrift.severe;
    if(!shouldRevise||!issues.length)
      return {...base,revised:normalizedOnly,issues,calls:1,
        reason:normalizedOnly?'수정 불필요 · 출력 메타만 제거':'편집장 진단: 실질적 수정 불필요'};
@@ -458,12 +503,14 @@
      'Fix ONLY grounded issues. Preserve events, chronology, established voices, canon, user-controlled dialogue, character motivations, relationships, choices, locations, exact status windows, image tags and numerical values.',
      'Where flagged for voice erosion, recover individuality through concrete character-specific observations, reasons, humor, goals or boundaries. Replace or combine repeated empty fragments. Keep brief SMS when meaningful and do not increase word count mechanically.',
      'Reference the FIRST MESSAGE only for enduring personality and speaking texture. Do not copy its text or revert developments, emotions, relationships, viewpoint or temporal setting.',
+     'If provided, use the APPROVED STYLE SNAPSHOT for moderation and pacing, not plot or facts. Do NOT repeat its events, reuse its words, or force a new exaggerated performance. Prefer selective deletion or merging of redundant exchanges.',
      'If scene stagnation is grounded, permit only ONE modest NPC-initiated, causally supported beat from already established threads. Do not invent a new major plot, romantic/sexual escalation, spouse confrontation or player choices.',
      'Never narrate unspoken thoughts of others as certain. Reduce repeated blushing, eyes, fingers and body details when they add nothing. Retain the open ending.'
    ].join(' ');
    const revision=await request([{role:'system',content:revisionSystem},{
      role:'user',content:'# GROUNDED ISSUES\n'+JSON.stringify(issues)
        +'\n\n'+(referenceText||'# FIRST MESSAGE REFERENCE UNAVAILABLE')
+       +'\n\n'+(selectedStyle||'# APPROVED STYLE SNAPSHOT NOT SELECTED')
        +'\n\n# RECENT CONTINUITY\n'+ref.recent+'\n\n# ORIGINAL DRAFT\n'+source
    }]);
    const error=verify(raw,revision,ref);
