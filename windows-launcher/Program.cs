@@ -18,8 +18,16 @@ internal static class Program
     private static extern bool ShowWindow(IntPtr handle, int command);
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        // The hidden server supervisor is a separate OS process. It must not
+        // participate in the GUI's single-instance mutex or create any window.
+        if (args.Length > 0 && args[0] == "--server-host")
+        {
+            Environment.ExitCode = ServerHost.RunAsync(args).GetAwaiter().GetResult();
+            return;
+        }
+
         appMutex = new Mutex(true, "Local\\RisuBardLauncher.Win64.SingleInstance", out bool first);
         if (!first)
         {
