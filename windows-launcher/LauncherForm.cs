@@ -49,6 +49,7 @@ internal sealed class LauncherForm : Form
     private Process? server;
     private bool busy;
     private bool browserReady;
+    private string startupStage = "초기화";
     private readonly object logLock = new();
 
     public LauncherForm(string caption)
@@ -187,6 +188,7 @@ internal sealed class LauncherForm : Form
         retry.Enabled = false;
         try
         {
+            startupStage = "기존 7777 서버 확인";
             var result = await ProbeAsync();
             if (result == ProbeResult.OtherService)
             {
@@ -197,6 +199,7 @@ internal sealed class LauncherForm : Form
             }
             if (result != ProbeResult.RisuBard)
             {
+                startupStage = "RisuBard 설치 폴더 확인";
                 string? root = FindRisuBardRoot();
                 if (root == null)
                 {
@@ -226,7 +229,9 @@ internal sealed class LauncherForm : Form
                     return;
                 }
                 SetStatus("꺼져 있는 RisuBard 서버를 자동으로 시작하는 중…\n" + root);
+                startupStage = "독립 서버 프로세스 생성";
                 StartNodeServer(nodePath, root);
+                startupStage = "서버 준비 확인";
                 bool ok = false, wrong = false;
                 for (int i = 0; i < 100 && !IsDisposed; i++)
                 {
@@ -238,24 +243,32 @@ internal sealed class LauncherForm : Form
                 }
                 if (!ok)
                 {
+                    string lastFailure = ReadDiagnosticTail("server.stderr.log", 600);
+                    if (string.IsNullOrWhiteSpace(lastFailure))
+                        lastFailure = ReadDiagnosticTail("server-host.log", 600);
                     SetStatus(wrong
                         ? "다른 프로그램이 7777 포트를 사용하고 있어. 로그를 확인해 줘."
-                        : "서버가 정상적으로 준비되지 않았어.\n로그 버튼으로 오류를 확인해 줘.\n" +
-                          "실행 위치: " + root);
+                        : "서버가 정상적으로 준비되지 않았어.\n" +
+                          "실행 위치: " + root +
+                          (lastFailure.Length > 0 ? "\n\n최근 오류:\n" + lastFailure : "") +
+                          "\n로그 버튼을 누르면 진단 폴더가 열려.");
                     return;
                 }
             }
             SetStatus("서버 연결 성공 · 독립 앱 화면을 불러오는 중…");
+            startupStage = "WebView2 전용 창 초기화";
             await OpenBrowserWindowAsync();
             waiting.Visible = false;
             browser.Visible = true;
             browser.BringToFront();
+            startupStage = "준비 완료";
             Log("RisuBard opened in an independent WebView2 window.");
         }
         catch (Exception e)
         {
-            Log("Launcher error: " + e);
-            SetStatus("실행 도중 문제가 발생했어.\n" + e.Message + "\n로그를 확인하거나 다시 연결을 눌러 줘.");
+            Log("Launcher error at stage [" + startupStage + "]: " + e);
+            SetStatus("실행 실패 단계: " + startupStage + "\n\n" +
+                e.Message + "\n\n로그 버튼을 누르면 진단 폴더가 열려.");
         }
         finally
         {
@@ -279,7 +292,7 @@ internal sealed class LauncherForm : Form
             return ProbeResult.OtherService;
         }
         catch (HttpRequestException) { return ProbeResult.NotRunning; }
-        catch (TaskCanceledException) { return ProbeResult.NotRunning; }
+        catch (OperationCanceledException) { return ProbeResult.NotRunning; }
         catch (IOException) { return ProbeResult.NotRunning; }
     }
 
