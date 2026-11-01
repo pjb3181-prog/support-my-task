@@ -972,14 +972,14 @@
   </div>
   <p class="muted">첫 메시지는 수정하지 않고 캐릭터의 고유 말투만 참고해. 문자 대화의 짧은 문장은 허용하되 정보 없는 반복 응답은 감지해. 장면 정체 방지도 무리한 사건을 요구하지 않아.</p>
    <section class="status" style="margin:12px 0">
-     <strong>🎬 현재 상황 안내 + 추천 지시어</strong>
+     <strong>🎬 현재 상황 + 다음 채팅 입력 초안</strong>
      <div class="top">
        <label><input id="sceneassist" type="checkbox" ${conf.sceneAssist?'checked':''}/> 장면 브리핑 기능 ON</label>
        <label><input id="sceneauto" type="checkbox" ${conf.sceneAuto?'checked':''}/> 새 응답 완료 시 자동 분석 (별도 모델 호출 최대 1회)</label>
-       <label><input id="scenecard" type="checkbox" ${conf.sceneCard?'checked':''}/> 채팅 화면에 장소·시간·상황·추천 지시어 카드 표시</label>
-       <button id="scene-open">장면 브리핑 열기 · 추천 지시어 복사</button>
+       <label><input id="scenecard" type="checkbox" ${conf.sceneCard?'checked':''}/> 채팅 하단에 장소·시간·상황·다음 입력 초안 3개 표시</label>
+       <button id="scene-open">장면 브리핑 열기 · 다음 입력 초안 복사</button>
      </div>
-     <p class="muted">요약은 현재 대화 내용을 읽어 생성해. 원본은 수정하지 않고 추천 지시어도 자동 실행하지 않아. 기존 보조/메인 모델 설정을 사용해 별도 비용이 들 수 있어.</p>
+     <p class="muted">요약은 현재 대화 내용을 읽어 생성해. 원본은 수정하지 않으며, 생성한 대사·행동·생각 초안도 자동 입력하거나 전송하지 않아. 기존 보조/메인 모델 설정을 사용해 별도 비용이 들 수 있어.</p>
    </section>
    <section class="status" style="margin:12px 0">
      <strong>문체 기준선 · 대화 기록은 그대로 유지</strong>
@@ -1083,13 +1083,13 @@
    if(prev&&typeof prev==='object'&&!Array.isArray(prev)){
      for(const [key,item] of Object.entries(prev)){
        if(item?.state==='ready'&&typeof item.situation==='string'
-         &&Array.isArray(item.directions)&&item.directions.length>=2
+         &&Array.isArray(item.drafts)&&item.drafts.length===3
          &&typeof item.signature==='string'){
          sceneBriefs[key]={
            ...item,place:sceneShort(item.place||'미확인',95),
            time:sceneShort(item.time||'미확인',90),
            situation:sceneShort(item.situation,250),
-           directions:item.directions.slice(0,3).map(x=>sceneShort(x,240))
+           drafts:item.drafts.slice(0,3).map((x,i)=>({kind:['대사','행동','생각'][i],text:sceneDraftText(x?.text||'',440)}))
          };
        }
      }
