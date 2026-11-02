@@ -9,7 +9,7 @@
  const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,sceneAssist:true,sceneAuto:true,sceneCard:true,timeoutMs:90000,maxChars:18000,collabProfile:'balanced',collabWriter:'model',collabRounds:2,collabBudgetSec:60,collabPatchPct:20,collabMaxIssues:3,collabConfidence:.75};
  let conf={...DEFAULT};
  let state={target:null,index:-1,original:'',revised:'',issues:[],status:'자동 퇴고 OFF',busy:false,lastAuto:'없음'};
- let uiOpen=false;let unloaded=false;let pollTimer=null;
+ let uiOpen=false;let unloaded=false;let pollTimer=null;let collabActive=false;
  let recentActivity=[],activityView='auto',pickedActivity=0,activitySequence=0;
  const seen=new Set(),inflight=new Set(),initializedChats=new Set();
  const preSaveReviewed=new Map();
@@ -1091,7 +1091,13 @@
    }
    const id=txt(arg.chat.id),k=outputKey(ci,ti,id,i,m);
    if(seen.has(k)||inflight.has(k))return;
-   remember(k);inflight.add(k);
+   const collaboration=conf.mode==='collab';
+   if(collaboration&&collabActive){
+     remember(k);
+     await recordAutomatic({phase:sourceLabel,outcome:'skipped',reason:'이전 협업 진행 중 · 동시 교정으로 인한 지연 방지',original,calls:0});
+     return;
+   }
+   remember(k);inflight.add(k);if(collaboration)collabActive=true;
    try{
      if(!conf.realEditor){
        await recordAutomatic({phase:sourceLabel,outcome:'skipped',reason:'프롬프트 보조만 활성화 · 별도 편집 모델 호출 안 함',original,calls:0});
@@ -1114,7 +1120,7 @@
    }catch(error){
      await recordAutomatic({phase:sourceLabel,outcome:'error',reason:'원문 유지 · '+txt(error?.message||error),original,calls:0});
    }finally{
-     inflight.delete(k);
+     inflight.delete(k);if(collaboration)collabActive=false;
      if(uiOpen&&activityView==='auto')void render().catch(()=>{});
      void refreshSceneFromEvent(arg);
    }
@@ -1311,7 +1317,14 @@
   el('style-off').onclick=()=>setStyleReset(false)
     .then(render).catch(e=>{styleStatus='문체 설정 변경 실패 · '+txt(e.message);render()});
   el('model').onchange=async e=>{conf.model=e.target.value;await save()};
-  el('mode').onchange=async e=>{conf.mode=e.target.value;await save();if(conf.mode==='collab')void seedStoryRunnerWatcher();await render()};
+  el('mode').onchange=async e=>{conf.mode=e.target.value;
+    if(conf.mode==='collab'){
+      // Existing 0.3.8 installations usually retain the 9000-character limit.
+      // Promote only upon explicit collaboration selection so longer fiction is reviewed.
+      if(conf.maxChars<18000)conf.maxChars=18000;
+      void seedStoryRunnerWatcher();
+    }
+    await save();await render();};
 
   const changeCollab=async (key,value)=>{
     conf[key]=value;conf.collabProfile='custom';await save();await render();
@@ -1404,7 +1417,14 @@
      hooks.push(['afterRequest',reviseBeforeSave]);
    }catch(error){console.log('[EditorLab] prompt/inline hook registration unavailable',error);}
  }
- await risuai.addRisuChatListener('output',arg=>automatic(arg,'일반 채팅'));
+ await risuai.addRisuChatListener('output',arg=>{
+    if(conf.mode==='collab'){
+      // Do not let the host await expensive editorial calls before showing the draft.
+      void automatic(arg,'일반 채팅').catch(error=>console.log('[EditorLab] background collaboration failed',error));
+      return;
+    }
+    return automatic(arg,'일반 채팅');
+  });
  if(conf.mode==='collab')void seedStoryRunnerWatcher();
   pollTimer=setInterval(()=>{void pollStoryRunner();void updateScenePanel()},2800);
  await risuai.onUnload(async()=>{
