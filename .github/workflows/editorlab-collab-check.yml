@@ -2,6 +2,7 @@ name: Editor Lab collaboration regression check
 on:
   push:
     branches:
+      - main
       - feature/editorlab-collab-20261102
     paths:
       - 'risubard-updates/bard_editor_lab.js'
