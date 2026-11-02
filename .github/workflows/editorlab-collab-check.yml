@@ -1,0 +1,32 @@
+name: Editor Lab collaboration regression check
+on:
+  push:
+    branches:
+      - main
+      - feature/editorlab-collab-20261102
+    paths:
+      - 'risubard-updates/bard_editor_lab.js'
+      - 'risubard-updates/tests/editorlab_collab.test.cjs'
+      - '.github/workflows/editorlab-collab-check.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'risubard-updates/bard_editor_lab.js'
+      - 'risubard-updates/tests/editorlab_collab.test.cjs'
+      - '.github/workflows/editorlab-collab-check.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check plugin JavaScript syntax
+        run: node --check risubard-updates/bard_editor_lab.js
+      - name: Test mocked main/editor collaboration
+        run: node --test risubard-updates/tests/editorlab_collab.test.cjs

@@ -1,15 +1,15 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.8
+//@version 0.3.9
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
-//@description Automatic story scene briefing and ready-to-send next-user-turn drafts; standalone with original editor features.
+//@description Opt-in main-writer / auxiliary-editor surgical collaboration with limited review rounds, plus original Bard Editor Lab features.
 (async () => {
  const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups'; const ACTIVITY_STORE='bard_editor_lab_v034_activity'; const STYLE_STORE='bard_editor_lab_v036_style_snapshots'; const SCENE_STORE='bard_editor_lab_v038_scene_briefs';
- const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,sceneAssist:true,sceneAuto:true,sceneCard:true,timeoutMs:90000,maxChars:9000};
+ const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,sceneAssist:true,sceneAuto:true,sceneCard:true,timeoutMs:90000,maxChars:18000,collabProfile:'balanced',collabWriter:'model',collabRounds:2,collabBudgetSec:60,collabPatchPct:20,collabMaxIssues:3,collabConfidence:.75};
  let conf={...DEFAULT};
  let state={target:null,index:-1,original:'',revised:'',issues:[],status:'자동 퇴고 OFF',busy:false,lastAuto:'없음'};
- let uiOpen=false;let unloaded=false;let pollTimer=null;
+ let uiOpen=false;let unloaded=false;let pollTimer=null;let collabActive=false;
  let recentActivity=[],activityView='auto',pickedActivity=0,activitySequence=0;
  const seen=new Set(),inflight=new Set(),initializedChats=new Set();
  const preSaveReviewed=new Map();
@@ -594,7 +594,7 @@
      original:recordText(original),revised:recordText(revised),
      issues:(Array.isArray(issues)?issues:[]).filter(x=>x&&typeof x.problem==='string')
        .slice(0,4).map(x=>({problem:txt(x.problem).slice(0,350),instruction:txt(x.instruction).slice(0,350)})),
-     calls:Math.max(0,Math.min(2,Number(calls)||0)),committed:outcome==='applied'};
+     calls:Math.max(0,Math.min(12,Number(calls)||0)),committed:outcome==='applied'};
    recentActivity.unshift(record);
    recentActivity=recentActivity.slice(0,5);
    pickedActivity=0;
@@ -649,6 +649,9 @@
 
  async function reviseBeforeSave(response,type){
    if(unloaded||!conf.auto||!conf.realEditor||type!=='model'||typeof response!=='string')return response;
+   // Collaboration is deliberately post-save: deliver the first draft quickly,
+   // then inspect and apply a verified patch without blocking the original response.
+   if(conf.mode==='collab')return response;
    if(alreadyPreSaved(response))return response;
    try{
      let reference={};
@@ -710,7 +713,226 @@
    return ('CHARACTER: '+txt(chara?.name||chara?.charaName||chara?.chaName).slice(0,100)
      +'\nPrevious messages are continuity FACTS, not prose examples.\n'+lines).slice(-3200);
  }
+
+ // Writer/editor collaboration: one full critic pass, excerpt-only rewrites,
+ // changed-window rechecks. No chat mutations occur in this pipeline.
+ function collabConfig(){
+   const finite=(v,fallback,min,max)=>Number.isFinite(Number(v))?Math.max(min,Math.min(max,Number(v))):fallback;
+   return {
+     rounds:Math.round(finite(conf.collabRounds,2,0,3)),
+     maxIssues:Math.round(finite(conf.collabMaxIssues,3,1,5)),
+     budgetSec:finite(conf.collabBudgetSec,60,10,300),
+     patchPct:finite(conf.collabPatchPct,20,5,40),
+     confidence:finite(conf.collabConfidence,.75,.6,.95),
+     editor:['otherAx','model'].includes(conf.model)?conf.model:'otherAx',
+     writer:['otherAx','model'].includes(conf.collabWriter)?conf.collabWriter:'model'
+   };
+ }
+ const COLLAB_CRAFT=[
+   '한국어 라이트 장편 장르소설: 쉽고 자연스럽게 읽히면서 인물의 고유한 관심사, 주도성, 말맛과 작은 인과를 보존한다.',
+   '좋은 대사를 짧다는 이유로 늘리지 않는다. 질문-단답-반문 또는 같은 신체 반응이 의미 없이 계속될 때만 지적한다.',
+   '인물이 가진 직업적 지식과 성격을 같은 설명으로 매번 소비하지 않는다. 외부 사건을 억지로 추가하지 않는다.',
+   '작품의 장점을 먼저 찾고, 독서 경험을 실제로 저해하는 문제만 최소한으로 수정한다. 좋은 원고는 PASS한다.',
+   '첫 메시지는 설정과 인물 동기를 파악하는 참고자료일 뿐 모범 문체나 현재 시점이 아니다. 사용자 행동, canon, 상태 태그, 관계 변화를 보존한다.'
+ ].join('\n');
+ function collabHits(s,needle){
+   if(!needle)return 0;
+   let i=0,n=0;
+   while((i=s.indexOf(needle,i))!==-1){n++;i+=needle.length;}
+   return n;
+ }
+ function collabTokens(s){
+   return s.match(/<[^<>\n]{1,130}>|\[[^\[\]\n]{1,130}\]|\{\{[^{}\n]{1,130}\}\}/g)||[];
+ }
+ function collabLength(s){return Array.from(s).length;}
+ function collabParseVerdict(story,raw,settings){
+   const v=typeof raw==='string'?obj(raw):raw;
+   if(!v||!['PASS','PATCH','STRUCTURAL_REVIEW'].includes(v.status)||!Array.isArray(v.issues)
+       ||!Array.isArray(v.strengths)||!v.strengths.some(x=>typeof x==='string'&&x.trim()))
+     throw Error('편집 검토 JSON 형식 오류');
+   if(v.status!=='PATCH')return {status:v.status,issues:[],strengths:v.strengths,summary:txt(v.summary)};
+   const ids=new Set(),issues=[];
+   for(const x of v.issues){
+     if(!x||typeof x.id!=='string'||ids.has(x.id)||typeof x.excerpt!=='string'
+         ||collabHits(story,x.excerpt)!==1||typeof x.problem!=='string'||!x.problem.trim()
+         ||typeof x.instruction!=='string'||!x.instruction.trim()
+         ||!Number.isFinite(Number(x.confidence))||Number(x.confidence)<settings.confidence
+         ||Number(x.confidence)>1)continue;
+     ids.add(x.id);
+     issues.push({id:x.id,excerpt:x.excerpt,problem:x.problem,instruction:x.instruction,
+       confidence:Number(x.confidence)});
+     if(issues.length>=settings.maxIssues)break;
+   }
+   return {status:issues.length?'PATCH':'PASS',issues,strengths:v.strengths,summary:txt(v.summary)};
+ }
+ function collabPatchTasks(story,issues,contextChars=350){
+   return issues.map(x=>{
+     const i=story.indexOf(x.excerpt);
+     return {id:x.id,excerpt:x.excerpt,problem:x.problem,instruction:x.instruction,
+       beforeContext:story.slice(Math.max(0,i-contextChars),i),
+       afterContext:story.slice(i+x.excerpt.length,i+x.excerpt.length+contextChars)};
+   });
+ }
+ function collabPreview(story,verdict,raw,remaining){
+   const unchanged=reason=>({text:story,applied:[],changedChars:0,reason});
+   let response;
+   try{response=typeof raw==='string'?obj(raw):raw;}
+   catch(_){return unchanged('JSON 파싱 실패');}
+   if(!response||!Array.isArray(response.patches))return unchanged('교정 JSON에 patches 배열 없음');
+   const expected=new Map(verdict.issues.map(x=>[x.id,x.excerpt]));
+   const used=new Set(),proposed=[];
+   for(const p of response.patches.slice(0,10)){
+     if(!p||!expected.has(p.issueId)||used.has(p.issueId)
+         ||typeof p.before!=='string'||typeof p.after!=='string'||!p.before||!p.after
+         ||p.before===p.after||!p.before.includes(expected.get(p.issueId))
+         ||collabHits(story,p.before)!==1)continue;
+     used.add(p.issueId);
+     if(JSON.stringify(collabTokens(p.before))!==JSON.stringify(collabTokens(p.after)))continue;
+     if(collabLength(p.after)>collabLength(p.before)*3+100)continue;
+     const start=story.indexOf(p.before);
+     proposed.push({issueId:p.issueId,before:p.before,after:p.after,start,end:start+p.before.length});
+   }
+   proposed.sort((a,b)=>a.start-b.start);
+   if(proposed.some((p,i)=>i>0&&p.start<proposed[i-1].end))return unchanged('교정 범위 겹침');
+   const changedChars=proposed.reduce((n,p)=>n+collabLength(p.before),0);
+   if(changedChars>remaining)return unchanged('최대 교정 범위 초과');
+   let text=story;
+   for(const p of [...proposed].reverse())
+     text=text.slice(0,p.start)+p.after+text.slice(p.end);
+   return {text,changedChars,reason:proposed.length?'교정 후보':'유효한 부분 교정 없음',applied:proposed};
+ }
+ function collabReviewWindows(preview,context=250){
+   let shift=0;
+   return preview.applied.map(p=>{
+     const offset=p.start+shift;
+     shift+=p.after.length-p.before.length;
+     return {id:p.issueId,before:p.before,after:p.after,
+       context:preview.text.slice(Math.max(0,offset-context),Math.min(preview.text.length,offset+p.after.length+context))};
+   });
+ }
+ async function collabRequest(messages,mode,deadline){
+   const bounded=async(promise)=>{
+     const remain=Math.min(conf.timeoutMs,deadline-Date.now());
+     if(remain<=1000)throw Error('설정된 퇴고 시간 예산 종료');
+     let timer;
+     try{return await Promise.race([promise,new Promise((_,reject)=>{
+       timer=setTimeout(()=>reject(Error('퇴고 모델 응답시간 초과')),remain);
+     })]);}
+     finally{clearTimeout(timer);}
+   };
+   const response=await bounded(risuai.runLLMModel({mode,messages,allowPlugins:false}));
+   if(response?.type==='success'&&typeof response.result==='string')return clean(response.result);
+   if(response?.type==='streaming'&&response.result?.getReader){
+     const reader=response.result.getReader();let output='';
+     try{
+       while(true){
+         const part=await bounded(reader.read());
+         if(part.done)break;
+         const v=part.value;
+         const next=typeof v==='string'?v:Object.values(v||{}).find(x=>typeof x==='string');
+         if(typeof next==='string'){
+           if(next.startsWith(output))output=next;
+           else if(!output.endsWith(next))output+=next;
+         }
+         if(output.length>Math.max(16000,conf.maxChars*2))throw Error('교정 모델 출력량 초과');
+       }
+     }finally{try{await reader.cancel()}catch(_){}}
+     if(!output.trim())throw Error('교정 모델 스트리밍 응답 없음');
+     return clean(output);
+   }
+   throw Error('교정 모델 호출 실패: '+txt(response?.result||response?.type).slice(0,130));
+ }
+ async function collaborativePipeline(draft,background=''){
+   const raw=txt(draft),source=clean(raw),ref=normalizedReference(background);
+   const base={original:raw,revised:'',issues:[],calls:0,reason:'원문 유지'};
+   if(!eligible(source))return {...base,reason:'선별 제외 · 짧거나 최대 입력 글자 수 초과'};
+   const settings=collabConfig(),deadline=Date.now()+settings.budgetSec*1000;
+   const unchanged=raw!==source&&!verify(raw,source,ref)?source:'';
+   let approved=source,remaining=collabLength(source)*settings.patchPct/100;
+   let verdict=null,calls=0,notes=[],rounds=0,applied=0;
+   try{
+     const opening=ref.opening?ref.opening.slice(0,600):'';
+     const user=[
+       '# 현재 서사 사실(이전 글의 말투는 모방하지 말 것)',
+       ref.recent.slice(-1500),
+       '# 캐릭터 참고(설정과 동기만, 문장을 모사하지 말 것)',
+       [ref.name,ref.personality.slice(0,480),opening].filter(Boolean).join('\n'),
+       '# 검토할 원고',
+       source
+     ].join('\n\n');
+     const system=[
+       '당신은 소설을 직접 다시 쓰지 않는 전문 편집자 DeepSeek다.',
+       COLLAB_CRAFT,
+       '먼저 장점 최소 1개를 구체적으로 찾아라. 충분히 좋으면 반드시 PASS.',
+       '검토 강도: 최소 확신도 '+settings.confidence+'. 고치면 더 나아진다는 확신이 없는 부분은 수정 요청 금지.',
+       'PATCH인 경우 수정할 구간 최대 '+settings.maxIssues+'개를 원고에서 정확히 한 번 나오는 문자열로 인용하라.',
+       '줄거리·인물상태를 크게 바꾸어야 하는 경우 STRUCTURAL_REVIEW로 분리하고 자동 전체재작성하지 않는다.',
+       '반드시 JSON만 출력: {"status":"PASS|PATCH|STRUCTURAL_REVIEW","strengths":["구체적인 장점"],"issues":[{"id":"I1","excerpt":"원문에 정확히 존재하는 구간","problem":"문제","instruction":"부분 수정 방향","confidence":0.9}],"summary":"판단"}'
+     ].join('\n');
+     calls++;
+     verdict=collabParseVerdict(source,await collabRequest([{role:'system',content:system},{role:'user',content:user}],settings.editor,deadline),settings);
+     if(verdict.status==='PASS')return {...base,revised:unchanged,calls,reason:'DeepSeek PASS · 좋은 원고 원본 유지'};
+     if(verdict.status==='STRUCTURAL_REVIEW')return {...base,revised:unchanged,calls,reason:'장면 구조 검토 필요 · 자동 전체 수정 안 함'};
+     if(settings.rounds===0)return {...base,revised:unchanged,issues:verdict.issues,calls,reason:'검토만 수행(수정 0회)'};
+     while(rounds<settings.rounds&&verdict.status==='PATCH'&&remaining>0&&Date.now()<deadline-1300){
+       rounds++;
+       const tasks=collabPatchTasks(approved,verdict.issues,350);
+       const writerSystem=[
+         '당신은 원문 작가 힘오이다. 편집자 지적 중 정말 필요한 구간만 국소적으로 고쳐라.',
+         COLLAB_CRAFT,
+         '전문을 다시 쓰지 마라. 인용 구간 앞뒤의 맥락과 캐릭터의 개성은 유지한다.',
+         '변경할 원문을 정확히 before에 복사하고, 새 문장은 after에 기록한다.',
+         '사용자 직접 대사·의도된 설정·챕터 제목·화자 라벨·상태 태그·수치·사건 순서를 손대지 마라.',
+         '교정이 오히려 나빠질 것 같으면 patches를 빈 배열로 출력한다.',
+         '반드시 JSON만 출력: {"patches":[{"issueId":"I1","before":"원문에 정확히 있는 구간","after":"교정한 구간"}]}'
+       ].join('\n');
+       calls++;
+       const patchText=await collabRequest([{role:'system',content:writerSystem},{
+         role:'user',content:JSON.stringify({tasks,continuity:ref.recent.slice(-700),strengths:verdict.strengths.slice(0,2)})}
+       ],settings.writer,deadline);
+       const preview=collabPreview(approved,verdict,patchText,remaining);
+       if(!preview.applied.length){notes.push(preview.reason);break;}
+       const failure=verify(approved,preview.text,ref);
+       if(failure){notes.push('안전 검증 거절: '+failure);break;}
+       const originalCandidate=approved;
+       const reviewSystem=[
+         '당신은 DeepSeek 편집자다. 이미 읽은 원고 중 실제 교체 부분만 다시 확인한다.',
+         COLLAB_CRAFT,
+         '원문 장점을 살렸고 실제로 개선되었다면 PASS 또는 PATCH. 더 나빠졌거나 설정이 손상되면 REJECT.',
+         'PASS/PATCH/REJECT 중 하나와 improved(boolean)을 출력한다. PATCH일 때만 새 후보 문장에 유일하게 있는 문제 구간 최대 '+settings.maxIssues+'개를 인용한다.',
+         'JSON만 출력: {"status":"PASS|PATCH|REJECT","improved":true,"strengths":["보존된 장점"],"issues":[{"id":"I2","excerpt":"수정 후 원문에 있는 구간","problem":"문제","instruction":"최소 수정","confidence":0.9}],"summary":"검토 결과"}'
+       ].join('\n');
+       calls++;
+       const check=await collabRequest([{role:'system',content:reviewSystem},{
+         role:'user',content:JSON.stringify({changed:collabReviewWindows(preview,280),priorStrengths:verdict.strengths.slice(0,2),continuity:ref.recent.slice(-450)})}
+       ],settings.editor,deadline);
+       const recheck=obj(check);
+       if(!recheck||!['PASS','PATCH','REJECT'].includes(recheck.status)||recheck.improved!==true){
+         notes.push('수정본 악화 또는 재검토 미통과 · 이전 원고 유지');break;
+       }
+       // Recheck is explicitly positive: commit this candidate in memory only.
+       approved=preview.text;
+       remaining-=preview.changedChars;
+       applied+=preview.applied.length;
+       if(recheck.status==='PASS'){notes.push('DeepSeek 재검토 PASS');break;}
+       verdict=collabParseVerdict(approved,{...recheck,status:'PATCH'},settings);
+       if(verdict.status!=='PATCH'){notes.push('후속 문제 미확인 · 조기 종료');break;}
+     }
+     const result=approved!==source?approved:unchanged;
+     const resultError=result&&verify(raw,result,ref);
+     if(resultError)return {...base,revised:unchanged,issues:verdict?.issues||[],calls,reason:'최종 안전 검증 미통과: '+resultError};
+     return {...base,revised:result,issues:verdict?.issues||[],calls,
+       reason:'협업 검토 '+calls+'회 호출 / 수정 '+rounds+'회 시도 / 반영 '+applied+'곳 · '+(notes.join(' · ')||'범위·시간 제한 종료')};
+   }catch(error){
+     const result=approved!==source?approved:unchanged;
+     return {...base,revised:result,issues:verdict?.issues||[],calls,
+       reason:'원문 보호 종료 · '+txt(error?.message||error).slice(0,140)
+         +(approved!==source?' · 이전에 검증 완료된 부분 교정본 유지':'')};
+   }
+ }
+
  async function pipeline(draft,background=''){
+   if(conf.mode==='collab')return collaborativePipeline(draft,background);
    const raw=txt(draft),source=clean(raw);
    const ref=normalizedReference(background);
    const opening=conf.voiceGuard?ref.opening:'';
@@ -869,7 +1091,13 @@
    }
    const id=txt(arg.chat.id),k=outputKey(ci,ti,id,i,m);
    if(seen.has(k)||inflight.has(k))return;
-   remember(k);inflight.add(k);
+   const collaboration=conf.mode==='collab';
+   if(collaboration&&collabActive){
+     remember(k);
+     await recordAutomatic({phase:sourceLabel,outcome:'skipped',reason:'이전 협업 진행 중 · 동시 교정으로 인한 지연 방지',original,calls:0});
+     return;
+   }
+   remember(k);inflight.add(k);if(collaboration)collabActive=true;
    try{
      if(!conf.realEditor){
        await recordAutomatic({phase:sourceLabel,outcome:'skipped',reason:'프롬프트 보조만 활성화 · 별도 편집 모델 호출 안 함',original,calls:0});
@@ -892,13 +1120,25 @@
    }catch(error){
      await recordAutomatic({phase:sourceLabel,outcome:'error',reason:'원문 유지 · '+txt(error?.message||error),original,calls:0});
    }finally{
-     inflight.delete(k);
+     inflight.delete(k);if(collaboration)collabActive=false;
      if(uiOpen&&activityView==='auto')void render().catch(()=>{});
      void refreshSceneFromEvent(arg);
    }
  }
+
+ async function seedStoryRunnerWatcher(){
+   try{
+     const c=await current(),messages=Array.isArray(c.chat?.message)?c.chat.message:[];
+     const session=[c.ci,c.ti,c.id].join('|');
+     if(initializedChats.has(session))return;
+     initializedChats.add(session);
+     const i=messages.length-1,m=messages[i];
+     if(m&&['char','assistant'].includes(m.role))
+       remember(outputKey(c.ci,c.ti,c.id,i,m));
+   }catch(error){console.log('[EditorLab] watcher seed unavailable',error);}
+ }
  async function pollStoryRunner(){
-   if(!conf.auto||!conf.realEditor||!conf.watchStoryRunner||unloaded)return;
+   if(!conf.auto||!conf.realEditor||unloaded||(!conf.watchStoryRunner&&conf.mode!=='collab'))return;
    try{
      const t=await current(),messages=t.chat?.message;
      if(!Array.isArray(messages)||!messages.length)return;
@@ -951,7 +1191,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.8</h2>
+  </style><main><h2>Bard Editor Lab v0.3.9 · Writer ↔ Editor</h2>
   <p class="muted">본체·프리셋 수정 없음 · 메인 채팅에 짧은 편집 지침 삽입 + 모델을 이용한 선택적 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
@@ -962,8 +1202,37 @@
     <select id="mode">
       <option value="selective" ${conf.mode==='selective'?'selected':''}>선택적 · 매 턴 진단, 필요할 때만 퇴고</option>
       <option value="economy" ${conf.mode==='economy'?'selected':''}>저비용 · 반복 징후 있을 때만 진단</option>
+      <option value="collab" ${conf.mode==='collab'?'selected':''}>협업 · DeepSeek 검토 → 힘오이 부분 수정</option>
     </select>
   </div>
+  <section class="status" style="margin:12px 0;border:1px solid #52617f">
+    <strong>🤝 작가↔편집자 협업 설정 (v0.3.9)</strong>
+    <p class="muted">상단 '협업' 모드에서만 작동. 기존 RisuBard 모델 슬롯을 이용해 새 API 키가 필요하지 않아.
+    메인=힘오이, 보조=DeepSeek로 연결했다면 아래 기본값을 사용하면 돼.</p>
+    <div class="top">
+      <label>수정 작가 <select id="collab-writer">
+        <option value="model" ${conf.collabWriter==='model'?'selected':''}>메인 모델 (힘오이)</option>
+        <option value="otherAx" ${conf.collabWriter==='otherAx'?'selected':''}>보조 모델</option>
+      </select></label>
+      <label>검토 편집자 <span class="muted">상단 검토 모델 선택: ${esc(conf.model)}</span></label>
+      <label>품질/속도 <select id="collab-profile">
+        <option value="fast" ${conf.collabProfile==='fast'?'selected':''}>빠름 · 최대 1회 수정</option>
+        <option value="balanced" ${conf.collabProfile==='balanced'?'selected':''}>균형 · 최대 2회 수정</option>
+        <option value="quality" ${conf.collabProfile==='quality'?'selected':''}>고품질 · 최대 3회 수정</option>
+        <option value="custom" ${conf.collabProfile==='custom'?'selected':''}>사용자 지정</option>
+      </select></label>
+    </div>
+    <div class="top">
+      <label>최대 수정 횟수 <select id="collab-rounds">${[0,1,2,3].map(n=>'<option value="'+n+'" '+(conf.collabRounds===n?'selected':'')+'>'+n+'회</option>').join('')}</select></label>
+      <label>추가 퇴고 시간 예산 <select id="collab-budget">${[20,45,60,90,150,240,300].map(n=>'<option value="'+n+'" '+(conf.collabBudgetSec===n?'selected':'')+'>'+n+'초</option>').join('')}</select></label>
+      <label>최대 누적 수정 범위 <select id="collab-patch">${[5,10,15,20,25,30,40].map(n=>'<option value="'+n+'" '+(conf.collabPatchPct===n?'selected':'')+'>'+n+'%</option>').join('')}</select></label>
+      <label>검토당 문제 구간 <select id="collab-issues">${[1,2,3,4,5].map(n=>'<option value="'+n+'" '+(conf.collabMaxIssues===n?'selected':'')+'>'+n+'곳</option>').join('')}</select></label>
+      <label>최소 교정 확신도 <select id="collab-confidence">${[.65,.7,.75,.8,.85,.9].map(n=>'<option value="'+n+'" '+(Math.abs(conf.collabConfidence-n)<.001?'selected':'')+'>'+Math.round(n*100)+'%</option>').join('')}</select></label>
+    </div>
+    <p class="muted">원고가 충분히 좋으면 PASS (DeepSeek 1회). 문제가 있을 때만 힘오이가 정확한 구간을 수정하고
+    DeepSeek는 바뀐 부분만 다시 검토해. 최대 요청: 1 + 수정 횟수×2회. 원래 응답은 먼저 표시되며 안전하게 검증된 교정만 나중에 반영돼.</p>
+    <p class="muted">추가 지연을 줄이려면 아래 '새 응답 완료 시 자동 장면 분석'을 OFF할 수 있어. 그 기능도 별도의 모델 호출을 사용해.</p>
+  </section>
   <div class="top">
     <label><input type="checkbox" id="promptassist" ${conf.promptAssist?'checked':''}/> 생성 전 프롬프트에 편집 원칙 추가 (추가 모델 호출 없음)</label>
     <label><input type="checkbox" id="realeditor" ${conf.realEditor?'checked':''}/> 생성 후 편집장 모델로 선택적 검수·퇴고 (모델 호출 비용 발생)</label>
@@ -1019,7 +1288,7 @@
     <section><h3>${showingAuto?'자동 퇴고 결과':'수동 퇴고본 (미적용)'}</h3><textarea readonly placeholder="${showingAuto?'교정 불필요·검사 제외·실패 시 비어 있어':'수동 검수 후 표시'}">${esc(visibleRevised)}</textarea></section>
   </div>
   <h3>편집장 진단</h3><pre>${esc(visibleIssues.map((x,i)=>`${i+1}. ${x.problem} — ${x.instruction}`).join('\n')||(showingAuto?(activity?.reason||'자동 진단 기록 없음'):'수동 진단 기록 없음'))}</pre>
-  <p class="muted">한 응답당 최대 2회 모델 호출. 사고과정/메타 출력은 본문과 분리해 검사해. 실패 시 원문 유지. 최근 5건의 원문 전체를 플러그인 저장소에 백업해.
+  <p class="muted">기존 모드는 최대 2회 호출. 협업 모드는 최초 DeepSeek 검토 후 필요한 경우만 힘오이 부분 교정과 DeepSeek 변경 구간 검증을 반복해. 실패 시 원문 유지. 최근 5건의 원문 전체를 플러그인 저장소에 백업해.
   타임아웃은 대기를 중단하지만 모델 과금 취소를 보장하지 않아.</p></main>`;
   const el=id=>document.getElementById(id);
    el('auto').onclick=async()=>{conf.auto=!conf.auto;await save();state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';await render()};
@@ -1048,7 +1317,33 @@
   el('style-off').onclick=()=>setStyleReset(false)
     .then(render).catch(e=>{styleStatus='문체 설정 변경 실패 · '+txt(e.message);render()});
   el('model').onchange=async e=>{conf.model=e.target.value;await save()};
-  el('mode').onchange=async e=>{conf.mode=e.target.value;await save()};
+  el('mode').onchange=async e=>{conf.mode=e.target.value;
+    if(conf.mode==='collab'){
+      // Existing 0.3.8 installations usually retain the 9000-character limit.
+      // Promote only upon explicit collaboration selection so longer fiction is reviewed.
+      if(conf.maxChars<18000)conf.maxChars=18000;
+      void seedStoryRunnerWatcher();
+    }
+    await save();await render();};
+
+  const changeCollab=async (key,value)=>{
+    conf[key]=value;conf.collabProfile='custom';await save();await render();
+  };
+  el('collab-writer').onchange=async e=>{conf.collabWriter=e.target.value;await save()};
+  el('collab-rounds').onchange=e=>changeCollab('collabRounds',Number(e.target.value));
+  el('collab-budget').onchange=e=>changeCollab('collabBudgetSec',Number(e.target.value));
+  el('collab-patch').onchange=e=>changeCollab('collabPatchPct',Number(e.target.value));
+  el('collab-issues').onchange=e=>changeCollab('collabMaxIssues',Number(e.target.value));
+  el('collab-confidence').onchange=e=>changeCollab('collabConfidence',Number(e.target.value));
+  el('collab-profile').onchange=async e=>{
+    const name=e.target.value;conf.collabProfile=name;
+    const options={fast:[1,20,10,2,.85],balanced:[2,60,20,3,.75],quality:[3,150,30,4,.7]};
+    if(options[name]){
+      [conf.collabRounds,conf.collabBudgetSec,conf.collabPatchPct,conf.collabMaxIssues,conf.collabConfidence]=options[name];
+    }
+    await save();await render();
+  };
+
   el('max').onchange=async e=>{conf.maxChars=Number(e.target.value);await save()};
   el('srwatch').onchange=async e=>{conf.watchStoryRunner=e.target.checked;initializedChats.clear();await save()};
    el('load').onclick=()=>{activityView='manual';return load().then(render).catch(e=>{state.status=txt(e.message);render()})};
@@ -1062,8 +1357,12 @@
  if(saved&&typeof saved==='object'){
    conf={...DEFAULT,...saved};
    if(!['otherAx','model'].includes(conf.model))conf.model='otherAx';
-   if(!['selective','economy'].includes(conf.mode))conf.mode='selective';
-   if(![4500,7000,9000,12000,18000].includes(Number(conf.maxChars)))conf.maxChars=9000;
+   if(!['otherAx','model'].includes(conf.collabWriter))conf.collabWriter='model';
+   if(!['fast','balanced','quality','custom'].includes(conf.collabProfile))conf.collabProfile='balanced';
+   const cc=collabConfig();
+   conf.collabRounds=cc.rounds;conf.collabBudgetSec=cc.budgetSec;conf.collabPatchPct=cc.patchPct;conf.collabMaxIssues=cc.maxIssues;conf.collabConfidence=cc.confidence;
+   if(!['selective','economy','collab'].includes(conf.mode))conf.mode='selective';
+   if(![4500,7000,9000,12000,18000].includes(Number(conf.maxChars)))conf.maxChars=18000;
    conf.timeoutMs=90000;
  }
  try{const savedActivity=await risuai.pluginStorage.getItem(ACTIVITY_STORE);
@@ -1118,8 +1417,16 @@
      hooks.push(['afterRequest',reviseBeforeSave]);
    }catch(error){console.log('[EditorLab] prompt/inline hook registration unavailable',error);}
  }
- await risuai.addRisuChatListener('output',arg=>automatic(arg,'일반 채팅'));
- pollTimer=setInterval(()=>{void pollStoryRunner();void updateScenePanel()},2800);
+ await risuai.addRisuChatListener('output',arg=>{
+    if(conf.mode==='collab'){
+      // Do not let the host await expensive editorial calls before showing the draft.
+      void automatic(arg,'일반 채팅').catch(error=>console.log('[EditorLab] background collaboration failed',error));
+      return;
+    }
+    return automatic(arg,'일반 채팅');
+  });
+ if(conf.mode==='collab')void seedStoryRunnerWatcher();
+  pollTimer=setInterval(()=>{void pollStoryRunner();void updateScenePanel()},2800);
  await risuai.onUnload(async()=>{
    unloaded=true;
    if(pollTimer)clearInterval(pollTimer);
