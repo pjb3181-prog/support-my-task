@@ -32,7 +32,11 @@ async function launch(scenario){
     sceneAuto:false,sceneAssist:false,sceneCard:false,voiceGuard:false,
     momentum:false,watchStoryRunner:false,maxChars:18000
   }]]);
-  const listeners=new Map(),replacers=new Map(),calls=[];
+  const listeners=new Map(),replacers=new Map(),calls=[],uiCallbacks=new Map(),uiElements=new Map();
+  const document={body:{innerHTML:''},getElementById:id=>{
+    if(!uiElements.has(id))uiElements.set(id,{value:'',checked:false,onchange:null,onclick:null});
+    return uiElements.get(id);
+  },querySelectorAll:()=>[]};
   const llm=async ({mode,messages,allowPlugins})=>{
     calls.push({mode,messages,allowPlugins});
     assert.equal(allowPlugins,false,'editorial calls must not invoke plugins');
@@ -72,7 +76,7 @@ async function launch(scenario){
   };
   const risuai={
     pluginStorage:{getItem:async k=>storage.get(k),setItem:async(k,v)=>storage.set(k,v)},
-    registerSetting:async()=>{},registerButton:async()=>{},
+    registerSetting:async(name,fn)=>{uiCallbacks.set(name,fn)},registerButton:async()=>{},showContainer:async()=>{},hideContainer:async()=>{},
     addRisuReplacer:async(name,fn)=>{replacers.set(name,fn)},
     addRisuChatListener:async(name,fn)=>{listeners.set(name,fn)},
     onUnload:async()=>{},runLLMModel:llm,
@@ -81,13 +85,16 @@ async function launch(scenario){
     getChatFromIndex:async()=>chat,
     setChatToIndex:async(ci,ti,next)=>{assert.equal(ci,0);assert.equal(ti,0);chat=next}
   };
-  const context={risuai,console,setTimeout,clearTimeout,setInterval:()=>1,clearInterval:()=>{}};
+  const context={risuai,document,console,setTimeout,clearTimeout,setInterval:()=>1,clearInterval:()=>{}};
   const evaluated=vm.runInNewContext(plugin,context,{filename:'bard_editor_lab.js',timeout:4000});
   await evaluated;
   assert.ok(listeners.has('output'),'output listener must be registered');
   assert.ok(replacers.has('afterRequest'),'afterRequest hook must be registered');
   return {
     calls,storage,replacers, get chat(){return chat},
+    get html(){return document.body.innerHTML},
+    openUI:()=>uiCallbacks.get('Bard Editor Lab')(),
+    control:id=>document.getElementById(id),
     emit:()=>listeners.get('output')({characterIndex:0,chatIndex:0,chat,messageIndex:1,char:{name:'유나'}})
   };
 }
@@ -143,4 +150,17 @@ test('if user has moved to the next turn, late revisions cannot overwrite histor
   await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
   assert.equal(app.chat.message[1].data,STORY);
   assert.equal(app.chat.message[2].role,'user');
+});
+
+test('settings UI renders and changing the quality profile persists',async()=>{
+  const app=await launch('pass');
+  await app.openUI();
+  assert.ok(app.html.includes('id="collab-writer"'));
+  assert.ok(app.html.includes('id="collab-profile"'));
+  await app.control('collab-profile').onchange({target:{value:'quality'}});
+  const saved=app.storage.get('bard_editor_lab_v03');
+  assert.equal(saved.collabRounds,3);
+  assert.equal(saved.collabBudgetSec,150);
+  assert.equal(saved.collabPatchPct,30);
+  assert.equal(saved.collabConfidence,.7);
 });
