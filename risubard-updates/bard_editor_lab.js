@@ -6,7 +6,7 @@
 //@description Opt-in main-writer / auxiliary-editor surgical collaboration with limited review rounds, plus original Bard Editor Lab features.
 (async () => {
  const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups'; const ACTIVITY_STORE='bard_editor_lab_v034_activity'; const STYLE_STORE='bard_editor_lab_v036_style_snapshots'; const SCENE_STORE='bard_editor_lab_v038_scene_briefs';
- const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,sceneAssist:true,sceneAuto:true,sceneCard:true,timeoutMs:90000,maxChars:18000,collabWriter:'model',collabRounds:2,collabBudgetSec:60,collabPatchPct:20,collabMaxIssues:3,collabConfidence:.75};
+ const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,sceneAssist:true,sceneAuto:true,sceneCard:true,timeoutMs:90000,maxChars:18000,collabProfile:'balanced',collabWriter:'model',collabRounds:2,collabBudgetSec:60,collabPatchPct:20,collabMaxIssues:3,collabConfidence:.75};
  let conf={...DEFAULT};
  let state={target:null,index:-1,original:'',revised:'',issues:[],status:'자동 퇴고 OFF',busy:false,lastAuto:'없음'};
  let uiOpen=false;let unloaded=false;let pollTimer=null;
@@ -1119,6 +1119,18 @@
      void refreshSceneFromEvent(arg);
    }
  }
+
+ async function seedStoryRunnerWatcher(){
+   try{
+     const c=await current(),messages=Array.isArray(c.chat?.message)?c.chat.message:[];
+     const session=[c.ci,c.ti,c.id].join('|');
+     if(initializedChats.has(session))return;
+     initializedChats.add(session);
+     const i=messages.length-1,m=messages[i];
+     if(m&&['char','assistant'].includes(m.role))
+       remember(outputKey(c.ci,c.ti,c.id,i,m));
+   }catch(error){console.log('[EditorLab] watcher seed unavailable',error);}
+ }
  async function pollStoryRunner(){
    if(!conf.auto||!conf.realEditor||unloaded||(!conf.watchStoryRunner&&conf.mode!=='collab'))return;
    try{
@@ -1184,6 +1196,7 @@
     <select id="mode">
       <option value="selective" ${conf.mode==='selective'?'selected':''}>선택적 · 매 턴 진단, 필요할 때만 퇴고</option>
       <option value="economy" ${conf.mode==='economy'?'selected':''}>저비용 · 반복 징후 있을 때만 진단</option>
+      <option value="collab" ${conf.mode==='collab'?'selected':''}>협업 · DeepSeek 검토 → 힘오이 부분 수정</option>
     </select>
   </div>
   <div class="top">
@@ -1270,7 +1283,7 @@
   el('style-off').onclick=()=>setStyleReset(false)
     .then(render).catch(e=>{styleStatus='문체 설정 변경 실패 · '+txt(e.message);render()});
   el('model').onchange=async e=>{conf.model=e.target.value;await save()};
-  el('mode').onchange=async e=>{conf.mode=e.target.value;await save()};
+  el('mode').onchange=async e=>{conf.mode=e.target.value;await save();if(conf.mode==='collab')void seedStoryRunnerWatcher();await render()};
   el('max').onchange=async e=>{conf.maxChars=Number(e.target.value);await save()};
   el('srwatch').onchange=async e=>{conf.watchStoryRunner=e.target.checked;initializedChats.clear();await save()};
    el('load').onclick=()=>{activityView='manual';return load().then(render).catch(e=>{state.status=txt(e.message);render()})};
@@ -1284,6 +1297,10 @@
  if(saved&&typeof saved==='object'){
    conf={...DEFAULT,...saved};
    if(!['otherAx','model'].includes(conf.model))conf.model='otherAx';
+   if(!['otherAx','model'].includes(conf.collabWriter))conf.collabWriter='model';
+   if(!['fast','balanced','quality','custom'].includes(conf.collabProfile))conf.collabProfile='balanced';
+   const cc=collabConfig();
+   conf.collabRounds=cc.rounds;conf.collabBudgetSec=cc.budgetSec;conf.collabPatchPct=cc.patchPct;conf.collabMaxIssues=cc.maxIssues;conf.collabConfidence=cc.confidence;
    if(!['selective','economy','collab'].includes(conf.mode))conf.mode='selective';
    if(![4500,7000,9000,12000,18000].includes(Number(conf.maxChars)))conf.maxChars=18000;
    conf.timeoutMs=90000;
@@ -1341,7 +1358,8 @@
    }catch(error){console.log('[EditorLab] prompt/inline hook registration unavailable',error);}
  }
  await risuai.addRisuChatListener('output',arg=>automatic(arg,'일반 채팅'));
- pollTimer=setInterval(()=>{void pollStoryRunner();void updateScenePanel()},2800);
+ if(conf.mode==='collab')void seedStoryRunnerWatcher();
+  pollTimer=setInterval(()=>{void pollStoryRunner();void updateScenePanel()},2800);
  await risuai.onUnload(async()=>{
    unloaded=true;
    if(pollTimer)clearInterval(pollTimer);
