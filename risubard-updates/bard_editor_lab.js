@@ -1,12 +1,12 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.8
+//@version 0.3.9
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
-//@description Automatic story scene briefing and ready-to-send next-user-turn drafts; standalone with original editor features.
+//@description Opt-in main-writer / auxiliary-editor surgical collaboration with limited review rounds, plus original Bard Editor Lab features.
 (async () => {
  const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups'; const ACTIVITY_STORE='bard_editor_lab_v034_activity'; const STYLE_STORE='bard_editor_lab_v036_style_snapshots'; const SCENE_STORE='bard_editor_lab_v038_scene_briefs';
- const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,sceneAssist:true,sceneAuto:true,sceneCard:true,timeoutMs:90000,maxChars:9000};
+ const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,sceneAssist:true,sceneAuto:true,sceneCard:true,timeoutMs:90000,maxChars:18000,collabWriter:'model',collabRounds:2,collabBudgetSec:60,collabPatchPct:20,collabMaxIssues:3,collabConfidence:.75};
  let conf={...DEFAULT};
  let state={target:null,index:-1,original:'',revised:'',issues:[],status:'자동 퇴고 OFF',busy:false,lastAuto:'없음'};
  let uiOpen=false;let unloaded=false;let pollTimer=null;
@@ -594,7 +594,7 @@
      original:recordText(original),revised:recordText(revised),
      issues:(Array.isArray(issues)?issues:[]).filter(x=>x&&typeof x.problem==='string')
        .slice(0,4).map(x=>({problem:txt(x.problem).slice(0,350),instruction:txt(x.instruction).slice(0,350)})),
-     calls:Math.max(0,Math.min(2,Number(calls)||0)),committed:outcome==='applied'};
+     calls:Math.max(0,Math.min(12,Number(calls)||0)),committed:outcome==='applied'};
    recentActivity.unshift(record);
    recentActivity=recentActivity.slice(0,5);
    pickedActivity=0;
@@ -649,6 +649,9 @@
 
  async function reviseBeforeSave(response,type){
    if(unloaded||!conf.auto||!conf.realEditor||type!=='model'||typeof response!=='string')return response;
+   // Collaboration is deliberately post-save: deliver the first draft quickly,
+   // then inspect and apply a verified patch without blocking the original response.
+   if(conf.mode==='collab')return response;
    if(alreadyPreSaved(response))return response;
    try{
      let reference={};
@@ -898,7 +901,7 @@
    }
  }
  async function pollStoryRunner(){
-   if(!conf.auto||!conf.realEditor||!conf.watchStoryRunner||unloaded)return;
+   if(!conf.auto||!conf.realEditor||unloaded||(!conf.watchStoryRunner&&conf.mode!=='collab'))return;
    try{
      const t=await current(),messages=t.chat?.message;
      if(!Array.isArray(messages)||!messages.length)return;
@@ -951,7 +954,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.8</h2>
+  </style><main><h2>Bard Editor Lab v0.3.9 · Writer ↔ Editor</h2>
   <p class="muted">본체·프리셋 수정 없음 · 메인 채팅에 짧은 편집 지침 삽입 + 모델을 이용한 선택적 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
@@ -1019,7 +1022,7 @@
     <section><h3>${showingAuto?'자동 퇴고 결과':'수동 퇴고본 (미적용)'}</h3><textarea readonly placeholder="${showingAuto?'교정 불필요·검사 제외·실패 시 비어 있어':'수동 검수 후 표시'}">${esc(visibleRevised)}</textarea></section>
   </div>
   <h3>편집장 진단</h3><pre>${esc(visibleIssues.map((x,i)=>`${i+1}. ${x.problem} — ${x.instruction}`).join('\n')||(showingAuto?(activity?.reason||'자동 진단 기록 없음'):'수동 진단 기록 없음'))}</pre>
-  <p class="muted">한 응답당 최대 2회 모델 호출. 사고과정/메타 출력은 본문과 분리해 검사해. 실패 시 원문 유지. 최근 5건의 원문 전체를 플러그인 저장소에 백업해.
+  <p class="muted">기존 모드는 최대 2회 호출. 협업 모드는 최초 DeepSeek 검토 후 필요한 경우만 힘오이 부분 교정과 DeepSeek 변경 구간 검증을 반복해. 실패 시 원문 유지. 최근 5건의 원문 전체를 플러그인 저장소에 백업해.
   타임아웃은 대기를 중단하지만 모델 과금 취소를 보장하지 않아.</p></main>`;
   const el=id=>document.getElementById(id);
    el('auto').onclick=async()=>{conf.auto=!conf.auto;await save();state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';await render()};
@@ -1062,8 +1065,8 @@
  if(saved&&typeof saved==='object'){
    conf={...DEFAULT,...saved};
    if(!['otherAx','model'].includes(conf.model))conf.model='otherAx';
-   if(!['selective','economy'].includes(conf.mode))conf.mode='selective';
-   if(![4500,7000,9000,12000,18000].includes(Number(conf.maxChars)))conf.maxChars=9000;
+   if(!['selective','economy','collab'].includes(conf.mode))conf.mode='selective';
+   if(![4500,7000,9000,12000,18000].includes(Number(conf.maxChars)))conf.maxChars=18000;
    conf.timeoutMs=90000;
  }
  try{const savedActivity=await risuai.pluginStorage.getItem(ACTIVITY_STORE);
