@@ -7,6 +7,13 @@ on:
       - 'risubard-updates/bard_editor_lab.js'
       - 'risubard-updates/tests/editorlab_collab.test.cjs'
       - '.github/workflows/editorlab-collab-check.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'risubard-updates/bard_editor_lab.js'
+      - 'risubard-updates/tests/editorlab_collab.test.cjs'
+      - '.github/workflows/editorlab-collab-check.yml'
   workflow_dispatch:
 jobs:
   test:
