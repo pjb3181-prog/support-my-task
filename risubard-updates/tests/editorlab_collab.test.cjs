@@ -11,6 +11,7 @@ const STORY='[유나]\n\"괜찮아?\"\n\n'+('둘은 연구실에서 자료를 �
   +'\n<Yuna|neutral.1>';
 const EXCERPT='그녀는 어김없이 고개를 숙였다.';
 const BETTER='그녀는 보고서를 접고 다음 실험을 먼저 제안했다.';
+const BETTER2='그녀는 먼저 실험 계획을 고쳐 쓰며 다음 순서를 제안했다.';
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,ms=1000){
   const limit=Date.now()+ms;
@@ -47,6 +48,9 @@ async function launch(scenario){
       })};
     }
     if(mode==='model'){
+      if(scenario==='changedChat')chat.message.push({role:'user',data:'다음 턴을 이미 입력함'});
+      if(scenario==='multi'&&calls.filter(x=>x.mode==='model').length===2)
+        return {type:'success',result:JSON.stringify({patches:[{issueId:'I2',before:BETTER,after:BETTER2}]})};
       if(scenario==='badtag')return {type:'success',result:JSON.stringify({
         patches:[{issueId:'I1',before:'<Yuna|neutral.1>',after:'<Yuna|angry.1>'}]
       })};
@@ -54,6 +58,14 @@ async function launch(scenario){
         patches:[{issueId:'I1',before:EXCERPT,after:BETTER}]
       })};
     }
+    if(scenario==='multi'&&calls.filter(x=>x.mode==='otherAx').length===2)
+      return {type:'success',result:JSON.stringify({
+        status:'PATCH',improved:true,strengths:['개선된 선택'],
+        issues:[{id:'I2',excerpt:BETTER,problem:'조금 더 구체화 필요',instruction:'근거를 덧붙여라',confidence:.9}],summary:'부분 재교정'
+      })};
+    if(scenario==='reject')return {type:'success',result:JSON.stringify({
+      status:'REJECT',improved:false,strengths:['원문이 더 자연스러움'],issues:[],summary:'이전 버전 유지'
+    })};
     return {type:'success',result:JSON.stringify({
       status:'PASS',improved:true,strengths:['원문 장점을 보존함'],issues:[],summary:'개선 확인'
     })};
@@ -112,4 +124,23 @@ test('duplicate output event is deduplicated',async()=>{
   await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
   app.emit();await wait(30);
   assert.equal(app.calls.length,1);
+});
+
+test('two revision rounds are available but only changed excerpts are used',async()=>{
+  const app=await launch('multi');app.emit();
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.deepEqual(app.calls.map(x=>x.mode),['otherAx','model','otherAx','model','otherAx']);
+  assert.equal(app.chat.message[1].data,STORY.replace(EXCERPT,BETTER2));
+});
+test('DeepSeek can reject a candidate; original is kept',async()=>{
+  const app=await launch('reject');app.emit();
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.equal(app.chat.message[1].data,STORY);
+  assert.equal(app.storage.get('bard_editor_lab_v03_backups')?.length||0,0);
+});
+test('if user has moved to the next turn, late revisions cannot overwrite history',async()=>{
+  const app=await launch('changedChat');app.emit();
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.equal(app.chat.message[1].data,STORY);
+  assert.equal(app.chat.message[2].role,'user');
 });
