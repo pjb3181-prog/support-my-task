@@ -1199,6 +1199,34 @@
       <option value="collab" ${conf.mode==='collab'?'selected':''}>협업 · DeepSeek 검토 → 힘오이 부분 수정</option>
     </select>
   </div>
+  <section class="status" style="margin:12px 0;border:1px solid #52617f">
+    <strong>🤝 작가↔편집자 협업 설정 (v0.3.9)</strong>
+    <p class="muted">상단 '협업' 모드에서만 작동. 기존 RisuBard 모델 슬롯을 이용해 새 API 키가 필요하지 않아.
+    메인=힘오이, 보조=DeepSeek로 연결했다면 아래 기본값을 사용하면 돼.</p>
+    <div class="top">
+      <label>수정 작가 <select id="collab-writer">
+        <option value="model" ${conf.collabWriter==='model'?'selected':''}>메인 모델 (힘오이)</option>
+        <option value="otherAx" ${conf.collabWriter==='otherAx'?'selected':''}>보조 모델</option>
+      </select></label>
+      <label>검토 편집자 <span class="muted">상단 검토 모델 선택: ${esc(conf.model)}</span></label>
+      <label>품질/속도 <select id="collab-profile">
+        <option value="fast" ${conf.collabProfile==='fast'?'selected':''}>빠름 · 최대 1회 수정</option>
+        <option value="balanced" ${conf.collabProfile==='balanced'?'selected':''}>균형 · 최대 2회 수정</option>
+        <option value="quality" ${conf.collabProfile==='quality'?'selected':''}>고품질 · 최대 3회 수정</option>
+        <option value="custom" ${conf.collabProfile==='custom'?'selected':''}>사용자 지정</option>
+      </select></label>
+    </div>
+    <div class="top">
+      <label>최대 수정 횟수 <select id="collab-rounds">${[0,1,2,3].map(n=>'<option value="'+n+'" '+(conf.collabRounds===n?'selected':'')+'>'+n+'회</option>').join('')}</select></label>
+      <label>추가 퇴고 시간 예산 <select id="collab-budget">${[20,45,60,90,150,240,300].map(n=>'<option value="'+n+'" '+(conf.collabBudgetSec===n?'selected':'')+'>'+n+'초</option>').join('')}</select></label>
+      <label>최대 누적 수정 범위 <select id="collab-patch">${[5,10,15,20,25,30,40].map(n=>'<option value="'+n+'" '+(conf.collabPatchPct===n?'selected':'')+'>'+n+'%</option>').join('')}</select></label>
+      <label>검토당 문제 구간 <select id="collab-issues">${[1,2,3,4,5].map(n=>'<option value="'+n+'" '+(conf.collabMaxIssues===n?'selected':'')+'>'+n+'곳</option>').join('')}</select></label>
+      <label>최소 교정 확신도 <select id="collab-confidence">${[.65,.7,.75,.8,.85,.9].map(n=>'<option value="'+n+'" '+(Math.abs(conf.collabConfidence-n)<.001?'selected':'')+'>'+Math.round(n*100)+'%</option>').join('')}</select></label>
+    </div>
+    <p class="muted">원고가 충분히 좋으면 PASS (DeepSeek 1회). 문제가 있을 때만 힘오이가 정확한 구간을 수정하고
+    DeepSeek는 바뀐 부분만 다시 검토해. 최대 요청: 1 + 수정 횟수×2회. 원래 응답은 먼저 표시되며 안전하게 검증된 교정만 나중에 반영돼.</p>
+    <p class="muted">추가 지연을 줄이려면 아래 '새 응답 완료 시 자동 장면 분석'을 OFF할 수 있어. 그 기능도 별도의 모델 호출을 사용해.</p>
+  </section>
   <div class="top">
     <label><input type="checkbox" id="promptassist" ${conf.promptAssist?'checked':''}/> 생성 전 프롬프트에 편집 원칙 추가 (추가 모델 호출 없음)</label>
     <label><input type="checkbox" id="realeditor" ${conf.realEditor?'checked':''}/> 생성 후 편집장 모델로 선택적 검수·퇴고 (모델 호출 비용 발생)</label>
@@ -1284,6 +1312,25 @@
     .then(render).catch(e=>{styleStatus='문체 설정 변경 실패 · '+txt(e.message);render()});
   el('model').onchange=async e=>{conf.model=e.target.value;await save()};
   el('mode').onchange=async e=>{conf.mode=e.target.value;await save();if(conf.mode==='collab')void seedStoryRunnerWatcher();await render()};
+
+  const changeCollab=async (key,value)=>{
+    conf[key]=value;conf.collabProfile='custom';await save();await render();
+  };
+  el('collab-writer').onchange=async e=>{conf.collabWriter=e.target.value;await save()};
+  el('collab-rounds').onchange=e=>changeCollab('collabRounds',Number(e.target.value));
+  el('collab-budget').onchange=e=>changeCollab('collabBudgetSec',Number(e.target.value));
+  el('collab-patch').onchange=e=>changeCollab('collabPatchPct',Number(e.target.value));
+  el('collab-issues').onchange=e=>changeCollab('collabMaxIssues',Number(e.target.value));
+  el('collab-confidence').onchange=e=>changeCollab('collabConfidence',Number(e.target.value));
+  el('collab-profile').onchange=async e=>{
+    const name=e.target.value;conf.collabProfile=name;
+    const options={fast:[1,20,10,2,.85],balanced:[2,60,20,3,.75],quality:[3,150,30,4,.7]};
+    if(options[name]){
+      [conf.collabRounds,conf.collabBudgetSec,conf.collabPatchPct,conf.collabMaxIssues,conf.collabConfidence]=options[name];
+    }
+    await save();await render();
+  };
+
   el('max').onchange=async e=>{conf.maxChars=Number(e.target.value);await save()};
   el('srwatch').onchange=async e=>{conf.watchStoryRunner=e.target.checked;initializedChats.clear();await save()};
    el('load').onclick=()=>{activityView='manual';return load().then(render).catch(e=>{state.status=txt(e.message);render()})};
