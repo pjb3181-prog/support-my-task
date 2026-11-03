@@ -40,8 +40,13 @@ async function boot({failSave=false}={}){
   const db={characters:[clone(A),clone(B),clone(C)],modules:[clone(OLD),clone(MODULE_B)],
     enabledModules:[]};
   const before=clone(db.characters[0]);
-  const ui=new Map(),callbacks=new Map();
-  const document={body:{innerHTML:''},
+  const ui=new Map(),callbacks=new Map(),queryNodes=new Map();
+  let html='';
+  const body={
+    get innerHTML(){return html;},
+    set innerHTML(value){html=value;queryNodes.clear();}
+  };
+  const document={body,
     getElementById:id=>{
       if(!ui.has(id))ui.set(id,fakeElement());
       return ui.get(id);
@@ -49,12 +54,15 @@ async function boot({failSave=false}={}){
     querySelectorAll:selector=>{
       const kind=selector.match(/^\[(data-cm-[a-z]+)\]$/)?.[1];
       if(!kind)return [];
+      if(queryNodes.has(kind))return queryNodes.get(kind);
       const matches=[...document.body.innerHTML.matchAll(new RegExp(kind+'="([^"]+)"','g'))];
-      return matches.map(m=>{
+      const nodes=matches.map(m=>{
         const el=fakeElement({[kind]:m[1]});
         el.checked=document.body.innerHTML.includes(kind+'="'+m[1]+'" checked');
         return el;
       });
+      queryNodes.set(kind,nodes);
+      return nodes;
     }
   };
   let fail=failSave;
