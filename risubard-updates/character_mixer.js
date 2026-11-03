@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.1.1
+//@version 0.1.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Selectively blend an imported character's lore and asset references into the current chat without overwriting existing bots.
 (async () => {
@@ -110,10 +110,13 @@
   function createAliasLookup(assets){
     const map=new Map(),ambiguous=new Set();
     const register=(oldName,newName)=>{
-      const key=str(oldName).trim().toLocaleLowerCase();
-      if(!key||!newName||ambiguous.has(key))return;
-      if(map.has(key)&&map.get(key)!==newName){map.delete(key);ambiguous.add(key);}
-      else map.set(key,newName);
+      const raw=str(oldName).trim().toLocaleLowerCase();
+      const withoutExtension=raw.replace(/\.(?:webp|png|jpe?g|gif|apng|avif|bmp|svg|mp4|webm)$/i,'');
+      for(const key of new Set([raw,withoutExtension])){
+        if(!key||!newName||ambiguous.has(key))continue;
+        if(map.has(key)&&map.get(key)!==newName){map.delete(key);ambiguous.add(key);}
+        else map.set(key,newName);
+      }
     };
     for(const x of assets){
       register(x.name,x.name);
@@ -124,7 +127,13 @@
   }
   function rewriteAssetTokens(text,lookup,existing=null){
     const native=/\{\{\s*(img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(::|=)\s*(?:"([^"\n]{1,160})"|'([^'\n]{1,160})'|([^}\n]{1,160}))\s*\}\}/gi;
-    const known=new Set(asArray(existing?.additionalAssets).map(x=>Array.isArray(x)?str(x[0]).toLocaleLowerCase():''));
+    const known=new Set();
+    for(const x of asArray(existing?.additionalAssets)){
+      if(!Array.isArray(x))continue;
+      const name=str(x[0]).trim().toLocaleLowerCase();
+      known.add(name);
+      known.add(name.replace(/\.(?:webp|png|jpe?g|gif|apng|avif|bmp|svg|mp4|webm)$/i,''));
+    }
     const knownEmotions=new Set(asArray(existing?.emotionImages).map(x=>Array.isArray(x)?str(x[0]).toLocaleLowerCase():''));
     return str(text).replace(native,(whole,type,separator,double,single,bare)=>{
       const original=str(double??single??bare).trim();
@@ -387,7 +396,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.1.0</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.1.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>A · 추가할 대상</h3><p>봇: <b>'+esc(ctx.target.name)+'</b> · 채팅: <b>'+esc(ctx.chat.name||ctx.chat.id)+'</b></p>'+
         '<p class="muted">이 채팅에만 적용. A·B 원본 캐릭터/첫 메시지/채팅 메시지를 수정하지 않아.</p></section>'+
@@ -469,17 +478,29 @@
     await render();
     await risuai.showContainer('fullscreen');
   }
-  const displayHandler=typeof risuai.addRisuScriptHandler==='function'
-    ? async content=>displayAssetCompatibility(content):null;
-  if(displayHandler)await risuai.addRisuScriptHandler('editdisplay',displayHandler);
+  // Register the settings entry first. An optional display hook failure must
+  // never make the entire Character Mixer disappear from the UI.
   await risuai.registerSetting(NAME,open,'🧩','html','character-mixer-settings');
   try{
     await risuai.registerButton({name:NAME,icon:'🧩',iconType:'html',location:'hamburger',
       id:'character-mixer-hamburger'},open);
   }catch(error){console.log('[CharacterMixer] optional menu button unavailable',error);}
+  let displayHandler=typeof risuai.addRisuScriptHandler==='function'
+    ? async content=>displayAssetCompatibility(content):null;
+  if(displayHandler){
+    try{
+      // RisuBard API v3 uses 'display', not 'editdisplay'.
+      await risuai.addRisuScriptHandler('display',displayHandler);
+    }catch(error){
+      console.warn('[CharacterMixer] display compatibility unavailable; UI remains accessible:',error);
+      displayHandler=null;
+    }
+  }
   await risuai.onUnload(async()=>{
     destroyed=true;opened=false;
-    if(displayHandler&&typeof risuai.removeRisuScriptHandler==='function')
-      await risuai.removeRisuScriptHandler('editdisplay',displayHandler);
+    if(displayHandler&&typeof risuai.removeRisuScriptHandler==='function'){
+      try{await risuai.removeRisuScriptHandler('display',displayHandler);}
+      catch(error){console.warn('[CharacterMixer] display hook cleanup:',error);}
+    }
   });
 })();
