@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.1.0
+//@version 0.1.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Selectively blend an imported character's lore and asset references into the current chat without overwriting existing bots.
 (async () => {
@@ -105,27 +105,104 @@
     }
     return mapped;
   }
+  // Support B bot image tags while leaving stored chat history untouched.
+  // Example: {{img="hancock_angry"}} -> {{img::Hancock_ab123_hancock_angry}}.
+  function createAliasLookup(assets){
+    const map=new Map(),ambiguous=new Set();
+    const register=(oldName,newName)=>{
+      const key=str(oldName).trim().toLocaleLowerCase();
+      if(!key||!newName||ambiguous.has(key))return;
+      if(map.has(key)&&map.get(key)!==newName){map.delete(key);ambiguous.add(key);}
+      else map.set(key,newName);
+    };
+    for(const x of assets){
+      register(x.name,x.name);
+      register(x.original,x.name);
+      if(x.where==='emotion')register(str(x.original).replace(/^emotion_/i,''),x.name);
+    }
+    return {map,ambiguous,register};
+  }
+  function rewriteAssetTokens(text,lookup,existing=null){
+    const native=/\{\{\s*(img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(::|=)\s*(?:"([^"\n]{1,160})"|'([^'\n]{1,160})'|([^}\n]{1,160}))\s*\}\}/gi;
+    const known=new Set(asArray(existing?.additionalAssets).map(x=>Array.isArray(x)?str(x[0]).toLocaleLowerCase():''));
+    const knownEmotions=new Set(asArray(existing?.emotionImages).map(x=>Array.isArray(x)?str(x[0]).toLocaleLowerCase():''));
+    return str(text).replace(native,(whole,type,separator,double,single,bare)=>{
+      const original=str(double??single??bare).trim();
+      if(!original)return whole;
+      const key=original.toLocaleLowerCase();
+      // A's assets must never silently be replaced by B's imported images.
+      if(known.has(key)||(type.toLocaleLowerCase()==='emotion'&&knownEmotions.has(key))){
+        return separator==='='?'{{'+type.toLocaleLowerCase()+'::'+original+'}}':whole;
+      }
+      const mapped=lookup.map.get(key);
+      if(!mapped)return whole;
+      const kind=type.toLocaleLowerCase()==='emotion'?'img':type.toLocaleLowerCase();
+      return '{{'+kind+'::'+mapped+'}}';
+    });
+  }
   function remapAssetReferences(text,assets){
-    // Existing story assets are referenced by their old display name. Convert
-    // well-formed asset tokens from imported B lore to newly namespaced aliases.
-    // Never rewrite arbitrary chat prose or unrelated placeholder syntax.
-    const aliases=new Map(),emotions=new Map();
-    for(const entry of assets){
-      if(!aliases.has(entry.original))aliases.set(entry.original,entry.name);
-      if(entry.where==='emotion'){
-        const mood=entry.original.replace(/^emotion_/,'');
-        if(!emotions.has(mood))emotions.set(mood,entry.name);
+    return rewriteAssetTokens(text,createAliasLookup(assets));
+  }
+  function metadataOf(module){
+    if(!generated(module))return null;
+    try{
+      const parsed=JSON.parse(str(module.description).slice(MARK.length));
+      return isPlain(parsed)?parsed:null;
+    }catch(_){return null;}
+  }
+  function activeAliases(ctx){
+    const lookup=createAliasLookup([]),active=installedInChat(ctx);
+    for(const mod of active){
+      const metadata=metadataOf(mod);
+      if(!metadata)continue;
+      const source=charactersOf(ctx.db).find(c=>c.chaId===metadata.sourceId);
+      const prefix=source?label(source.name)+'_'+str(source.chaId).slice(0,5)+'_':'';
+      const mapped=asArray(mod.assets).filter(x=>Array.isArray(x)&&x.length>=2);
+      for(const asset of mapped){
+        const name=str(asset[0]),path=str(asset[1]);
+        lookup.register(name,name);
+        // Also resolve aliases from already imported v0.1.0 data modules.
+        if(prefix&&name.startsWith(prefix)){
+          const short=name.slice(prefix.length);
+          lookup.register(short,name);
+          if(short.startsWith('emotion_'))lookup.register(short.slice(8),name);
+        }
+        const candidates=[];
+        if(source){
+          for(const item of asArray(source.additionalAssets))
+            if(Array.isArray(item)&&str(item[1])===path)candidates.push(str(item[0]));
+          for(const item of asArray(source.ccAssets))
+            if(isPlain(item)&&str(item.uri)===path)candidates.push(str(item.name));
+          for(const item of asArray(source.emotionImages))
+            if(Array.isArray(item)&&str(item[1])===path)candidates.push(str(item[0]),'emotion_'+str(item[0]));
+        }
+        for(const m of modulesOf(ctx.db)){
+          if(generated(m))continue;
+          for(const item of asArray(m.assets))
+            if(Array.isArray(item)&&str(item[1])===path)candidates.push(str(item[0]));
+        }
+        for(const candidate of candidates)lookup.register(candidate,name);
+      }
+      for(const entry of asArray(metadata.assetAliases)){
+        if(Array.isArray(entry)&&entry.length>=2
+            &&mapped.some(asset=>str(asset[0])===str(entry[1])))
+          lookup.register(entry[0],entry[1]);
       }
     }
-    return str(text).replace(/\{\{(raw|path|img|image|video|audio|bgm|bg|emotion|asset|video-img|source)::(.+?)\}\}/gs,
-      (whole,type,name)=>{
-        const mapped=type==='emotion'
-          ? emotions.get(name.trim())||aliases.get(name.trim())
-          : aliases.get(name.trim());
-        // Module assets use the ordinary asset registry, not A's emotion cache.
-        // Convert B-specific emotion tags to ordinary namespaced image tags.
-        return mapped?'{{'+(type==='emotion'?'img':type)+'::'+mapped+'}}':whole;
-      });
+    return {lookup,active};
+  }
+  async function displayAssetCompatibility(content){
+    if(destroyed||typeof content!=='string'||!content.includes('{{')
+      ||!/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content))return content;
+    try{
+      const ctx=await context();
+      const aliases=activeAliases(ctx);
+      if(!aliases.active.length)return content;
+      return rewriteAssetTokens(content,aliases.lookup,ctx.target);
+    }catch(error){
+      console.log('[CharacterMixer] asset preview fallback:',error?.message||error);
+      return content;
+    }
   }
   function makeProfile(src,assets){
     const lines=[
@@ -150,6 +227,7 @@
     if(choices.greeting)lines.push('첫 등장 방식 참고(이것을 새 퍼스트 메시지로 실행하지 말 것): '+clip(src.firstMessage,550));
     if(choices.notes.trim())lines.push('사용자가 정한 편입 설정: '+clip(choices.notes,900));
     if(assets.length)lines.push('사용할 수 있는 이미지 에셋 이름: '+assets.slice(0,25).map(x=>x.name).join(', '));
+    if(assets.length)lines.push('For images use the exact native RisuBard syntax {{img::REGISTERED_ASSET_NAME}} and registered names shown above; avoid {{img=\"original\"}}.');
     return lines.filter(Boolean).join('\n').slice(0,PROFILE_LIMIT);
   }
   function chooseLore(src,ctx){
@@ -193,7 +271,8 @@
     }
     const extra= {
       sourceId:src.chaId,targetCharacterId:ctx.target.chaId,targetChatId:ctx.chat.id,
-      mode:choices.mode,version:1
+      mode:choices.mode,version:2,
+      assetAliases:assets.map(x=>[x.original,x.name])
     };
     return {
       id:existing?.id||shortId(),
@@ -290,6 +369,13 @@
         '개 / 에셋 '+asArray(m.assets).length+'개</small></span>'+
         '<button type="button" data-cm-remove="'+esc(m.id)+'">이 채팅에서 해제</button></div>').join('')
         :'<p class="muted">현재 채팅에 편입된 캐릭터가 없어.</p>';
+      const aliases=activeAliases(ctx);
+      const names=[...aliases.lookup.map.entries()].filter(([a,b])=>a!==str(b).toLocaleLowerCase()).slice(0,20);
+      const diagnostic='<section><h3>Asset aliases (A chat)</h3>'+
+        (names.length?names.map(([oldName,newName])=>'<p class="muted"><code>'+esc(oldName)+
+          '</code> -> <code>'+esc(newName)+'</code></p>').join(''):
+          '<p class="muted">No imported image aliases. Check B image assets and any separate asset module selections.</p>')+
+        '<p class="muted">Native RisuBard tag: {{img::ASSET_NAME}}. Legacy {{img="NAME"}} is remapped only when NAME matches an imported image.</p></section>';
       document.body.innerHTML='<style>'+
         'body{margin:0;padding:18px;background:#171c2a;color:#eaf0ff;font:14px/1.55 system-ui}main{max-width:940px;margin:auto}'+
         'select,textarea,button{background:#263650;color:inherit;border:1px solid #63748f;border-radius:8px;padding:8px;font:inherit}'+
@@ -337,7 +423,8 @@
           '<small>이미지 '+asArray(m.assets).length+'개 · 로어 '+asArray(m.lorebook).length+
           '개 · 스크립트는 실행하지 않음</small></span></label>').join(''):
           '<p class="muted">선택 가능한 모듈이 없어.</p>')+'</section>'+
-        '<section><h3>현재 편입된 캐릭터</h3>'+installedHtml+'</section>'+
+        '<section><h3>현재 편입된 캐릭터</h3>'+installedHtml+'</section>'+ 
+        diagnostic+
         '<p class="status">'+esc(message||'선택 사항을 확인한 다음 아래 버튼으로 현재 채팅에 적용해.')+'</p>'+
         '<div class="top"><p class="muted">원본 보존 · 채팅별 적용 · 스크립트/트리거 실행 제외</p>'+
         '<button id="cm-apply" class="primary" '+(!src||busy?'disabled':'')+'>현재 채팅에 B 추가/업데이트</button></div>'+
@@ -382,10 +469,17 @@
     await render();
     await risuai.showContainer('fullscreen');
   }
+  const displayHandler=typeof risuai.addRisuScriptHandler==='function'
+    ? async content=>displayAssetCompatibility(content):null;
+  if(displayHandler)await risuai.addRisuScriptHandler('editdisplay',displayHandler);
   await risuai.registerSetting(NAME,open,'🧩','html','character-mixer-settings');
   try{
     await risuai.registerButton({name:NAME,icon:'🧩',iconType:'html',location:'hamburger',
       id:'character-mixer-hamburger'},open);
   }catch(error){console.log('[CharacterMixer] optional menu button unavailable',error);}
-  await risuai.onUnload(async()=>{destroyed=true;opened=false;});
+  await risuai.onUnload(async()=>{
+    destroyed=true;opened=false;
+    if(displayHandler&&typeof risuai.removeRisuScriptHandler==='function')
+      await risuai.removeRisuScriptHandler('editdisplay',displayHandler);
+  });
 })();
