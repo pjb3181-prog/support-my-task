@@ -105,6 +105,19 @@
     }
     return mapped;
   }
+  function remapAssetReferences(text,assets){
+    // Existing story assets are referenced by their old display name. Convert
+    // well-formed asset tokens from imported B lore to newly namespaced aliases.
+    // Never rewrite arbitrary chat prose or unrelated placeholder syntax.
+    const aliases=new Map();
+    for(const entry of assets)if(!aliases.has(entry.original))
+      aliases.set(entry.original,entry.name);
+    return str(text).replace(/\{\{(raw|path|img|image|video|audio|bgm|bg|emotion|asset|video-img|source)::(.+?)\}\}/gs,
+      (whole,type,name)=>{
+        const mapped=aliases.get(name.trim());
+        return mapped?'{{'+type+'::'+mapped+'}}':whole;
+      });
+  }
   function makeProfile(src,assets){
     const lines=[
       '[EXTERNAL NPC / '+clip(src.name,80)+']',
@@ -162,6 +175,7 @@
       const source=item.entry;
       lore.push({
         ...safeClone(source),id:shortId(),
+        content:remapAssetReferences(source.content,assets),
         key:[key,str(source.key)].filter(Boolean).join(','),
         secondkey:'',selective:false,alwaysActive:false,mode:'normal',enabled:true,
         comment:'['+clip(item.source,45)+'] '+clip(source.comment||source.key||'추가 정보',75),
