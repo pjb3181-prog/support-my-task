@@ -109,13 +109,22 @@
     // Existing story assets are referenced by their old display name. Convert
     // well-formed asset tokens from imported B lore to newly namespaced aliases.
     // Never rewrite arbitrary chat prose or unrelated placeholder syntax.
-    const aliases=new Map();
-    for(const entry of assets)if(!aliases.has(entry.original))
-      aliases.set(entry.original,entry.name);
+    const aliases=new Map(),emotions=new Map();
+    for(const entry of assets){
+      if(!aliases.has(entry.original))aliases.set(entry.original,entry.name);
+      if(entry.where==='emotion'){
+        const mood=entry.original.replace(/^emotion_/,'');
+        if(!emotions.has(mood))emotions.set(mood,entry.name);
+      }
+    }
     return str(text).replace(/\{\{(raw|path|img|image|video|audio|bgm|bg|emotion|asset|video-img|source)::(.+?)\}\}/gs,
       (whole,type,name)=>{
-        const mapped=aliases.get(name.trim());
-        return mapped?'{{'+type+'::'+mapped+'}}':whole;
+        const mapped=type==='emotion'
+          ? emotions.get(name.trim())||aliases.get(name.trim())
+          : aliases.get(name.trim());
+        // Module assets use the ordinary asset registry, not A's emotion cache.
+        // Convert B-specific emotion tags to ordinary namespaced image tags.
+        return mapped?'{{'+(type==='emotion'?'img':type)+'::'+mapped+'}}':whole;
       });
   }
   function makeProfile(src,assets){
