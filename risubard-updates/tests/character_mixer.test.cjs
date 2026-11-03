@@ -10,7 +10,7 @@ const B={
   chaId:'b-uuid-00002',name:'마법사 B',desc:'비밀이 많은 마법사',personality:'독립적이고 기민함',
   scenario:'마도 국가에서 도망쳐 왔다',firstMessage:'B의 기존 인사',exampleMessage:'“흥, 그건 틀렸어.”',
   globalLore:[
-    {key:'마법',secondkey:'',insertorder:0,comment:'B의 취미',content:'B는 연금술보다 마법을 선호한다.',mode:'normal',alwaysActive:false,selective:false},
+    {key:'마법',secondkey:'',insertorder:0,comment:'B의 취미',content:'B는 연금술보다 마법을 선호한다. {{img::평소}}',mode:'normal',alwaysActive:false,selective:false},
     {key:'',secondkey:'',insertorder:0,comment:'원본 퍼메',content:'@@indicator character_first_message\n타인의 퍼메',mode:'constant',alwaysActive:true,selective:false}
   ],
   additionalAssets:[['평소','assets/normal.webp','webp']],
@@ -134,7 +134,9 @@ test('source B module can contribute image assets and selected lore but never ex
   const m=generated(app.db)[0];
   assert.ok(m.assets.some(x=>x[1]==='assets/gem.png'));
   assert.ok(m.lorebook.some(x=>x.content==='B의 보석은 유서가 깊다.'));
-  assert.ok(m.lorebook.some(x=>x.content==='B는 연금술보다 마법을 선호한다.'));
+  assert.ok(m.lorebook.some(x=>x.content.includes('B는 연금술보다 마법을 선호한다.')));
+  assert.ok(m.lorebook.some(x=>x.content.includes('{{img::마법사_B_b-uui_평소}}')));
+  assert.equal(m.lorebook.some(x=>x.content.includes('{{img::평소}}')),false);
   assert.equal(m.lorebook.some(x=>x.content.includes('@@indicator')),false);
   assert.equal(m.trigger,undefined);assert.equal(m.regex,undefined);assert.equal(m.cjs,undefined);
 });
