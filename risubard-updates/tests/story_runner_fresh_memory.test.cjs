@@ -85,7 +85,7 @@ test('an edited accepted AI reply invalidates its old summary',async()=>{
 test('a reused signature from another chat cannot leak continuity',async()=>{
   const x=mock({switched:true});
   assert.equal(await x.read(),null);
-  assert.equal(x.status(),'unverified');
+  assert.equal(x.status(),'stale');
 });
 test('missing notebook signature cannot authorize old memory',async()=>{
   const x=mock({withLast:false});
