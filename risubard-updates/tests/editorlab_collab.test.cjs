@@ -21,17 +21,18 @@ async function until(fn,ms=1000){
   }
   throw Error('test timeout');
 }
-async function launch(scenario){
+async function launch(scenario,initialModel='otherAx'){
   let chat={id:'test-chat',message:[{role:'user',data:'다음 장면을 써 줘'},{
     role:'char',chatId:'gen1',data:STORY
   }]};
-  const storage=new Map([['bard_editor_lab_v03',{
-    mode:'collab',model:'otherAx',collabWriter:'model',collabProfile:'balanced',
+  const existing={
+    mode:'collab',model:initialModel,collabWriter:'model',collabProfile:'balanced',
     collabRounds:2,collabBudgetSec:60,collabPatchPct:20,collabMaxIssues:3,
     collabConfidence:.75,auto:true,realEditor:true,promptAssist:false,
     sceneAuto:false,sceneAssist:false,sceneCard:false,voiceGuard:false,
     momentum:false,watchStoryRunner:false,maxChars:18000
-  }]]);
+  };
+  const storage=new Map(initialModel===null?[]:[['bard_editor_lab_v03',existing]]);
   const listeners=new Map(),replacers=new Map(),calls=[],uiCallbacks=new Map(),uiElements=new Map();
   const document={body:{innerHTML:''},getElementById:id=>{
     if(!uiElements.has(id))uiElements.set(id,{value:'',checked:false,onchange:null,onclick:null});
@@ -39,8 +40,8 @@ async function launch(scenario){
   },querySelectorAll:()=>[]};
   const llm=async ({mode,messages,allowPlugins})=>{
     calls.push({mode,messages,allowPlugins});
-    assert.equal(allowPlugins,false,'editorial calls must not invoke plugins');
-    if(mode==='otherAx'&&calls.filter(x=>x.mode==='otherAx').length===1){
+    assert.equal(allowPlugins,true,'provider plugin models must be allowed for DeepSeek/GLM routing');
+    if(['otherAx','memory'].includes(mode)&&calls.filter(x=>x.mode===mode).length===1){
       if(scenario==='pass')return {type:'success',result:JSON.stringify({
         status:'PASS',strengths:['말투의 차이가 자연스럽다'],issues:[],summary:'유지'
       })};
@@ -62,7 +63,7 @@ async function launch(scenario){
         patches:[{issueId:'I1',before:EXCERPT,after:BETTER}]
       })};
     }
-    if(scenario==='multi'&&calls.filter(x=>x.mode==='otherAx').length===2)
+    if(scenario==='multi'&&calls.filter(x=>x.mode===mode).length===2)
       return {type:'success',result:JSON.stringify({
         status:'PATCH',improved:true,strengths:['개선된 선택'],
         issues:[{id:'I2',excerpt:BETTER,problem:'조금 더 구체화 필요',instruction:'근거를 덧붙여라',confidence:.9}],summary:'부분 재교정'
@@ -163,4 +164,46 @@ test('settings UI renders and changing the quality profile persists',async()=>{
   assert.equal(saved.collabBudgetSec,150);
   assert.equal(saved.collabPatchPct,30);
   assert.equal(saved.collabConfidence,.7);
+});
+
+test('new installation defaults the reviewer to memory slot, without changing provider settings',async()=>{
+  const app=await launch('pass',null);
+  await app.openUI();
+  assert.match(app.html,/value="memory" selected/);
+  assert.match(app.html,/memory 슬롯/);
+  assert.equal(app.storage.get('bard_editor_lab_v03'),undefined,'default is in-memory until user saves');
+});
+test('existing user editor model selection is preserved on upgrade',async()=>{
+  const app=await launch('pass','otherAx');
+  await app.openUI();
+  assert.match(app.html,/value="otherAx" selected/);
+  assert.equal(app.storage.get('bard_editor_lab_v03').model,'otherAx');
+});
+test('one-click memory route switch changes only Editor Lab configuration',async()=>{
+  const app=await launch('pass','otherAx');
+  const previous={...app.storage.get('bard_editor_lab_v03')};
+  await app.openUI();
+  await app.control('model-memory').onclick();
+  const updated=app.storage.get('bard_editor_lab_v03');
+  assert.equal(updated.model,'memory');
+  for(const [key,value] of Object.entries(previous)){
+    if(key!=='model')assert.equal(updated[key],value,'unrelated setting '+key+' unchanged');
+  }
+});
+test('memory reviewer calls the configured plugin provider and records the route',async()=>{
+  const app=await launch('pass','memory');app.emit();
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.deepEqual(app.calls.map(x=>x.mode),['memory']);
+  assert.equal(app.calls[0].allowPlugins,true);
+  const activity=app.storage.get('bard_editor_lab_v034_activity')[0];
+  assert.equal(activity.editorRoute,'memory');
+  assert.equal(activity.pipelineMode,'collab');
+  assert.equal(app.chat.message[1].data,STORY);
+});
+test('memory reviewer and main writer take separate routes through targeted patch and recheck',async()=>{
+  const app=await launch('patch','memory');app.emit();
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.deepEqual(app.calls.map(x=>x.mode),['memory','model','memory']);
+  assert.ok(app.calls.every(x=>x.allowPlugins===true));
+  assert.equal(app.chat.message[1].data,STORY.replace(EXCERPT,BETTER));
 });
