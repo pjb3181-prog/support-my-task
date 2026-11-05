@@ -4586,7 +4586,11 @@
     }
   }
 
-  async function beforeRequest(messages) {
+  async function beforeRequest(messages, requestModel) {
+    // RisuBard passes model usage in the replacer callback's second argument.
+    // Story Runner must NEVER inject writer/notebook guidance into BardWiki
+    // memory maintenance, emotion, translation or other auxiliary calls.
+    if (requestModel && requestModel !== 'model') return messages;
     const isHostRequest = !directRunInProgress && internalLLMCallDepth === 0;
     const perf = isHostRequest ? {
       id: ++perfSequence,
