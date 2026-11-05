@@ -2,7 +2,7 @@
 //@display-name Story Runner
 //@api 3.0
 //@allowed-ipc mutation_state_router_v2
-//@version 0.95.7
+//@version 0.95.8
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_runner.ts
 //@description Story Workspace: evidence-based output safety; no legacy prose recheck lockout; self-updating story studio.
 
@@ -1078,6 +1078,7 @@
       try { await loadModernLivePreview(); } catch (_) {}
       notebookStatus = '';
       notebookError = '';
+      notebookFreshness = 'unchecked';
       modernShowSuggestions = false;
       blueprintEditorId = '';
       blueprintActOpenIds = new Set();
@@ -1845,9 +1846,11 @@
 
     try { await loadBardWikiDocuments(); } catch (_) {}
     const currentCharacter = await readCurrentCharacterSnapshot();
+    const verifiedNotebook = await freshNotebookForTarget(currentTarget);
 
     return {
-      wikiContent: [text(wiki && wiki.content).slice(0, 18000), storySetupPromptText(), notebookPromptText()].filter(Boolean).join('\n\n'),
+      wikiContent: [text(wiki && wiki.content).slice(0, 18000), storySetupPromptText(), notebookPromptText(verifiedNotebook)].filter(Boolean).join('\n\n'),
+      verifiedNotebook,
       recentMessages,
       lore,
       currentCharacter,
@@ -2922,7 +2925,7 @@
     // The verified notebook and recent actual chat are the only continuity input.
     const storySetup = storySetupPromptText();
     if (storySetup) parts.push(storySetup);
-    const acceptedNotebook = notebookPromptText();
+    const acceptedNotebook = notebookPromptText(ctx && ctx.verifiedNotebook);
     if (acceptedNotebook) parts.push(acceptedNotebook);
     if (ctx && text(ctx.storyDNA).trim()) parts.push(text(ctx.storyDNA));
     if (ctx && ctx.currentCharacter) parts.push("# CURRENT CHARACTER CARD — COMPACT\n" + JSON.stringify(ctx.currentCharacter, null, 2));
@@ -4469,8 +4472,8 @@
 
   // v0.95.3: The ordinary Risu pipeline ALREADY injects card/lore/preset.
   // Story Runner must not add another 100k+ character copy of that context.
-  function boundedHostWriterGuidance(node, pacingMode, userText) {
-    const remembered=normalizeStoryNotebook(project.storyNotebook);
+  function boundedHostWriterGuidance(node, pacingMode, userText, verifiedNotebook) {
+    const remembered=normalizeStoryNotebook(verifiedNotebook);
     return [
       '# STORY RUNNER — CURRENT SCENE ONLY (Risu card and Lorebook are already present)',
       'Continue from the latest ACTUALLY ACCEPTED chat text. This outline is a flexible scene direction, not an event that already happened.',
@@ -4522,7 +4525,7 @@
   }
   function boundedDirectWriterGuidance(node, ctx) {
     const c=ctx && ctx.currentCharacter || {};
-    const remembered=normalizeStoryNotebook(project.storyNotebook);
+    const remembered=normalizeStoryNotebook(ctx && ctx.verifiedNotebook);
     const character=[
       text(c.name) && 'Name: '+text(c.name).slice(0,170),
       text(c.description) && 'Description: '+text(c.description).slice(0,1700),
@@ -4613,7 +4616,8 @@
       if (!activeTarget) return messages;
       if (project.experienceMode !== 'ai') {
         // Direct play: track and preserve actual story continuity, but NEVER impose an episode/node plan.
-        const memory = [storySetupPromptText(),notebookPromptText()].filter(Boolean).join('\n\n');
+        const verifiedNotebook = await freshNotebookForTarget(activeTarget);
+        const memory = [storySetupPromptText(),notebookPromptText(verifiedNotebook)].filter(Boolean).join('\n\n');
         if (!memory) { perf.stage = 'direct-no-memory'; return messages; }
         const next = [...messages];
         next.splice(Math.max(0,next.length-1),0,{role:'system',content:memory});
@@ -4640,7 +4644,7 @@
       perf.contextMs = Date.now() - t;
       perf.stage = "context-ready";
 
-      let injection = boundedHostWriterGuidance(node, activeHostPacingMode, latestUserText);
+      let injection = boundedHostWriterGuidance(node, activeHostPacingMode, latestUserText, ctx && ctx.verifiedNotebook);
       if (project.writerQualityMode === 'max' && project.running) {
         const ep = effectiveCurrentEpisode(project.planningOutline);
         const architect = await preparePremiumScene(messages, ep, latestUserText);
@@ -5625,8 +5629,44 @@
     ].join('\n');
   }
 
-  function notebookPromptText() {
-    const n = normalizeStoryNotebook(project.storyNotebook);
+  // A verified notebook can still describe an OLD scene. Compare its accepted
+  // output signature with the latest SAVED AI turn before any model injection.
+  // Fail closed without changing or deleting stored continuity data.
+  let notebookFreshness = 'unchecked';
+  async function freshNotebookForTarget(target) {
+    const saved = normalizeStoryNotebook(project.storyNotebook);
+    if (!target || saved.version !== 2 || saved.confidence !== 'checked'
+        || !saved.lastProcessedAt || !saved.lastProcessedKey) {
+      notebookFreshness = 'unverified';
+      return null;
+    }
+    try {
+      const chat = await risuai.getChatFromIndex(target.characterIndex,target.chatIndex);
+      if (!currentTarget || targetKey(currentTarget)!==targetKey(target)) return null;
+      const rows = Array.isArray(chat && chat.message) ? chat.message : [];
+      for (let i=rows.length-1;i>=0;i--) {
+        const m=rows[i];
+        if (!m || (m.role!=='char' && m.role!=='assistant') || !text(m.data).trim()) continue;
+        const liveKey=storySignature(text(m.data).trim(),i,target);
+        if (saved.lastProcessedKey===liveKey) {
+          notebookFreshness = 'current';
+          return saved;
+        }
+        notebookFreshness = 'stale';
+        notebookStatus = '이야기 기억이 최신 장면과 달라 주입 보류 · ↻ 다시 읽기';
+        return null;
+      }
+      notebookFreshness = 'stale';
+      notebookStatus = '확인 가능한 AI 응답 없음 · 옛 기억 주입 보류';
+    } catch (error) {
+      notebookFreshness = 'unavailable';
+      console.log('[StoryRunner] notebook freshness check unavailable; skip memory',error);
+    }
+    return null;
+  }
+
+  function notebookPromptText(verifiedNotebook) {
+    const n = normalizeStoryNotebook(verifiedNotebook);
     if (!n.lastProcessedAt || n.version !== 2 || n.confidence !== 'checked') return '';
     return [
       '# STORY RUNNER ACCEPTED-STORY NOTEBOOK (read-only, derived from actual accepted chat)',
@@ -5687,12 +5727,15 @@
     const active = currentTarget;
     if (!active || targetKey(active)!==targetKey(target)) return false;
     const source = text(content).trim();
-    if (!source) return false;
+    // Preserve raw source for saved-message equality/signature. Only visible
+    // fiction may enter continuity extraction and its evidence checks.
+    const visibleSource = stripThoughts(source);
+    if (!visibleSource) return false;
     const index = Number.isInteger(messageIndex) ? messageIndex : -1;
     const signature = storySignature(source,index,target);
     const previous = normalizeStoryNotebook(project.storyNotebook);
     if (!force && previous.version===2 && previous.lastProcessedKey===signature) return true;
-    const quality = await storyQualityVerdict(source);
+    const quality = await storyQualityVerdict(visibleSource);
     if (!quality.ok) {
       notebookStatus = '손상된 출력 · 기억 기록 차단';
       notebookError = quality.reason;
@@ -5744,7 +5787,7 @@
           } : null,
           latestUserInput:recentUser.length?text(recentUser[0].data).slice(-2200):'',
           activeFutureBeats:blueprintBeats().filter(x=>x.beat.status==='planned').slice(0,6).map(x=>({beatId:x.beat.id,title:x.beat.title,description:x.beat.description})),
-          acceptedAssistantText:source.length>16000 ? source.slice(0,1200)+'\n[중간 생략]\n'+source.slice(-14800) : source,
+          acceptedAssistantText:visibleSource.length>16000 ? visibleSource.slice(0,1200)+'\n[중간 생략]\n'+visibleSource.slice(-14800) : visibleSource,
         })}
       ];
       const result = await runInternalLLM({messages,mode:'otherAx',allowPlugins:false});
@@ -5753,28 +5796,28 @@
       const data = extractJson(raw);
       const verified = (Array.isArray(data.groundedEvents)?data.groundedEvents:[]).slice(0,4)
         .map(x=>({fact:text(x&&x.fact).trim().slice(0,340),evidence:text(x&&x.evidence).trim().slice(0,160),key:signature}))
-        .filter(x=>x.fact && x.evidence.length>=6 && source.includes(x.evidence));
+        .filter(x=>x.fact && x.evidence.length>=6 && visibleSource.includes(x.evidence));
       // v0.93: Evidence for an EVENT does not automatically prove every other
       // free-text field. Build durable memory from grounded quotes only.
       const old = previous.version===2 && previous.confidence==='checked' ? previous : emptyStoryNotebook();
       const sceneQuote=text(data.sceneEvidence).trim();
       const lastQuote=text(data.lastEventEvidence).trim();
       const groundedCharacters=(Array.isArray(data.characters)?data.characters:[])
-        .filter(x=>x&&text(x.evidence).trim()&&text(x.evidence).trim().length>=6&&source.includes(text(x.evidence).trim()))
+        .filter(x=>x&&text(x.evidence).trim()&&text(x.evidence).trim().length>=6&&visibleSource.includes(text(x.evidence).trim()))
         .map(x=>({name:text(x.name),state:text(x.state),knows:text(x.knows)}));
       const charactersByName=new Map(old.characters.map(c=>[c.name,c]));
       for(const c of groundedCharacters)if(c.name&&c.state)charactersByName.set(c.name,c);
       const groundedThreads=(Array.isArray(data.openThreads)?data.openThreads:[])
-        .filter(x=>x&&typeof x==='object'&&text(x.evidence).trim()&&text(x.evidence).trim().length>=6&&source.includes(text(x.evidence).trim()))
+        .filter(x=>x&&typeof x==='object'&&text(x.evidence).trim()&&text(x.evidence).trim().length>=6&&visibleSource.includes(text(x.evidence).trim()))
         .map(x=>text(x.text).trim()).filter(Boolean);
       const hasGrounding=verified.length||groundedCharacters.length||groundedThreads.length
-        || (sceneQuote.length>=6&&source.includes(sceneQuote)) || (lastQuote.length>=6&&source.includes(lastQuote));
+        || (sceneQuote.length>=6&&visibleSource.includes(sceneQuote)) || (lastQuote.length>=6&&visibleSource.includes(lastQuote));
       const next = normalizeStoryNotebook({
         version:2,
         // This summary is accumulated only from individually quoted event facts.
         summary:[old.summary,...verified.map(x=>x.fact)].filter(Boolean).join(' / ').slice(-1800),
-        scene:sceneQuote.length>=6&&source.includes(sceneQuote)?text(data.scene).trim():old.scene,
-        lastEvent:lastQuote.length>=6&&source.includes(lastQuote)?text(data.lastEvent).trim():old.lastEvent,
+        scene:sceneQuote.length>=6&&visibleSource.includes(sceneQuote)?text(data.scene).trim():old.scene,
+        lastEvent:lastQuote.length>=6&&visibleSource.includes(lastQuote)?text(data.lastEvent).trim():old.lastEvent,
         nextPressure:hasGrounding?text(data.nextPressure).trim():'',
         groundedEvents:old.groundedEvents.concat(verified).slice(-16),
         characters:Array.from(charactersByName.values()).slice(0,16),
@@ -5791,6 +5834,7 @@
       const nowRows=Array.isArray(nowChat&&nowChat.message)?nowChat.message:[];
       if(index>=0 && (!nowRows[index]||text(nowRows[index].data).trim()!==source)) return false;
       project.storyNotebook=next;
+      notebookFreshness = 'current';
       // Only a verified quote from this SAVED, quality-approved output may complete a
       // future beat. Incomplete, speculative or inferred events cannot advance the plan.
       const progress=Array.isArray(data.beatProgress)?data.beatProgress:[];
@@ -5800,7 +5844,7 @@
       for(const row of progress.slice(0,5)) {
         const id=text(row&&row.beatId);
         const proof=text(row&&row.completionEvidence).trim();
-        if (!id || proof.length<8 || !source.includes(proof))continue;
+        if (!id || proof.length<8 || !visibleSource.includes(proof))continue;
         const target=bp.sections.flatMap(x=>x.beats).find(x=>x.id===id&&x.status==='planned');
         if(!target)continue;
         target.status='done';target.evidence=proof.slice(0,180);
@@ -5880,10 +5924,10 @@
     const canRun=!noTarget&&!modernBusy&&!storyStudioBusy&&!(aiTask&&aiTask.active)&&!planningBusy;
     const runEpisode=effectiveCurrentEpisode(project.planningOutline);
     const quality=text(project.writerQualityMode)||'strong';
-    const trustedBook=book.version===2 && book.confidence==='checked' && book.lastProcessedAt;
+    const trustedBook=book.version===2 && book.confidence==='checked' && book.lastProcessedAt && notebookFreshness!=='stale';
     const preview=trustedBook ? (book.lastEvent||book.scene||book.summary) : modernLivePreview;
     const title= currentTarget ? [text(currentTarget.characterName),text(currentTarget.chatName)].filter(Boolean).join(' / ') : '채팅을 먼저 열어줘';
-    const notice = noTarget ? '캐릭터 채팅을 연 뒤 이용할 수 있어.' : (trustedBook ? '실제 저장된 대화의 확인된 사실을 반영했어.' : '기존 기억은 검증되지 않았어. 최신 대화를 확인해 줘.');
+    const notice = noTarget ? '캐릭터 채팅을 연 뒤 이용할 수 있어.' : (notebookFreshness==='stale' ? '기억이 최신 대화와 달라 주입을 중단했어. ↻ 다시 읽기를 실행해.' : (trustedBook ? '실제 저장된 대화의 확인된 사실을 반영했어.' : '기존 기억은 검증되지 않았어. 최신 대화를 확인해 줘.'));
     const busy=!!modernBusy||storyStudioBusy||!!(aiTask&&aiTask.active)||planningBusy||planningChatBusy;
     const suggestions=Array.isArray(project.nextEpisodeChoices)?project.nextEpisodeChoices:[];
     const hasBlueprint=normalizeStoryBlueprint(project.storyBlueprint).sections.length>0;
@@ -6048,7 +6092,7 @@
     });
     $('m-ai').onclick=doUi(async()=>{project.experienceMode='ai';await saveProject();renderUI();});
     $('m-rescan').onclick=doUi(async()=>{await refreshModernNotebook(true);});
-    const resetBook=$('m-reset-book');if(resetBook)resetBook.onclick=doUi(async()=>{project.storyNotebook=emptyStoryNotebook();notebookStatus='이야기 기억 초기화 완료';notebookError='';await saveProject();renderUI();});
+    const resetBook=$('m-reset-book');if(resetBook)resetBook.onclick=doUi(async()=>{project.storyNotebook=emptyStoryNotebook();notebookFreshness='unverified';notebookStatus='이야기 기억 초기화 완료';notebookError='';await saveProject();renderUI();});
     const tr=$('m-track');if(tr)tr.onchange=doUi(async()=>{project.modernTrackingEnabled=tr.checked;await saveProject();renderUI();});
     if(!aiMode){
       const st=$('m-story-setup');if(st){
