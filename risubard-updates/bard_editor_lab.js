@@ -1,12 +1,12 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.9
+//@version 0.3.10
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
 //@description Opt-in main-writer / auxiliary-editor surgical collaboration with limited review rounds, plus original Bard Editor Lab features.
 (async () => {
  const STORE='bard_editor_lab_v03'; const BACKUP_STORE='bard_editor_lab_v03_backups'; const ACTIVITY_STORE='bard_editor_lab_v034_activity'; const STYLE_STORE='bard_editor_lab_v036_style_snapshots'; const SCENE_STORE='bard_editor_lab_v038_scene_briefs';
- const DEFAULT={model:'otherAx',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,sceneAssist:true,sceneAuto:true,sceneCard:true,timeoutMs:90000,maxChars:18000,collabProfile:'balanced',collabWriter:'model',collabRounds:2,collabBudgetSec:60,collabPatchPct:20,collabMaxIssues:3,collabConfidence:.75};
+ const DEFAULT={model:'memory',mode:'selective',auto:true,promptAssist:true,realEditor:true,momentum:true,voiceGuard:true,watchStoryRunner:false,sceneAssist:true,sceneAuto:true,sceneCard:true,timeoutMs:90000,maxChars:18000,collabProfile:'balanced',collabWriter:'model',collabRounds:2,collabBudgetSec:60,collabPatchPct:20,collabMaxIssues:3,collabConfidence:.75};
  let conf={...DEFAULT};
  let state={target:null,index:-1,original:'',revised:'',issues:[],status:'자동 퇴고 OFF',busy:false,lastAuto:'없음'};
  let uiOpen=false;let unloaded=false;let pollTimer=null;let collabActive=false;
@@ -594,7 +594,8 @@
      original:recordText(original),revised:recordText(revised),
      issues:(Array.isArray(issues)?issues:[]).filter(x=>x&&typeof x.problem==='string')
        .slice(0,4).map(x=>({problem:txt(x.problem).slice(0,350),instruction:txt(x.instruction).slice(0,350)})),
-     calls:Math.max(0,Math.min(12,Number(calls)||0)),committed:outcome==='applied'};
+     calls:Math.max(0,Math.min(12,Number(calls)||0)),committed:outcome==='applied',
+      editorRoute:conf.model,writerRoute:conf.collabWriter,pipelineMode:conf.mode};
    recentActivity.unshift(record);
    recentActivity=recentActivity.slice(0,5);
    pickedActivity=0;
@@ -724,7 +725,7 @@
      budgetSec:finite(conf.collabBudgetSec,60,10,300),
      patchPct:finite(conf.collabPatchPct,20,5,40),
      confidence:finite(conf.collabConfidence,.75,.6,.95),
-     editor:['otherAx','model'].includes(conf.model)?conf.model:'otherAx',
+     editor:['otherAx','model','memory'].includes(conf.model)?conf.model:'memory',
      writer:['otherAx','model'].includes(conf.collabWriter)?conf.collabWriter:'model'
    };
  }
@@ -820,7 +821,9 @@
      })]);}
      finally{clearTimeout(timer);}
    };
-   const response=await bounded(risuai.runLLMModel({mode,messages,allowPlugins:false}));
+   // DeepSeek / GLM can be pluginmodel::: providers. This direct editor/writer call
+    // must opt in; existing output deduplication and collabActive prevent repeats.
+    const response=await bounded(risuai.runLLMModel({mode,messages,allowPlugins:true}));
    if(response?.type==='success'&&typeof response.result==='string')return clean(response.result);
    if(response?.type==='streaming'&&response.result?.getReader){
      const reader=response.result.getReader();let output='';
@@ -861,7 +864,7 @@
        source
      ].join('\n\n');
      const system=[
-       '당신은 소설을 직접 다시 쓰지 않는 전문 편집자 DeepSeek다.',
+       '당신은 소설을 직접 다시 쓰지 않는 전문 편집자다.',
        COLLAB_CRAFT,
        '먼저 장점 최소 1개를 구체적으로 찾아라. 충분히 좋으면 반드시 PASS.',
        '검토 강도: 최소 확신도 '+settings.confidence+'. 고치면 더 나아진다는 확신이 없는 부분은 수정 요청 금지.',
@@ -871,7 +874,7 @@
      ].join('\n');
      calls++;
      verdict=collabParseVerdict(source,await collabRequest([{role:'system',content:system},{role:'user',content:user}],settings.editor,deadline),settings);
-     if(verdict.status==='PASS')return {...base,revised:unchanged,calls,reason:'DeepSeek PASS · 좋은 원고 원본 유지'};
+     if(verdict.status==='PASS')return {...base,revised:unchanged,calls,reason:'편집자 PASS · 좋은 원고 원본 유지'};
      if(verdict.status==='STRUCTURAL_REVIEW')return {...base,revised:unchanged,calls,reason:'장면 구조 검토 필요 · 자동 전체 수정 안 함'};
      if(settings.rounds===0)return {...base,revised:unchanged,issues:verdict.issues,calls,reason:'검토만 수행(수정 0회)'};
      while(rounds<settings.rounds&&verdict.status==='PATCH'&&remaining>0&&Date.now()<deadline-1300){
@@ -896,7 +899,7 @@
        if(failure){notes.push('안전 검증 거절: '+failure);break;}
        const originalCandidate=approved;
        const reviewSystem=[
-         '당신은 DeepSeek 편집자다. 이미 읽은 원고 중 실제 교체 부분만 다시 확인한다.',
+         '당신은 편집자다. 이미 읽은 원고 중 실제 교체 부분만 다시 확인한다.',
          COLLAB_CRAFT,
          '원문 장점을 살렸고 실제로 개선되었다면 PASS 또는 PATCH. 더 나빠졌거나 설정이 손상되면 REJECT.',
          'PASS/PATCH/REJECT 중 하나와 improved(boolean)을 출력한다. PATCH일 때만 새 후보 문장에 유일하게 있는 문제 구간 최대 '+settings.maxIssues+'개를 인용한다.',
@@ -914,7 +917,7 @@
        approved=preview.text;
        remaining-=preview.changedChars;
        applied+=preview.applied.length;
-       if(recheck.status==='PASS'){notes.push('DeepSeek 재검토 PASS');break;}
+       if(recheck.status==='PASS'){notes.push('편집자 재검토 PASS');break;}
        verdict=collabParseVerdict(approved,{...recheck,status:'PATCH'},settings);
        if(verdict.status!=='PATCH'){notes.push('후속 문제 미확인 · 조기 종료');break;}
      }
@@ -1191,24 +1194,26 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.9 · Writer ↔ Editor</h2>
+  </style><main><h2>Bard Editor Lab v0.3.10 · Writer ↔ Editor</h2>
   <p class="muted">본체·프리셋 수정 없음 · 메인 채팅에 짧은 편집 지침 삽입 + 모델을 이용한 선택적 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
     <select id="model">
       <option value="otherAx" ${conf.model==='otherAx'?'selected':''}>기존 보조 모델 (otherAx)</option>
       <option value="model" ${conf.model==='model'?'selected':''}>기존 메인 모델</option>
+      <option value="memory" ${conf.model==='memory'?'selected':''}>기억 모델 (memory · DeepSeek 연결 시 권장)</option>
     </select>
+    <button id="model-memory" ${conf.model==='memory'?'disabled':''}>검토 모델을 memory 슬롯으로 연결</button>
     <select id="mode">
       <option value="selective" ${conf.mode==='selective'?'selected':''}>선택적 · 매 턴 진단, 필요할 때만 퇴고</option>
       <option value="economy" ${conf.mode==='economy'?'selected':''}>저비용 · 반복 징후 있을 때만 진단</option>
-      <option value="collab" ${conf.mode==='collab'?'selected':''}>협업 · DeepSeek 검토 → 힘오이 부분 수정</option>
+      <option value="collab" ${conf.mode==='collab'?'selected':''}>협업 · 선택한 편집자 검토 → 메인 작가 부분 수정</option>
     </select>
   </div>
   <section class="status" style="margin:12px 0;border:1px solid #52617f">
-    <strong>🤝 작가↔편집자 협업 설정 (v0.3.9)</strong>
+    <strong>🤝 작가↔편집자 협업 설정 (v0.3.10)</strong>
     <p class="muted">상단 '협업' 모드에서만 작동. 기존 RisuBard 모델 슬롯을 이용해 새 API 키가 필요하지 않아.
-    메인=힘오이, 보조=DeepSeek로 연결했다면 아래 기본값을 사용하면 돼.</p>
+    검토 모델을 위에서 선택해. memory는 RisuBard 기억 슬롯 모델을 사용해. 그 슬롯에 DeepSeek가 연결돼 있으면 DeepSeek가 검토하며, 다른 모델 슬롯은 변경하지 않아.</p>
     <div class="top">
       <label>수정 작가 <select id="collab-writer">
         <option value="model" ${conf.collabWriter==='model'?'selected':''}>메인 모델 (힘오이)</option>
@@ -1229,8 +1234,8 @@
       <label>검토당 문제 구간 <select id="collab-issues">${[1,2,3,4,5].map(n=>'<option value="'+n+'" '+(conf.collabMaxIssues===n?'selected':'')+'>'+n+'곳</option>').join('')}</select></label>
       <label>최소 교정 확신도 <select id="collab-confidence">${[.65,.7,.75,.8,.85,.9].map(n=>'<option value="'+n+'" '+(Math.abs(conf.collabConfidence-n)<.001?'selected':'')+'>'+Math.round(n*100)+'%</option>').join('')}</select></label>
     </div>
-    <p class="muted">원고가 충분히 좋으면 PASS (DeepSeek 1회). 문제가 있을 때만 힘오이가 정확한 구간을 수정하고
-    DeepSeek는 바뀐 부분만 다시 검토해. 최대 요청: 1 + 수정 횟수×2회. 원래 응답은 먼저 표시되며 안전하게 검증된 교정만 나중에 반영돼.</p>
+    <p class="muted">원고가 충분히 좋으면 PASS (편집 모델 1회). 문제가 있을 때만 메인 집필 모델이 정확한 구간을 수정하고
+    편집 모델은 바뀐 부분만 다시 검토해. 최대 요청: 1 + 수정 횟수×2회. 원래 응답은 먼저 표시되며 안전하게 검증된 교정만 나중에 반영돼.</p>
     <p class="muted">추가 지연을 줄이려면 아래 '새 응답 완료 시 자동 장면 분석'을 OFF할 수 있어. 그 기능도 별도의 모델 호출을 사용해.</p>
   </section>
   <div class="top">
@@ -1280,7 +1285,7 @@
   ${showingAuto?`<div class="status"><strong>자동 작업 내역 (최근 ${recentActivity.length}건)</strong><br/>
     ${recentActivity.length?`<select id="activity-select" style="max-width:100%;margin:8px 0">
       ${recentActivity.map((x,i)=>`<option value="${i}" ${i===pickedActivity?'selected':''}>${esc(new Date(x.at).toLocaleString('ko-KR'))} · ${esc(x.phase)} · ${esc(x.outcome)}</option>`).join('')}
-      </select><div>${esc(activity?.reason||'')}</div><small class="muted">상태: ${esc(activity?.outcome||'')} · 추가 모델 호출 ${activity?.calls??0}회 · ${activity?.committed?'채팅 저장 확인 또는 교정 반영':'채팅 저장 확인 전/미적용'}</small>`
+      </select><div>${esc(activity?.reason||'')}</div><small class="muted">상태: ${esc(activity?.outcome||'')} · 추가 모델 호출 ${activity?.calls??0}회 · 검토 슬롯 ${esc(activity?.editorRoute||'이전 기록')} · ${activity?.committed?'채팅 저장 확인 또는 교정 반영':'채팅 저장 확인 전/미적용'}</small>`
       :'<p>자동 작업 기록이 없어. 자동 퇴고를 ON으로 켜고 새 채팅 응답을 생성하면 여기 표시돼.</p>'}
     </div>`:''}
   <div class="pair">
@@ -1288,7 +1293,7 @@
     <section><h3>${showingAuto?'자동 퇴고 결과':'수동 퇴고본 (미적용)'}</h3><textarea readonly placeholder="${showingAuto?'교정 불필요·검사 제외·실패 시 비어 있어':'수동 검수 후 표시'}">${esc(visibleRevised)}</textarea></section>
   </div>
   <h3>편집장 진단</h3><pre>${esc(visibleIssues.map((x,i)=>`${i+1}. ${x.problem} — ${x.instruction}`).join('\n')||(showingAuto?(activity?.reason||'자동 진단 기록 없음'):'수동 진단 기록 없음'))}</pre>
-  <p class="muted">기존 모드는 최대 2회 호출. 협업 모드는 최초 DeepSeek 검토 후 필요한 경우만 힘오이 부분 교정과 DeepSeek 변경 구간 검증을 반복해. 실패 시 원문 유지. 최근 5건의 원문 전체를 플러그인 저장소에 백업해.
+  <p class="muted">기존 모드는 최대 2회 호출. 협업 모드는 선택한 편집자의 검토 후 필요한 경우만 메인 집필 모델의 부분 교정과 편집자의 변경 구간 검증을 반복해. 실패 시 원문 유지. 최근 5건의 원문 전체를 플러그인 저장소에 백업해.
   타임아웃은 대기를 중단하지만 모델 과금 취소를 보장하지 않아.</p></main>`;
   const el=id=>document.getElementById(id);
    el('auto').onclick=async()=>{conf.auto=!conf.auto;await save();state.status=conf.auto?'자동 퇴고 활성화':'자동 퇴고 비활성화';await render()};
@@ -1316,7 +1321,8 @@
     .then(render).catch(e=>{styleStatus='문체 리셋 실패 · '+txt(e.message);render()});
   el('style-off').onclick=()=>setStyleReset(false)
     .then(render).catch(e=>{styleStatus='문체 설정 변경 실패 · '+txt(e.message);render()});
-  el('model').onchange=async e=>{conf.model=e.target.value;await save()};
+  el('model').onchange=async e=>{if(!['otherAx','model','memory'].includes(e.target.value))return;conf.model=e.target.value;await save();await render()};
+  el('model-memory').onclick=async()=>{conf.model='memory';await save();await render()};
   el('mode').onchange=async e=>{conf.mode=e.target.value;
     if(conf.mode==='collab'){
       // Existing 0.3.8 installations usually retain the 9000-character limit.
@@ -1356,7 +1362,7 @@
  const saved=await risuai.pluginStorage.getItem(STORE).catch(()=>null);
  if(saved&&typeof saved==='object'){
    conf={...DEFAULT,...saved};
-   if(!['otherAx','model'].includes(conf.model))conf.model='otherAx';
+   if(!['otherAx','model','memory'].includes(conf.model))conf.model='memory';
    if(!['otherAx','model'].includes(conf.collabWriter))conf.collabWriter='model';
    if(!['fast','balanced','quality','custom'].includes(conf.collabProfile))conf.collabProfile='balanced';
    const cc=collabConfig();
