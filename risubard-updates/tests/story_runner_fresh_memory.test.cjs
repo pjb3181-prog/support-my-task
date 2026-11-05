@@ -120,3 +120,20 @@ test('plugin version is bumped and UI explains a stale memory',()=>{
   assert.match(src,/\/\/@version 0\.95\.8/);
   assert.match(src,/기억이 최신 대화와 달라 주입을 중단했어/);
 });
+
+test('memory, otherAx and emotion hooks return the same prompt without any injection',async()=>{
+  const start=src.indexOf('  async function beforeRequest(messages, requestModel)');
+  assert.ok(start>=0,'Expected request model guard in Story Runner beforeRequest');
+  const firstLine=src.indexOf('    const isHostRequest =',start);
+  assert.ok(firstLine>start,'Expected isHostRequest after model-type guard');
+  // Evaluate the actual early-return code, without running the full Story Runner host.
+  const early=src.slice(start,firstLine)+'    return {onlyForWriter:true};\n  }';
+  const sandbox={};
+  vm.runInNewContext(early,sandbox,{filename:'story_runner.ts',timeout:4000});
+  const testPrompt=[{role:'system',content:'keep original'},{role:'user',content:'note'}];
+  for(const model of ['memory','otherAx','emotion','translate']){
+    const result=await sandbox.beforeRequest(testPrompt,model);
+    assert.equal(result,testPrompt,'auxiliary mode must receive original reference');
+  }
+  assert.equal((await sandbox.beforeRequest(testPrompt,'model')).onlyForWriter,true);
+});
