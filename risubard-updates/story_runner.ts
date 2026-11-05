@@ -5646,8 +5646,14 @@
     }
     try {
       const chat = await risuai.getChatFromIndex(target.characterIndex,target.chatIndex);
-      if (!currentTarget || targetKey(currentTarget)!==targetKey(target)) return null;
-      if (chat && chat.id && text(chat.id)!==text(target.chatId)) return null;
+      if (!currentTarget || targetKey(currentTarget)!==targetKey(target)) {
+        notebookFreshness = 'stale';
+        return null;
+      }
+      if (chat && chat.id && text(chat.id)!==text(target.chatId)) {
+        notebookFreshness = 'stale';
+        return null;
+      }
       const rows = Array.isArray(chat && chat.message) ? chat.message : [];
       for (let i=rows.length-1;i>=0;i--) {
         const m=rows[i];
