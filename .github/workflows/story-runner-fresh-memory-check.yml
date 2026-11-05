@@ -1,0 +1,30 @@
+name: Story Runner stale memory regression
+on:
+  push:
+    branches:
+      - feature/story-runner-fresh-memory-20261105
+      - main
+    paths:
+      - 'risubard-updates/story_runner.ts'
+      - 'risubard-updates/tests/story_runner_fresh_memory.test.cjs'
+      - '.github/workflows/story-runner-fresh-memory-check.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'risubard-updates/story_runner.ts'
+      - 'risubard-updates/tests/story_runner_fresh_memory.test.cjs'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check full Story Runner syntax
+        run: node --check risubard-updates/story_runner.ts
+      - name: Verify notebook signature freshness and clean extraction
+        run: node --test risubard-updates/tests/story_runner_fresh_memory.test.cjs
