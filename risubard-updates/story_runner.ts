@@ -2,12 +2,12 @@
 //@display-name Story Runner
 //@api 3.0
 //@allowed-ipc mutation_state_router_v2
-//@version 0.95.8
+//@version 0.95.9
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_runner.ts
 //@description Story Workspace: evidence-based output safety; no legacy prose recheck lockout; self-updating story studio.
 
 (async () => {
-  const VERSION = "0.95.7";
+  const VERSION = "0.95.9";
   const STORAGE_PREFIX = "storyrunner_plugin_v1";
   const SCENE_LIBRARY_KEY = STORAGE_PREFIX + "_scene_library";
   const CAMEO_LIBRARY_KEY = STORAGE_PREFIX + "_cameo_character_lore_library";
@@ -5734,6 +5734,35 @@
     modernLivePreview='';return null;
   }
 
+  // Preserve ongoing story hooks; remove a formerly open hook ONLY with a
+  // quoted, previously verified accepted-story line. Never infer resolution
+  // from future plans, prompt instructions, user-controlled guesses, or time.
+  function reconcileNotebookOpenThreads(previousThreads, newThreads, resolvedRows, acceptedText, verifiedEvents) {
+    const oldList=Array.isArray(previousThreads)?previousThreads.map(x=>text(x).trim()):[];
+    const fresh=Array.isArray(newThreads)?newThreads.map(x=>text(x).trim()):[];
+    const evidence=[text(acceptedText)];
+    for(const row of (Array.isArray(verifiedEvents)?verifiedEvents:[])){
+      const quote=text(row && row.evidence).trim();
+      if(quote.length>=8)evidence.push(quote);
+    }
+    const resolved=new Set();
+    for(const row of (Array.isArray(resolvedRows)?resolvedRows:[]).slice(0,20)){
+      const index=row && row.index;
+      const proof=text(row && row.evidence).trim();
+      if(!Number.isInteger(index)||index<0||index>=oldList.length||proof.length<8)continue;
+      if(evidence.some(source=>source.includes(proof)))resolved.add(index);
+    }
+    const entries=oldList.filter((x,i)=>x&&!resolved.has(i)).concat(fresh.filter(Boolean));
+    const result=[],seen=new Set();
+    for(const entry of entries){
+      const key=entry.replace(/\s+/g,' ').trim().toLocaleLowerCase();
+      if(!key||seen.has(key))continue;
+      seen.add(key);
+      result.push(entry);
+    }
+    return result.slice(-12);
+  }
+
   async function inspectActualAcceptedStory(content, target, messageIndex, force) {
     const active = currentTarget;
     if (!active || targetKey(active)!==targetKey(target)) return false;
@@ -5785,7 +5814,8 @@
           'groundedEvents: max 4 objects {fact:string,evidence:string}. evidence MUST be an exact short substring copied from the supplied output. If there is no durable factual event, return [] instead of inventing one.',
           'sceneEvidence: exact quote from acceptedAssistantText proving any proposed NEW scene. lastEventEvidence: exact quote proving proposed NEW lastEvent.',
           'characters: up to 10 entries {name:string,state:string,knows:string,evidence:string}. evidence MUST be an exact quote supporting that character state/knowledge change.',
-          'openThreads: up to 8 objects {text:string,evidence:string} for unresolved questions; quote exact accepted text that establishes them. Never label plans as established events.',
+          'openThreads: up to 8 objects {text:string,evidence:string} for NEW unresolved questions in this accepted text; quote exact accepted text that establishes them. Never label plans as established events.',
+          'resolvedOpenThreads: optional [{index:number,evidence:string}] for an OLD unresolved question that is NOW actually resolved. index is 0-based position in previousAcceptedNotebook.openThreads. Evidence MUST quote at least 8 consecutive characters EXACTLY from this acceptedAssistantText OR from the previously VERIFIED previousAcceptedNotebook.groundedEvents[].evidence. If unproven, do not remove it. This is continuity cleanup, not a request to force plot resolution.',
           'needsUserDecision: true only if the NEXT natural beat requires a consequential USER decision; otherwise false.',
           'NO future scene writing, NO new roles, NO cast identity guesses, NO rewriting the source, NO Mutation rule creation.',
           'If the accepted output disagrees with an older outline, the accepted output wins. Never turn an unfulfilled plan into a completed fact.',
@@ -5794,7 +5824,7 @@
         {role:'user',content:JSON.stringify({
           previousAcceptedNotebook: previous.version===2 && previous.confidence==='checked' && previous.lastProcessedAt ? {
             summary:previous.summary,scene:previous.scene,characters:previous.characters,
-            openThreads:previous.openThreads,groundedEvents:previous.groundedEvents.slice(-6)
+            openThreads:previous.openThreads,groundedEvents:previous.groundedEvents.slice(-16)
           } : null,
           latestUserInput:recentUser.length?text(recentUser[0].data).slice(-2200):'',
           activeFutureBeats:blueprintBeats().filter(x=>x.beat.status==='planned').slice(0,6).map(x=>({beatId:x.beat.id,title:x.beat.title,description:x.beat.description})),
@@ -5832,7 +5862,7 @@
         nextPressure:hasGrounding?text(data.nextPressure).trim():'',
         groundedEvents:old.groundedEvents.concat(verified).slice(-16),
         characters:Array.from(charactersByName.values()).slice(0,16),
-        openThreads:[...old.openThreads,...groundedThreads].slice(-12),
+        openThreads:reconcileNotebookOpenThreads(old.openThreads,groundedThreads,data.resolvedOpenThreads,visibleSource,old.groundedEvents),
         needsUserDecision:hasGrounding&&data.needsUserDecision===true,
         lastProcessedKey:signature,
         lastProcessedAt:Date.now(),

@@ -117,7 +117,8 @@ test('memory extraction sends only visible fiction, preserves raw saved equality
   assert.match(reader,/text\(rows\[index\]\.data\)\.trim\(\)===source/);
 });
 test('plugin version is bumped and UI explains a stale memory',()=>{
-  assert.match(src,/\/\/@version 0\.95\.8/);
+  assert.match(src,/\/\/@version 0\.95\.9/);
+  assert.match(src,/const VERSION = "0\.95\.9"/);
   assert.match(src,/기억이 최신 대화와 달라 주입을 중단했어/);
 });
 
@@ -136,4 +137,48 @@ test('memory, otherAx and emotion hooks return the same prompt without any injec
     assert.equal(result,testPrompt,'auxiliary mode must receive original reference');
   }
   assert.equal((await sandbox.beforeRequest(testPrompt,'model')).onlyForWriter,true);
+});
+
+const reconcileCode=extractBlock('  function reconcileNotebookOpenThreads(');
+function reconcile(previous,fresh,rows,accepted,events){
+  const sandbox={text:x=>String(x??''),Set,Number};
+  vm.runInNewContext(reconcileCode,sandbox,{filename:'story_runner.ts',timeout:4000});
+  return vm.runInNewContext(
+    'reconcileNotebookOpenThreads(previous,fresh,rows,accepted,events)',
+    {...sandbox,previous,fresh,rows,accepted,events}
+  );
+}
+test('resolved prior open thread is removed only with exact quote in accepted fiction',()=>{
+  const initial=['Will the friend arrive?', 'What happens to the scholarship?'];
+  const cleaned=reconcile(initial,['Will the professor return?'],
+    [{index:0,evidence:'그가 약속 장소에 실제로 도착했다.'}],
+    '잠시 후 그가 약속 장소에 실제로 도착했다. 주변을 둘러보았다.',[]);
+  assert.deepEqual(Array.from(cleaned),['What happens to the scholarship?','Will the professor return?']);
+});
+test('verified prior accepted event evidence can close an old story question',()=>{
+  const initial=['Will the friend arrive?', 'What happens to the scholarship?'];
+  const cleaned=reconcile(initial,[],[{index:0,evidence:'친구가 입구에 도착해 기다리고 있었다.'}],
+    '다음 날이 되었다.',
+    [{fact:'친구는 이미 도착했음',evidence:'친구가 입구에 도착해 기다리고 있었다.'}]);
+  assert.deepEqual(Array.from(cleaned),['What happens to the scholarship?']);
+});
+test('unverified resolution, bogus index or mere plan never erases an open thread',()=>{
+  const initial=['Will the friend arrive?', 'What happens to the scholarship?'];
+  const cleaned=reconcile(initial,[],[
+    {index:0,evidence:'친구가 올지도 모른다.'},
+    {index:5,evidence:'다음 주 장학금은 정해졌다.'},
+    {index:1,evidence:'분명히 장학금을 받았다.'}
+  ], '다음 주 장학금을 받겠다고 계획했다.',[]);
+  assert.deepEqual(Array.from(cleaned),initial);
+});
+test('repeated unresolved text is deduplicated without altering thread meaning',()=>{
+  const cleaned=reconcile(['선택을 기다림','다음 방문'],['선택을 기다림','다음 방문','이후 일정'],[],
+    '문이 닫혔다.',[]);
+  assert.deepEqual(Array.from(cleaned),['선택을 기다림','다음 방문','이후 일정']);
+});
+test('the continuity reader is asked to cite exact verified evidence for resolution',()=>{
+  assert.match(src,/resolvedOpenThreads: optional/);
+  assert.match(src,/previousAcceptedNotebook\.groundedEvents\[\]\.evidence/);
+  assert.match(src,/groundedEvents:previous\.groundedEvents\.slice\(-16\)/);
+  assert.match(src,/openThreads:reconcileNotebookOpenThreads\(old\.openThreads/);
 });
