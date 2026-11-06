@@ -2,12 +2,12 @@
 //@display-name Mutation State Router
 //@api 3.0
 //@allowed-ipc story_runner
-//@version 0.79.4
+//@version 0.79.5
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/mutation_state.ts
 //@description Adds full-Lore conflict sweep and resolved-canon shielding so dense Lorebooks cannot silently restore stale pre-mutation facts; keeps staged world/feature switches and explicit recompilation.
 
 (async () => {
-  const VERSION = "0.79.4";
+  const VERSION = "0.79.5";
   // v0.71: classic-module-style staged controls. Pack/feature/frame/first-message
   // switches only change the pending configuration; Character/Lore/World Canon are
   // rewritten once when the user presses the explicit apply button. Each visible
@@ -6431,6 +6431,54 @@
   }
 
 
+  // Mutation World Canon is a globally enabled Risu module, but an individual
+  // chat must opt in to "common" before receiving its instructions. The host
+  // assembles global lore BEFORE the v3 beforeRequest hook, so merely returning
+  // the original messages in unselected/original/ntr mode is insufficient.
+  // Remove ONLY exact system messages originating from Mutation-owned global
+  // module lore. Never touch original chat, presets, character cards, other
+  // modules, or any persisted mutation-world snapshot.
+  function canonPromptText(value) {
+    return text(value).replace(/\r\n?/g, '\n').trim();
+  }
+
+  async function scopeMutationWorldCanon(messages, mode) {
+    if (!Array.isArray(messages) || mode === 'common') {
+      return {messages,removed:0,chars:0,status:'allowed'};
+    }
+    let db;
+    try { db = await risuai.getDatabase(); }
+    catch(error) {
+      console.log('[MutationStateV2] global canon lookup unavailable',error);
+      return {messages,removed:0,chars:0,status:'lookup-failed'};
+    }
+    const mods = Array.isArray(db && db.modules) ? db.modules : [];
+    const enabled = new Set(Array.isArray(db && db.enabledModules) ? db.enabledModules : []);
+    const mutationCanon = new Set();
+    for (const mod of mods) {
+      if (!isMutationWorldModule(mod) || !enabled.has(mod.id)) continue;
+      for (const entry of (Array.isArray(mod.lorebook) ? mod.lorebook : [])) {
+        const content=canonPromptText(entry && entry.content);
+        if (content) mutationCanon.add(content);
+      }
+    }
+    if (!mutationCanon.size) {
+      return {messages,removed:0,chars:0,status:'no-world-entries'};
+    }
+    let removed=0,chars=0;
+    const filtered=messages.filter(row=>{
+      // No substring stripping: only whole system blocks that exactly match
+      // generated Mutation module entries are excluded. This prevents erasing
+      // ordinary story, original lore, unrelated module content or user input.
+      if (!row || row.role !== 'system') return true;
+      const value=canonPromptText(row.content);
+      if (!mutationCanon.has(value)) return true;
+      removed++;chars+=value.length;
+      return false;
+    });
+    return {messages:removed ? filtered : messages,removed,chars,status:'scoped'};
+  }
+
   async function beforeRequest(messages) {
     const promptDiag = {
       capturedAt: Date.now(),
@@ -6439,10 +6487,6 @@
       mutationPromptChars: 0,
     };
     lastPromptDiagnostics = promptDiag;
-    if(storyWorldMode()==='original') {
-      originalModePromptEvidence=scanOriginalPromptEvidence(messages);
-      originalModePromptCapturedAt=Date.now();
-    }
     const perf = {
       id: ++perfSequence,
       startedAt: Date.now(),
@@ -6461,16 +6505,35 @@
       let t = Date.now();
       const activeTarget = await syncTarget();
       perf.syncMs = Date.now() - t;
-      if (!activeTarget) { perf.stage = "no-target"; return messages; }
-      if (storyWorldMode() === "ntr") {
-        const next = [...messages];
+      // A newly opened chat is unselected by default. Even though Mutation's
+      // runtime is OFF, a global Mutation World Canon module may remain enabled
+      // from an entirely different chat. Strip it before any model request.
+      const worldMode = activeTarget ? storyWorldMode() : 'unselected';
+      const scoped = await scopeMutationWorldCanon(messages, worldMode);
+      promptDiag.worldCanonScope = {
+        mode:worldMode,status:scoped.status,
+        removed:scoped.removed,chars:scoped.chars,
+      };
+      if (worldMode === 'original') {
+        originalModePromptEvidence=scanOriginalPromptEvidence(scoped.messages);
+        originalModePromptCapturedAt=Date.now();
+      }
+      if (!activeTarget) {
+        perf.stage = "no-target";
+        promptDiag.after = summarizePromptMessages(scoped.messages);
+        return scoped.messages;
+      }
+      if (worldMode === "ntr") {
+        const next = [...scoped.messages];
         next.splice(Math.max(0, next.length - 1), 0, { role: "system", content: NTR_STORY_DIRECTIVE });
         perf.stage = "ntr-story-direction";
+        promptDiag.after = summarizePromptMessages(next);
         return next;
       }
       if (!mutationMasterEnabled()) {
         perf.stage = "mutation-master-off";
-        return messages;
+        promptDiag.after = summarizePromptMessages(scoped.messages);
+        return scoped.messages;
       }
       const input = latestUserMessage(messages);
       if (!input) { perf.stage = "no-user-input"; return messages; }
