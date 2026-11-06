@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.1.2
+//@version 0.1.3
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Selectively blend an imported character's lore and asset references into the current chat without overwriting existing bots.
 (async () => {
@@ -200,14 +200,28 @@
     }
     return {lookup,active};
   }
+  // Cache alias discovery: a full database scan per displayed message is expensive
+  // for characters with large asset libraries. Scope cache to the chat and expire it.
+  const ALIAS_CACHE_MS=10000;
+  let displayCache=null;
+  function invalidateDisplayCache(){displayCache=null;}
   async function displayAssetCompatibility(content){
     if(destroyed||typeof content!=='string'||!content.includes('{{')
       ||!/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content))return content;
     try{
-      const ctx=await context();
-      const aliases=activeAliases(ctx);
-      if(!aliases.active.length)return content;
-      return rewriteAssetTokens(content,aliases.lookup,ctx.target);
+      const ci=await risuai.getCurrentCharacterIndex();
+      const ti=await risuai.getCurrentChatIndex();
+      const now=Date.now();
+      let cached=displayCache;
+      if(!cached||cached.ci!==ci||cached.ti!==ti||now-cached.at>ALIAS_CACHE_MS){
+        const ctx=await context();
+        const aliases=activeAliases(ctx);
+        cached={ci:ctx.ci,ti:ctx.ti,at:now,lookup:aliases.lookup,
+          hasActive:aliases.active.length>0,target:ctx.target};
+        displayCache=cached;
+      }
+      if(!cached.hasActive)return content;
+      return rewriteAssetTokens(content,cached.lookup,cached.target);
     }catch(error){
       console.log('[CharacterMixer] asset preview fallback:',error?.message||error);
       return content;
@@ -338,6 +352,7 @@
         catch(rollbackError){console.log('[CharacterMixer] module rollback failed',rollbackError);}
         throw error;
       }
+      invalidateDisplayCache();
       await remember(previous?'업데이트':'추가',ctx,src,built);
       message=clip(src.name,90)+' 편입 완료 · 로어 '+built.lorebook.length+'개 / 에셋 '+built.assets.length+'개 / 현재 채팅만';
     }catch(e){message='적용 중단 · '+str(e?.message||e);}
@@ -353,6 +368,7 @@
       const live=await assertStillCurrent(ctx);
       const next={...live,modules:asArray(live.modules).filter(id=>id!==moduleId)};
       await risuai.setChatToIndex(ctx.ci,ctx.ti,next);
+      invalidateDisplayCache();
       await remember('해제',ctx,{name:module.name},module);
       message='현재 채팅에서 편입 해제 완료 · 기존 채팅 기록과 원본 모듈은 보존';
     }catch(e){message='해제 중단 · '+str(e?.message||e);}
@@ -396,7 +412,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.1.2</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.1.3</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>A · 추가할 대상</h3><p>봇: <b>'+esc(ctx.target.name)+'</b> · 채팅: <b>'+esc(ctx.chat.name||ctx.chat.id)+'</b></p>'+
         '<p class="muted">이 채팅에만 적용. A·B 원본 캐릭터/첫 메시지/채팅 메시지를 수정하지 않아.</p></section>'+
