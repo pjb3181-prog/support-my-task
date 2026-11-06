@@ -706,7 +706,7 @@
       const ctx=await context(true);
       const active=installedInChat(ctx);
       const existing=active.map(metadataOf).find(meta=>meta&&meta.sourceId);
-      if(existing&&(available(ctx.db,ctx.target.chaId).some(bot=>bot.chaId===existing.sourceId)||packLibrary.some(p=>'pack:'+p.id===existing.sourceId))){
+      if(!sourceId&&existing&&(available(ctx.db,ctx.target.chaId).some(bot=>bot.chaId===existing.sourceId)||packLibrary.some(p=>'pack:'+p.id===existing.sourceId))){
         sourceId=existing.sourceId;
         extraSourceIds=new Set(asArray(existing.sourceIds).filter(id=>id!==sourceId));
       }
