@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.3.0
+//@version 0.4.0-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Selectively blend an imported character's lore and asset references into the current chat without overwriting existing bots.
 (async () => {
@@ -10,6 +10,7 @@
   const MARK='[CHARACTER_MIXER_V1]';
   const LOG='character_mixer_v01_activity';
   const PACK_STORE='character_mixer_library_v1';
+  const ARCHIVE_MARK='[CHARACTER_MIXER_ARCHIVE_V1]';
   let packLibrary=[];
   const PROFILE_LIMIT=6000, LORE_LIMIT=30000;
   let destroyed=false, busy=false, opened=false, message='', sourceId='';
@@ -361,6 +362,30 @@
     }catch(e){message='내보내기 실패 · '+str(e?.message||e);}
     await render();
   }
+
+  function bytesOf(data){
+    if(data instanceof Uint8Array)return data;
+    if(data instanceof ArrayBuffer)return new Uint8Array(data);
+    if(ArrayBuffer.isView(data))return new Uint8Array(data.buffer,data.byteOffset,data.byteLength);
+    if(Array.isArray(data)&&data.every(v=>Number.isInteger(v)&&v>=0&&v<=255))return new Uint8Array(data);
+    // The plugin API is not guaranteed to return binary for every URI.
+    return null;
+  }
+  function archivedModuleId(id){return 'character-mixer-pack-archive-'+str(id).replace(/[^a-zA-Z0-9_-]/g,'');}
+  async function independentlySaveAsset(path){
+    if(typeof risuai.readImage!=='function'||typeof risuai.saveAsset!=='function')
+      throw Error('RisuBard에서 readImage/saveAsset API를 사용할 수 없어');
+    const raw=bytesOf(await risuai.readImage(path));
+    if(!raw||!raw.length)throw Error('에셋을 읽을 수 없거나 빈 파일이야: '+clip(path,100));
+    const stored=await risuai.saveAsset(raw);
+    if(!safePath(stored))throw Error('새 에셋 저장 경로가 올바르지 않아');
+    const check=bytesOf(await risuai.readImage(stored));
+    if(!check||check.length!==raw.length)throw Error('복제 후 재검증 실패: '+clip(path,100));
+    // Compare complete bytes; inexpensive versus the I/O just performed.
+    for(let i=0;i<raw.length;i++)if(raw[i]!==check[i])
+      throw Error('복제 이미지가 원본과 달라: '+clip(path,100));
+    return {path:stored,bytes:raw.length};
+  }
   async function extractPack(){
     if(busy)return;
     busy=true;
@@ -369,11 +394,15 @@
       if(!src)throw Error('추출할 캐릭터를 선택해.');
       const others=available(ctx.db,ctx.target.chaId)
         .filter(x=>x.chaId!==src.chaId&&extraSourceIds.has(x.chaId));
-      const bots=[src,...others],paths=new Set(),assets=[],lores=[],loreKeys=new Set();
+      const bots=[src,...others],paths=new Map(),assets=[],lores=[],loreKeys=new Set(),failed=[];
+      const previousId=sourceId.startsWith('pack:')?sourceId.slice(5):'';
+      const id=previousId||shortId();
+      const previous=packLibrary.find(p=>p.id===id);
+      // Preserve existing assets and augment them when re-extracting an existing pack.
       for(const bot of bots){
-        for(const x of readAssetPairs(bot,ctx)){
-          if(paths.has(x.path))continue;
-          paths.add(x.path);assets.push([x.name,x.path,x.ext]);
+        for(const asset of readAssetPairs(bot,ctx)){
+          if(paths.has(asset.path))continue;
+          paths.set(asset.path,asset);
         }
         for(const item of loreOf(bot)){
           if(str(item.content).trim().startsWith('@@indicator'))continue;
@@ -382,20 +411,67 @@
           loreKeys.add(key);lores.push(safeClone(item));
         }
       }
-      const previousId=sourceId.startsWith('pack:')?sourceId.slice(5):'';
-      const id=previousId||shortId();
+      const seenSaved=new Map(),usedNames=new Set();
+      let copied=0,reused=0;
+      for(const asset of paths.values()){
+        const previousAsset=asArray(previous?.snapshot?.additionalAssets)
+          .find(x=>Array.isArray(x)&&str(x[1])===asset.path);
+        const originPath=asset.path;
+        let newPath=seenSaved.get(originPath);
+        if(!newPath){
+          try{
+            // When updating an existing pack the archive itself is already independent.
+            if(previousAsset&&previous?.binaryCopied===true){
+              const verified=bytesOf(await risuai.readImage(originPath));
+              if(!verified||!verified.length)throw Error('보관된 에셋 손상');
+              newPath=originPath;reused++;
+            }else{
+              const result=await independentlySaveAsset(originPath);
+              newPath=result.path;copied++;
+            }
+          }catch(e){
+            failed.push(clip(asset.name,70)+' : '+str(e?.message||e));continue;
+          }
+          seenSaved.set(originPath,newPath);
+        }
+        let assetName=asset.name,number=2;
+        while(usedNames.has(assetName)){assetName=asset.name+'_'+number;number++;}
+        usedNames.add(assetName);
+        assets.push([assetName,newPath,asset.ext]);
+      }
+      if(failed.length)throw Error('이미지 '+failed.length+'개 복사 실패. 저장을 중단했어. 첫 오류: '+failed[0]);
       const snapshot={name:str(src.name),desc:str(src.desc),personality:str(src.personality),
         scenario:str(src.scenario),exampleMessage:str(src.exampleMessage),
         firstMessage:str(src.firstMessage),globalLore:lores,
         additionalAssets:assets,emotionImages:[],ccAssets:[],modules:[]};
       const record={id,name:src.name,updatedAt:Date.now(),
-        sources:bots.map(b=>({id:b.chaId,name:b.name})),snapshot};
+        sources:bots.map(b=>({id:b.chaId,name:b.name})),binaryCopied:true,snapshot};
+      const archiveId=archivedModuleId(id);
+      const archive={
+        id:archiveId,name:'Character Mixer Archive · '+clip(src.name,70),
+        description:ARCHIVE_MARK+JSON.stringify({packId:id,version:1}),
+        lorebook:[],assets:assets.map(x=>[x[0],x[1],x[2]]),
+        namespace:'character-mixer-archive'
+      };
+      // Keep copied binary assets referenced from a permanent (but inactive)
+      // library module so they are not dependent on the original character.
+      const currentDb=await risuai.getDatabase();
+      const moduleBefore=asArray(currentDb.modules);
+      const moduleAfter=[...moduleBefore.filter(x=>x?.id!==archiveId),archive];
+      await risuai.setDatabaseLite({modules:moduleAfter});
       const oldLibrary=packLibrary;
       packLibrary=[record,...packLibrary.filter(p=>p.id!==id)];
-      try{await savePacks();}catch(e){packLibrary=oldLibrary;throw e;}
+      try{await savePacks();}
+      catch(e){
+        packLibrary=oldLibrary;
+        try{await risuai.setDatabaseLite({modules:moduleBefore});}
+        catch(rollback){console.error('[CharacterMixer] archive rollback failed',rollback);}
+        throw e;
+      }
       sourceId='pack:'+id;extraSourceIds.clear();loreChoices.clear();moduleChoices.clear();
-      message='캐릭터 팩 저장 완료 · 이미지 참조 '+assets.length+'개 / 로어 '+lores.length+
-        '개 · 원본 이미지 파일은 별도 보존 필요';
+      invalidateDisplayCache();
+      message='독립 캐릭터 팩 저장 완료 · 파일 복제 '+copied+'개 / 재사용 '+reused+
+        '개 / 전체 '+assets.length+'개 · 저장 후 바이트 검증 완료';
     }catch(e){message='추출 실패 · '+str(e?.message||e);}
     finally{busy=false;await render();}
   }
@@ -504,7 +580,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.3.0</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.4.0-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>A · 추가할 대상</h3><p>봇: <b>'+esc(ctx.target.name)+'</b> · 채팅: <b>'+esc(ctx.chat.name||ctx.chat.id)+'</b></p>'+
         '<p class="muted">이 채팅에만 적용. A·B 원본 캐릭터/첫 메시지/채팅 메시지를 수정하지 않아.</p></section>'+
@@ -517,7 +593,7 @@
         '<p class="muted">보조 봇은 같은 캐릭터의 추가 자료로 합쳐져. 이미지 경로가 같으면 중복 등록하지 않아.</p>'+
         '<button type="button" id="cm-extract">독립 캐릭터 팩으로 추출·저장</button>'+
         '<button type="button" id="cm-export">선택한 저장 팩 JSON 내보내기</button>'+
-        '<p class="muted">팩은 위 목록에서 [PACK]으로 표시돼. 봇 설정과 에셋 참조는 별도로 저장하지만 이미지 원본 파일은 복사하지 않아. 원본 파일 삭제 전 백업이 필요해.</p>'+
+        '<p class="muted">팩은 위 목록에서 [PACK]으로 표시돼. 저장 시 이미지 데이터를 RisuBard 에셋 저장소에 별도 복제하고 검증해. 복제 실패 시 팩은 갱신하지 않아.</p>'+
         '<label>세계관 합성<select id="cm-mode"><option value="adapt" '+(choices.mode==='adapt'?'selected':'')+
         '>A 세계관에 편입 (기본)</option><option value="original" '+(choices.mode==='original'?'selected':'')+
         '>B 원래 출신 유지</option></select></label>'+
