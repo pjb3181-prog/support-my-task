@@ -57,8 +57,12 @@
     if(saved)return {...safeClone(saved.snapshot),chaId:'pack:'+saved.id};
     const sources=available(ctx.db,ctx.target.chaId);
     if(!sources.some(x=>x.chaId===sourceId)){
-      sourceId=sources[0]?.chaId||'';
+      sourceId=sources[0]?.chaId||(packLibrary[0]?'pack:'+packLibrary[0].id:'');
       loreChoices=new Set();moduleChoices=new Set();extraSourceIds=new Set();
+    }
+    if(sourceId.startsWith('pack:')){
+      const fallback=packLibrary.find(p=>'pack:'+p.id===sourceId);
+      return fallback?{...safeClone(fallback.snapshot),chaId:sourceId}:null;
     }
     return sources.find(x=>x.chaId===sourceId)||null;
   }
@@ -343,6 +347,20 @@
     }catch(e){console.warn('[CharacterMixer] pack loading failed',e);packLibrary=[];}
   }
   async function savePacks(){await risuai.pluginStorage.setItem(PACK_STORE,packLibrary);}
+  async function exportPackJson(){
+    try{
+      const pack=packLibrary.find(p=>'pack:'+p.id===sourceId);
+      if(!pack)throw Error('내보낼 저장 팩을 선택해.');
+      const json=JSON.stringify({format:'character-mixer-pack-v1',record:pack},null,2);
+      const blob=new Blob([json],{type:'application/json'});
+      const url=URL.createObjectURL(blob),a=document.createElement('a');
+      a.href=url;a.download=label(pack.name)+'_character_pack.json';
+      document.body.appendChild(a);a.click();a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),5000);
+      message='캐릭터 팩 JSON 내보내기 시작 · 이미지 원본 바이너리는 포함되지 않아';
+    }catch(e){message='내보내기 실패 · '+str(e?.message||e);}
+    await render();
+  }
   async function extractPack(){
     if(busy)return;
     busy=true;
@@ -498,6 +516,7 @@
           '<span><b>'+esc(bot.name)+'</b><small>에셋 '+(asArray(bot.additionalAssets).length+asArray(bot.emotionImages).length+asArray(bot.ccAssets).length)+'개 · 로어 '+loreOf(bot).length+'개</small></span></label>').join(''):'<p class="muted">다른 봇이 없어.</p>')+
         '<p class="muted">보조 봇은 같은 캐릭터의 추가 자료로 합쳐져. 이미지 경로가 같으면 중복 등록하지 않아.</p>'+
         '<button type="button" id="cm-extract">독립 캐릭터 팩으로 추출·저장</button>'+
+        '<button type="button" id="cm-export">선택한 저장 팩 JSON 내보내기</button>'+
         '<p class="muted">팩은 위 목록에서 [PACK]으로 표시돼. 봇 설정과 에셋 참조는 별도로 저장하지만 이미지 원본 파일은 복사하지 않아. 원본 파일 삭제 전 백업이 필요해.</p>'+
         '<label>세계관 합성<select id="cm-mode"><option value="adapt" '+(choices.mode==='adapt'?'selected':'')+
         '>A 세계관에 편입 (기본)</option><option value="original" '+(choices.mode==='original'?'selected':'')+
@@ -564,6 +583,7 @@
         void render();
       };
       el('cm-extract').onclick=()=>void extractPack();
+      el('cm-export').onclick=()=>void exportPackJson();
       el('cm-apply').onclick=()=>void apply();
       for(const node of document.querySelectorAll('[data-cm-remove]'))
         node.onclick=()=>void detach(str(node.getAttribute('data-cm-remove')));
