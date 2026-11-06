@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.1.3
+//@version 0.2.0-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Selectively blend an imported character's lore and asset references into the current chat without overwriting existing bots.
 (async () => {
@@ -13,7 +13,7 @@
   let destroyed=false, busy=false, opened=false, message='', sourceId='';
   let choices={mode:'adapt',notes:'',description:true,personality:true,scenario:false,
     examples:false,greeting:false,assets:true,emotions:true,moduleAssets:true,moduleLore:false};
-  let loreChoices=new Set(),moduleChoices=new Set();
+  let loreChoices=new Set(),moduleChoices=new Set(),extraSourceIds=new Set();
   const str=v=>String(v??'');
   const esc=v=>str(v).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[ch]));
   const safeClone=obj=>JSON.parse(JSON.stringify(obj));
@@ -54,7 +54,7 @@
     const sources=available(ctx.db,ctx.target.chaId);
     if(!sources.some(x=>x.chaId===sourceId)){
       sourceId=sources[0]?.chaId||'';
-      loreChoices=new Set();moduleChoices=new Set();
+      loreChoices=new Set();moduleChoices=new Set();extraSourceIds=new Set();
     }
     return sources.find(x=>x.chaId===sourceId)||null;
   }
@@ -274,14 +274,38 @@
     return lores;
   }
   function createModule(ctx,src,existing=null){
-    const assets=readAssetPairs(src,ctx);
-    const info=makeProfile(src,assets);
+    const extras=available(ctx.db,ctx.target.chaId).filter(x=>x.chaId!==src.chaId&&extraSourceIds.has(x.chaId));
+    const sourceBots=[src,...extras];
+    const assets=[],aliasRows=[],byPath=new Map();
+    for(const bot of sourceBots){
+      for(const asset of readAssetPairs(bot,ctx)){
+        let canonical=byPath.get(asset.path);
+        if(!canonical){canonical=asset;byPath.set(asset.path,canonical);assets.push(asset);}
+        aliasRows.push([asset.original,canonical.name]);
+      }
+    }
+    const info=makeProfile(src,assets)+extras.map(x=>'\n[Same-character supplemental material: '+clip(x.name,70)+']\n'+
+      (choices.description?clip(x.desc,650):'')+
+      (choices.personality?'\n'+clip(x.personality,350):'')).join('');
     const key=clip(src.name,80);
     const lore=[{
       id:shortId(),key,secondkey:'',insertorder:0,comment:'[Character Mixer] '+key+' · 등장인물 기준',
-      content:info,mode:'constant',alwaysActive:true,selective:false,enabled:true
+      content:info.slice(0,PROFILE_LIMIT),mode:'constant',alwaysActive:true,selective:false,enabled:true
     }];
-    for(const item of chooseLore(src,ctx)){
+    const allLore=chooseLore(src,ctx);
+    for(const bot of extras){
+      for(const entry of loreOf(bot)){
+        if(str(entry.content).trim().startsWith('@@indicator'))continue;
+        allLore.push({source:str(bot.name),entry});
+      }
+    }
+    if(allLore.reduce((n,item)=>n+str(item.entry.content).length,0)>LORE_LIMIT)
+      throw Error('통합 로어북이 '+LORE_LIMIT+'자를 초과해. 보조 봇을 줄여줘.');
+    const seenLore=new Set();
+    for(const item of allLore){
+      const loreKey=str(item.entry.key)+'|'+str(item.entry.content);
+      if(seenLore.has(loreKey))continue;
+      seenLore.add(loreKey);
       const source=item.entry;
       lore.push({
         ...safeClone(source),id:shortId(),
@@ -293,9 +317,9 @@
       });
     }
     const extra= {
-      sourceId:src.chaId,targetCharacterId:ctx.target.chaId,targetChatId:ctx.chat.id,
-      mode:choices.mode,version:2,
-      assetAliases:assets.map(x=>[x.original,x.name])
+      sourceId:src.chaId,sourceIds:sourceBots.map(x=>x.chaId),targetCharacterId:ctx.target.chaId,targetChatId:ctx.chat.id,
+      mode:choices.mode,version:3,
+      assetAliases:aliasRows
     };
     return {
       id:existing?.id||shortId(),
@@ -389,6 +413,7 @@
       const active=installedInChat(ctx);
       const availableLore=src?loreOf(src):[];
       const availableModules=src?optionalModuleList(ctx,src):[];
+      const extraCandidates=sources.filter(x=>x.chaId!==sourceId);
       const installedHtml=active.length?active.map(m=>'<div class="installed"><span><b>'+
         esc(m.name)+'</b><small>이 채팅에 연결됨 · 로어 '+asArray(m.lorebook).length+
         '개 / 에셋 '+asArray(m.assets).length+'개</small></span>'+
@@ -412,13 +437,17 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.1.3</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.2.0-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>A · 추가할 대상</h3><p>봇: <b>'+esc(ctx.target.name)+'</b> · 채팅: <b>'+esc(ctx.chat.name||ctx.chat.id)+'</b></p>'+
         '<p class="muted">이 채팅에만 적용. A·B 원본 캐릭터/첫 메시지/채팅 메시지를 수정하지 않아.</p></section>'+
         '<section><h3>B · 가져올 캐릭터</h3><label>기존에 설치된 B 봇<select id="cm-source">'+
         (sources.length?sources.map(renderOption).join(''):'<option value="">다른 봇이 없어</option>')+'</select></label>'+
         (src?'<p class="muted">원본: '+esc(src.name)+' · 로어 '+availableLore.length+'개 / 보유 에셋 '+(asArray(src.additionalAssets).length+asArray(src.emotionImages).length+asArray(src.ccAssets).length)+'개</p>':'')+
+        '<label>같은 캐릭터 자료를 합칠 보조 봇</label>'+
+        (extraCandidates.length?extraCandidates.map(bot=>'<label class="item"><input type="checkbox" data-cm-extra="'+esc(bot.chaId)+'" '+(extraSourceIds.has(bot.chaId)?'checked':'')+'/>'+
+          '<span><b>'+esc(bot.name)+'</b><small>에셋 '+(asArray(bot.additionalAssets).length+asArray(bot.emotionImages).length+asArray(bot.ccAssets).length)+'개 · 로어 '+loreOf(bot).length+'개</small></span></label>').join(''):'<p class="muted">다른 봇이 없어.</p>')+
+        '<p class="muted">보조 봇은 같은 캐릭터의 추가 자료로 합쳐져. 이미지 경로가 같으면 중복 등록하지 않아.</p>'+
         '<label>세계관 합성<select id="cm-mode"><option value="adapt" '+(choices.mode==='adapt'?'selected':'')+
         '>A 세계관에 편입 (기본)</option><option value="original" '+(choices.mode==='original'?'selected':'')+
         '>B 원래 출신 유지</option></select></label>'+
@@ -461,6 +490,10 @@
       el('cm-notes').onchange=e=>{choices.notes=clip(e.target.value,1200);};
       for(const node of document.querySelectorAll('[data-cm-flag]')){
         node.onchange=e=>{choices[node.getAttribute('data-cm-flag')]=Boolean(e.target.checked);};
+      }
+      for(const node of document.querySelectorAll('[data-cm-extra]')){
+        node.onchange=e=>{const id=str(node.getAttribute('data-cm-extra'));
+          if(e.target.checked)extraSourceIds.add(id);else extraSourceIds.delete(id);};
       }
       for(const node of document.querySelectorAll('[data-cm-lore]')){
         node.onchange=e=>{
