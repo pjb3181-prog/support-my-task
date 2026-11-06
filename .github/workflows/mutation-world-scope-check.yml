@@ -1,0 +1,30 @@
+name: Mutation world opt-in scope regression
+on:
+  push:
+    branches:
+      - main
+      - feature/mutation-world-scope-v0795-20261106
+    paths:
+      - 'risubard-updates/mutation_state.ts'
+      - 'risubard-updates/tests/mutation_world_scope.test.cjs'
+      - '.github/workflows/mutation-world-scope-check.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'risubard-updates/mutation_state.ts'
+      - 'risubard-updates/tests/mutation_world_scope.test.cjs'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check Mutation State extension syntax
+        run: node --check risubard-updates/mutation_state.ts
+      - name: Validate request-time world opt-in and no data writes
+        run: node --test risubard-updates/tests/mutation_world_scope.test.cjs
