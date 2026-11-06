@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.4.0
+//@version 0.4.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Selectively blend an imported character's lore and asset references into the current chat without overwriting existing bots.
 (async () => {
@@ -34,19 +34,39 @@
   function available(db,targetId){
     return charactersOf(db).filter(x=>x.chaId&&x.chaId!==targetId);
   }
-  async function context(){
+  async function context(allowLibraryOnly=false){
     if(typeof risuai.getDatabase!=='function')throw Error('플러그인 데이터 접근 API가 없어');
+    const db=await risuai.getDatabase();
+    if(!db||!Array.isArray(db.characters)||!Array.isArray(db.modules))
+      throw Error('RisuBard 데이터베이스를 읽을 수 없어');
+    const library=()=>({
+      db,ci:-1,ti:-1,libraryOnly:true,
+      target:{chaId:'__character_mixer_library__',name:'독립 캐릭터 라이브러리'},
+      chat:{id:'__library_view__',name:'라이브러리',modules:[]}
+    });
     if(typeof risuai.getCurrentCharacterIndex!=='function'||typeof risuai.getCurrentChatIndex!=='function'
-      ||typeof risuai.getChatFromIndex!=='function'||typeof risuai.setChatToIndex!=='function'
-      ||typeof risuai.setDatabaseLite!=='function')
-      throw Error('현재 RisuBard에서 필요한 채팅별 저장 API를 지원하지 않아');
-    const db=await risuai.getDatabase(),ci=await risuai.getCurrentCharacterIndex(),
+       ||typeof risuai.getChatFromIndex!=='function'||typeof risuai.setChatToIndex!=='function'
+       ||typeof risuai.setDatabaseLite!=='function'){
+      if(allowLibraryOnly)return library();
+      throw Error('현재 RisuBard에서 필요한 채팅 저장 API를 지원하지 않아');
+    }
+    let ci,ti,chat;
+    try{
+      ci=await risuai.getCurrentCharacterIndex();
+      // Some RisuBard builds throw internally when no character is selected:
+      // getCurrentChatIndex accesses characters[ci].chatPage without a guard.
+      if(!Number.isInteger(ci)||ci<0||ci>=db.characters.length||!db.characters[ci]?.chaId)
+        throw Error('현재 선택된 캐릭터가 없어');
       ti=await risuai.getCurrentChatIndex();
-    if(!db||!Array.isArray(db.characters)||!Array.isArray(db.modules)
-       ||!Number.isInteger(ci)||!Number.isInteger(ti))throw Error('RisuBard 데이터베이스를 읽을 수 없어');
-    const target=db.characters[ci],chat=await risuai.getChatFromIndex(ci,ti);
-    if(!target?.chaId||!chat?.id||chat._placeholder)throw Error('현재 채팅이 완전히 로드되지 않았거나 식별자가 없어');
-    return {db,ci,ti,target,chat};
+      if(!Number.isInteger(ti)||ti<0)throw Error('채팅 인덱스가 유효하지 않아');
+      chat=await risuai.getChatFromIndex(ci,ti);
+      if(!chat?.id||chat._placeholder)throw Error('채팅이 완전히 로드되지 않았어');
+    }catch(error){
+      if(allowLibraryOnly)return library();
+      throw Error('채팅 대상 조회 실패. 캐릭터의 실제 채팅을 연 뒤 다시 시도해. ('+
+        str(error?.message||error)+')');
+    }
+    return {db,ci,ti,target:db.characters[ci],chat,libraryOnly:false};
   }
   function installedInChat(ctx){
     const ids=new Set(asArray(ctx.chat.modules));
@@ -390,7 +410,7 @@
     if(busy)return;
     busy=true;
     try{
-      const ctx=await context(),src=presentSource(ctx);
+      const ctx=await context(true),src=presentSource(ctx);
       if(!src)throw Error('추출할 캐릭터를 선택해.');
       const others=available(ctx.db,ctx.target.chaId)
         .filter(x=>x.chaId!==src.chaId&&extraSourceIds.has(x.chaId));
@@ -552,7 +572,7 @@
   async function render(){
     if(!opened||destroyed)return;
     try{
-      const ctx=await context(),sources=[...available(ctx.db,ctx.target.chaId),...packLibrary.map(p=>({chaId:'pack:'+p.id,name:'[PACK] '+p.name}))],src=presentSource(ctx);
+      const ctx=await context(true),sources=[...available(ctx.db,ctx.target.chaId),...packLibrary.map(p=>({chaId:'pack:'+p.id,name:'[PACK] '+p.name}))],src=presentSource(ctx);
       const active=installedInChat(ctx);
       const availableLore=src?loreOf(src):[];
       const availableModules=src?optionalModuleList(ctx,src):[];
@@ -580,10 +600,10 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.4.0</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.4.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>A · 추가할 대상</h3><p>봇: <b>'+esc(ctx.target.name)+'</b> · 채팅: <b>'+esc(ctx.chat.name||ctx.chat.id)+'</b></p>'+
-        '<p class="muted">이 채팅에만 적용. A·B 원본 캐릭터/첫 메시지/채팅 메시지를 수정하지 않아.</p></section>'+
+        '<p class="muted">'+(ctx.libraryOnly?'현재 채팅이 선택되지 않아 라이브러리 모드야. 팩 추출은 가능하지만 채팅에 적용하려면 실제 채팅을 열어야 해.':'이 채팅에만 적용. A·B 원본 캐릭터/첫 메시지/채팅 메시지를 수정하지 않아.')+'</p></section>'+
         '<section><h3>B · 가져올 캐릭터</h3><label>기존에 설치된 B 봇<select id="cm-source">'+
         (sources.length?sources.map(renderOption).join(''):'<option value="">다른 봇이 없어</option>')+'</select></label>'+
         (src?'<p class="muted">원본: '+esc(src.name)+' · 로어 '+availableLore.length+'개 / 보유 에셋 '+(asArray(src.additionalAssets).length+asArray(src.emotionImages).length+asArray(src.ccAssets).length)+'개</p>':'')+
@@ -627,7 +647,7 @@
         diagnostic+
         '<p class="status">'+esc(message||'선택 사항을 확인한 다음 아래 버튼으로 현재 채팅에 적용해.')+'</p>'+
         '<div class="top"><p class="muted">원본 보존 · 채팅별 적용 · 스크립트/트리거 실행 제외</p>'+
-        '<button id="cm-apply" class="primary" '+(!src||busy?'disabled':'')+'>현재 채팅에 B 추가/업데이트</button></div>'+
+        '<button id="cm-apply" class="primary" '+(!src||busy||ctx.libraryOnly?'disabled':'')+'>현재 채팅에 B 추가/업데이트</button></div>'+
         '</main>';
       const el=id=>document.getElementById(id);
       el('cm-close').onclick=()=>{opened=false;void risuai.hideContainer();};
@@ -674,7 +694,7 @@
     opened=true;message='';
     await loadPacks();
     try{
-      const ctx=await context();
+      const ctx=await context(true);
       const active=installedInChat(ctx);
       const existing=active.map(metadataOf).find(meta=>meta&&meta.sourceId);
       if(existing&&(available(ctx.db,ctx.target.chaId).some(bot=>bot.chaId===existing.sourceId)||packLibrary.some(p=>'pack:'+p.id===existing.sourceId))){
