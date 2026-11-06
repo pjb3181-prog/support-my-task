@@ -69,7 +69,7 @@
   }
   function optionalModuleList(ctx,src){
     const fromChar=new Set(asArray(src?.modules));
-    return modulesOf(ctx.db).filter(m=>m?.id&&!generated(m))
+    return modulesOf(ctx.db).filter(m=>m?.id&&!generated(m)&&!str(m.description).startsWith(ARCHIVE_MARK))
       .map(m=>({...m,_belongs:fromChar.has(m.id)}))
       .sort((a,b)=>Number(b._belongs)-Number(a._belongs));
   }
@@ -378,7 +378,7 @@
     const raw=bytesOf(await risuai.readImage(path));
     if(!raw||!raw.length)throw Error('에셋을 읽을 수 없거나 빈 파일이야: '+clip(path,100));
     const stored=await risuai.saveAsset(raw);
-    if(!safePath(stored))throw Error('새 에셋 저장 경로가 올바르지 않아');
+    if(!safePath(stored)||!stored.startsWith('assets/'))throw Error('독립 저장 경로가 아닌 에셋이 반환됐어');
     const check=bytesOf(await risuai.readImage(stored));
     if(!check||check.length!==raw.length)throw Error('복제 후 재검증 실패: '+clip(path,100));
     // Compare complete bytes; inexpensive versus the I/O just performed.
@@ -445,7 +445,7 @@
         firstMessage:str(src.firstMessage),globalLore:lores,
         additionalAssets:assets,emotionImages:[],ccAssets:[],modules:[]};
       const record={id,name:src.name,updatedAt:Date.now(),
-        sources:bots.map(b=>({id:b.chaId,name:b.name})),binaryCopied:true,snapshot};
+        sources:bots.map(b=>({id:b.chaId,name:b.name})),binaryCopied:true,assetCount:assets.length,snapshot};
       const archiveId=archivedModuleId(id);
       const archive={
         id:archiveId,name:'Character Mixer Archive · '+clip(src.name,70),
@@ -471,7 +471,7 @@
       sourceId='pack:'+id;extraSourceIds.clear();loreChoices.clear();moduleChoices.clear();
       invalidateDisplayCache();
       message='독립 캐릭터 팩 저장 완료 · 파일 복제 '+copied+'개 / 재사용 '+reused+
-        '개 / 전체 '+assets.length+'개 · 저장 후 바이트 검증 완료';
+        '개 / 전체 '+assets.length+'개 · 저장 후 바이트 검증 완료 (원본 봇 삭제와 무관하게 보관 모듈 참조 유지)';
     }catch(e){message='추출 실패 · '+str(e?.message||e);}
     finally{busy=false;await render();}
   }
