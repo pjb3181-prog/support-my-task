@@ -2,7 +2,7 @@
 //@display-name Character Mixer
 //@api 3.0
 //@version 0.2.0-beta.1
-//@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
+//@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/feature/character-pack-merge/risubard-updates/character_mixer.js
 //@description Selectively blend an imported character's lore and asset references into the current chat without overwriting existing bots.
 (async () => {
   'use strict';
@@ -524,6 +524,15 @@
   }
   async function open(){
     opened=true;message='';
+    try{
+      const ctx=await context();
+      const active=installedInChat(ctx);
+      const existing=active.map(metadataOf).find(meta=>meta&&meta.sourceId);
+      if(existing&&available(ctx.db,ctx.target.chaId).some(bot=>bot.chaId===existing.sourceId)){
+        sourceId=existing.sourceId;
+        extraSourceIds=new Set(asArray(existing.sourceIds).filter(id=>id!==sourceId));
+      }
+    }catch(error){console.log('[CharacterMixer] pack selection restore fallback:',error?.message||error);}
     await render();
     await risuai.showContainer('fullscreen');
   }
