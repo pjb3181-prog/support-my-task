@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.4.1
+//@version 0.5.0
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Selectively blend an imported character's lore and asset references into the current chat without overwriting existing bots.
 (async () => {
@@ -12,6 +12,7 @@
   const PACK_STORE='character_mixer_library_v1';
   const ARCHIVE_MARK='[CHARACTER_MIXER_ARCHIVE_V1]';
   let packLibrary=[];
+  let legacyPanelOpen=false;
   const PROFILE_LIMIT=6000, LORE_LIMIT=30000;
   let destroyed=false, busy=false, opened=false, message='', sourceId='';
   let choices={mode:'adapt',notes:'',description:true,personality:true,scenario:false,
@@ -600,24 +601,26 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.4.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.5.0</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
-        '<section><h3>A · 추가할 대상</h3><p>봇: <b>'+esc(ctx.target.name)+'</b> · 채팅: <b>'+esc(ctx.chat.name||ctx.chat.id)+'</b></p>'+
-        '<p class="muted">'+(ctx.libraryOnly?'현재 채팅이 선택되지 않아 라이브러리 모드야. 팩 추출은 가능하지만 채팅에 적용하려면 실제 채팅을 열어야 해.':'이 채팅에만 적용. A·B 원본 캐릭터/첫 메시지/채팅 메시지를 수정하지 않아.')+'</p></section>'+
-        '<section><h3>B · 가져올 캐릭터</h3><label>기존에 설치된 B 봇<select id="cm-source">'+
+        '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
+        '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
+        (packLibrary.length?packLibrary.map(p=>'<div class="installed"><span><b>📦 '+esc(p.name)+'</b><small>로어 '+loreOf(p.snapshot).length+'개 / 에셋 '+asArray(p.snapshot.additionalAssets).length+'개'+(p.binaryCopied?' · 이미지 복제 기록 있음':' · 이미지 참조만 저장됨')+'</small></span>'+
+        '<button type="button" data-cm-select-pack="'+esc(p.id)+'">팩 선택</button></div>').join(''):'<p class="muted">저장된 캐릭터 팩이 없어. 아래에서 원본 봇을 선택해 추출해.</p>')+'</section>'+
+        '<section><h3>캐릭터 추출 · 자료 통합</h3><label>추출할 원본 캐릭터 또는 저장된 팩<select id="cm-source">'+
         (sources.length?sources.map(renderOption).join(''):'<option value="">다른 봇이 없어</option>')+'</select></label>'+
         (src?'<p class="muted">원본: '+esc(src.name)+' · 로어 '+availableLore.length+'개 / 보유 에셋 '+(asArray(src.additionalAssets).length+asArray(src.emotionImages).length+asArray(src.ccAssets).length)+'개</p>':'')+
         '<label>같은 캐릭터 자료를 합칠 보조 봇</label>'+
         (extraCandidates.length?extraCandidates.map(bot=>'<label class="item"><input type="checkbox" data-cm-extra="'+esc(bot.chaId)+'" '+(extraSourceIds.has(bot.chaId)?'checked':'')+'/>'+
           '<span><b>'+esc(bot.name)+'</b><small>에셋 '+(asArray(bot.additionalAssets).length+asArray(bot.emotionImages).length+asArray(bot.ccAssets).length)+'개 · 로어 '+loreOf(bot).length+'개</small></span></label>').join(''):'<p class="muted">다른 봇이 없어.</p>')+
         '<p class="muted">보조 봇은 같은 캐릭터의 추가 자료로 합쳐져. 이미지 경로가 같으면 중복 등록하지 않아.</p>'+
-        '<button type="button" id="cm-extract">독립 캐릭터 팩으로 추출·저장</button>'+
+        '<button type="button" id="cm-extract" class="primary">독립 캐릭터 팩 저장 (채팅 연결 없음)</button>'+
         '<button type="button" id="cm-export">선택한 저장 팩 JSON 내보내기</button>'+
         '<p class="muted">팩은 위 목록에서 [PACK]으로 표시돼. 저장 시 이미지 데이터를 RisuBard 에셋 저장소에 별도 복제하고 검증해. 복제 실패 시 팩은 갱신하지 않아.</p>'+
-        '<label>세계관 합성<select id="cm-mode"><option value="adapt" '+(choices.mode==='adapt'?'selected':'')+
+        '<details><summary>선택 사항 · 다른 세계관에 불러올 때의 설정</summary><label>세계관 합성<select id="cm-mode"><option value="adapt" '+(choices.mode==='adapt'?'selected':'')+
         '>A 세계관에 편입 (기본)</option><option value="original" '+(choices.mode==='original'?'selected':'')+
         '>B 원래 출신 유지</option></select></label>'+
-        '<label>편입 설정 메모<textarea id="cm-notes" placeholder="예: B는 이 세계의 연금술 길드 소속이다.">'+esc(choices.notes)+'</textarea></label></section>'+
+        '<label>편입 설정 메모<textarea id="cm-notes" placeholder="예: B는 이 세계의 연금술 길드 소속이다.">'+esc(choices.notes)+'</textarea></label></details></section>'+
         '<section><h3>가져올 요소</h3><div class="grid">'+
         check('description','캐릭터 설명','외형·능력·고유 설정',choices.description)+
         check('personality','성격·말투','지속되는 인물 개성',choices.personality)+
@@ -643,14 +646,20 @@
           '<small>이미지 '+asArray(m.assets).length+'개 · 로어 '+asArray(m.lorebook).length+
           '개 · 스크립트는 실행하지 않음</small></span></label>').join(''):
           '<p class="muted">선택 가능한 모듈이 없어.</p>')+'</section>'+
-        '<section><h3>현재 편입된 캐릭터</h3>'+installedHtml+'</section>'+ 
+        '<p class="status">'+esc(message||'캐릭터를 추출하면 라이브러리에 저장돼. 현재 채팅에는 자동으로 연결하지 않아.')+'</p>'+
+        '<details '+(legacyPanelOpen?'open':'')+' id="cm-legacy-panel"><summary>선택 기능 · 저장한 팩을 현재 채팅으로 불러오기 / 이전 연결 관리</summary>'+
+        '<p class="muted">이 기능을 사용한 경우에만 현재 채팅에 연결해. 이전 버전에서 편입한 모듈은 자동으로 삭제하지 않아.</p>'+
+        '<section><h3>이전 버전에서 현재 채팅에 연결된 항목</h3>'+installedHtml+'</section>'+
         diagnostic+
-        '<p class="status">'+esc(message||'선택 사항을 확인한 다음 아래 버튼으로 현재 채팅에 적용해.')+'</p>'+
-        '<div class="top"><p class="muted">원본 보존 · 채팅별 적용 · 스크립트/트리거 실행 제외</p>'+
-        '<button id="cm-apply" class="primary" '+(!src||busy||ctx.libraryOnly?'disabled':'')+'>현재 채팅에 B 추가/업데이트</button></div>'+
+        '<button id="cm-apply" '+(!src||busy||ctx.libraryOnly?'disabled':'')+'>선택한 캐릭터를 현재 채팅에 명시적으로 불러오기</button></details>'+
         '</main>';
       const el=id=>document.getElementById(id);
       el('cm-close').onclick=()=>{opened=false;void risuai.hideContainer();};
+      for(const node of document.querySelectorAll('[data-cm-select-pack]'))node.onclick=()=>{
+        sourceId='pack:'+str(node.getAttribute('data-cm-select-pack'));
+        loreChoices.clear();moduleChoices.clear();extraSourceIds.clear();void render();
+      };
+      el('cm-legacy-panel').ontoggle=e=>{legacyPanelOpen=Boolean(e.target.open);};
       el('cm-source').onchange=e=>{sourceId=str(e.target.value);loreChoices.clear();moduleChoices.clear();void render();};
       el('cm-mode').onchange=e=>{choices.mode=str(e.target.value)==='original'?'original':'adapt';void render();};
       el('cm-notes').onchange=e=>{choices.notes=clip(e.target.value,1200);};
@@ -697,7 +706,7 @@
       const ctx=await context(true);
       const active=installedInChat(ctx);
       const existing=active.map(metadataOf).find(meta=>meta&&meta.sourceId);
-      if(existing&&(available(ctx.db,ctx.target.chaId).some(bot=>bot.chaId===existing.sourceId)||packLibrary.some(p=>'pack:'+p.id===existing.sourceId))){
+      if(!sourceId&&existing&&(available(ctx.db,ctx.target.chaId).some(bot=>bot.chaId===existing.sourceId)||packLibrary.some(p=>'pack:'+p.id===existing.sourceId))){
         sourceId=existing.sourceId;
         extraSourceIds=new Set(asArray(existing.sourceIds).filter(id=>id!==sourceId));
       }
