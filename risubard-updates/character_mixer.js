@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.6-beta.1
+//@version 0.7.6-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -1301,13 +1301,21 @@
         autoCollectBusy=true;
         try{
           const rows=await searchBooruWithFallback(tags,12,0);
-          const candidate=rows.find(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
-            &&isRelevantPost(x,tagSignals,pack.characterKind));
-          if(candidate&&await persistAssetToPack(pack,candidate,ctx)){
-            autoCollectStatus=pack.name+' · 에셋 #'+candidate.id+' 자동 저장';
-            outputLastResult=autoCollectStatus;
+          const candidates=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
+            &&isRelevantPost(x,tagSignals,pack.characterKind)).slice(0,3);
+          let saved=null,lastFailure='';
+          for(const candidate of candidates){
+            try{
+              if(await persistAssetToPack(pack,candidate,ctx)){saved=candidate;break;}
+            }catch(e){lastFailure=clip(e?.message||e,210);}
           }
-          else {autoCollectStatus=pack.name+' · 새로운 적합 이미지 없음';outputLastResult=autoCollectStatus;}
+          if(saved){
+            autoCollectStatus=pack.name+' · 에셋 #'+saved.id+' 자동 저장';
+          }else{
+            autoCollectStatus=lastFailure?'자동 검색은 성공했지만 이미지 다운로드 실패: '+lastFailure:
+              pack.name+' · 조건에 맞는 신규 이미지 없음';
+          }
+          outputLastResult=autoCollectStatus;
         }catch(e){autoCollectStatus='자동 검색 실패: '+clip(e?.message||e,150);}
         finally{autoCollectBusy=false;}
         return; // One search and at most one image per display event.
@@ -1512,7 +1520,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.6-beta.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.6-beta.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
