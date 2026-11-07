@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.2-beta.3
+//@version 0.7.2-beta.4
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -18,7 +18,7 @@
   let characterKindChoice='unknown',characterWorkInput='';
   const AUTO_PREF_KEY='character_mixer_auto_assets_v1';
   const DISPLAY_KEY='character_mixer_display_history_v1';
-  const DISPLAY_MIN_GAP=3, DISPLAY_RECENT_WINDOW=5;
+  const DISPLAY_MIN_GAP=3, DISPLAY_RECENT_WINDOW=5, DISPLAY_REPEAT_TURN_WINDOW=15;
   let displayHistory={};
   let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
   let rejectedPosts={},lastDiscovery=new Map(),discoveryRun=new Set();
@@ -343,17 +343,21 @@
       canShow:turn-row.lastShownTurn>=DISPLAY_MIN_GAP};
   }
   function recordDisplayedImage(decision,assetName){
-    const recent=asArray(decision.row.recent).filter(x=>x!==assetName).slice(-(DISPLAY_RECENT_WINDOW-1));
+    const recent=asArray(decision.row.recent).filter(x=>{
+      const name=typeof x==='string'?x:x?.name;
+      const turn=typeof x==='string'?decision.turn:Number(x?.turn);
+      return name!==assetName&&Number.isFinite(turn)&&decision.turn-turn<DISPLAY_REPEAT_TURN_WINDOW;
+    }).slice(-(DISPLAY_RECENT_WINDOW-1));
     displayHistory[decision.key]={lastShownTurn:decision.turn,messageKey:decision.signature,
-      lastAsset:assetName,recent:[...recent,assetName]};
+      lastAsset:assetName,recent:[...recent,{name:assetName,turn:decision.turn}]};
     void saveDisplayHistory().catch(e=>console.warn('[CharacterMixer] display history save failed',e));
   }
   function rememberFeedback(assetName){
     // A disliked image must never reappear from a saved display decision.
     for(const [key,row] of Object.entries(displayHistory)){
       if(row?.lastAsset===assetName)delete displayHistory[key];
-      else if(row?.recent?.includes(assetName)){
-        displayHistory[key]={...row,recent:row.recent.filter(x=>x!==assetName)};
+      else if(asArray(row?.recent).some(x=>(typeof x==='string'?x:x?.name)===assetName)){
+        displayHistory[key]={...row,recent:row.recent.filter(x=>(typeof x==='string'?x:x?.name)!==assetName)};
       }
     }
     void saveDisplayHistory().catch(e=>console.warn('[CharacterMixer] feedback history save failed',e));
@@ -394,7 +398,10 @@
         return safe+'\n\n{{img::'+previousName+'}}';
       }
       if(!decision.canShow||hasAssetTag)return safe;
-      const recent=new Set(asArray(decision.row.recent));
+      const recent=new Set(asArray(decision.row.recent).filter(x=>{
+        const turn=typeof x==='string'?decision.turn:Number(x?.turn);
+        return Number.isFinite(turn)&&decision.turn-turn<DISPLAY_REPEAT_TURN_WINDOW;
+      }).map(x=>typeof x==='string'?x:x.name));
       const selected=pickTaggedAsset(safe,
         {...cached,tagAssets:cached.tagAssets.filter(x=>!omitted.has(x.name))},recent);
       if(selected){
@@ -1240,7 +1247,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.2-beta.3</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.2-beta.4</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1275,7 +1282,7 @@
         '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
         '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<br/><small>한번에 최대 1장 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
         '<p class="muted">채팅에 명시적으로 연결되고 자동 이미지 표시가 켜진 팩에만 적용돼. 현재 설정: '+(autoCollectEnabled?'자동 수집 ON':'자동 수집 OFF')+'</p>'+
-        '<p class="muted">표시 기준: 최신 AI 답변에 최대 1장 / 최소 3개 답변 간격 / 최근 표시된 5장 중복 회피. 적합한 이미지가 없으면 표시하지 않아. 수집은 표시와 별도이며 기존 에셋 우선.</p>'+
+        '<p class="muted">표시 기준: 최신 AI 답변에 최대 1장 / 최소 3개 답변 간격 / 최근 5회 표시 중복 회피 (15개 답변 경과 시 재사용 가능). 적합한 이미지가 없으면 표시하지 않아. 수집은 표시와 별도이며 기존 에셋 우선.</p>'+
         '<p class="muted">'+esc(autoCollectStatus||'아직 자동 수집 기록 없음')+'</p>'+
         (sourceId.startsWith('pack:')?
           '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4><div class="grid">'+
