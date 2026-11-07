@@ -1,9 +1,9 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.4
+//@version 0.7.5
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
-//@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
+//@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
   'use strict';
   const NAME='Character Mixer';
@@ -18,10 +18,11 @@
   let characterKindChoice='unknown',characterWorkInput='';
   const AUTO_PREF_KEY='character_mixer_auto_assets_v1';
   const DISPLAY_KEY='character_mixer_display_history_v1';
+  const AUTH_KEY='character_mixer_gelbooru_auth_v1';
   const DISPLAY_MIN_GAP=3, DISPLAY_RECENT_WINDOW=5, DISPLAY_REPEAT_TURN_WINDOW=15;
   let displayHistory={};
   let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
-  let externalProviderStatus='',authFailureCount=0;
+  let externalProviderStatus='',authFailureCount=0,authStatus='Gelbooru 인증 정보 미등록';
   let rejectedPosts={},lastDiscovery=new Map(),discoveryRun=new Set();
   let latestShown=null,reviewFirst=false;
   let outputListenerAvailable=false,outputEventCount=0,outputLastResult='아직 생성 완료 이벤트를 받지 못함';
@@ -573,6 +574,69 @@
     }catch(e){autoCollectStatus='자동 에셋 설정 읽기 실패: '+str(e?.message||e);}
   }
   async function saveAutoPrefs(){await risuai.pluginStorage.setItem(AUTO_PREF_KEY,{enabled:autoCollectEnabled,rejected:rejectedPosts});}
+  async function loadGelbooruAuth(){
+    try{
+      const saved=await risuai.pluginStorage.getItem(AUTH_KEY);
+      if(saved&&typeof saved.userId==='string'&&typeof saved.apiKey==='string'){
+        externalUserId=saved.userId;externalApiKey=saved.apiKey;
+        authStatus='Gelbooru 인증 정보 로드됨 · 연결 테스트 필요';
+      }
+    }catch(e){authStatus='인증 정보 읽기 실패: '+clip(e?.message||e,100);}
+  }
+  async function saveGelbooruAuth(){
+    if(!externalUserId.trim()||!externalApiKey.trim())throw Error('user_id와 API 키 둘 다 필요해');
+    await risuai.pluginStorage.setItem(AUTH_KEY,{userId:externalUserId.trim(),apiKey:externalApiKey.trim()});
+    authStatus='기존 Gelbooru 계정 정보 저장됨 · 연결 테스트 필요';
+    lastDiscovery.clear();
+  }
+  async function clearGelbooruAuth(){
+    externalUserId='';externalApiKey='';
+    await risuai.pluginStorage.setItem(AUTH_KEY,null);
+    authStatus='Gelbooru 인증 정보 삭제됨';
+    await render();
+  }
+  function readDownloaderCredentials(source){
+    // Parse only literal CONFIG assignments. Never run arbitrary Python code.
+    const match=String(source).match(/\bCONFIG\s*=\s*\{([\s\S]*?)\n\s*\}/);
+    if(!match)throw Error('gelbooru.py의 CONFIG 설정을 찾지 못했어');
+    const extract=key=>{
+      const line=match[1].split(/\r?\n/).find(x=>new RegExp('^[\\s]*["\\\']'+key+'["\\\']\\s*:').test(x));
+      const m=line?.match(/:\s*(["\'])([^"\'\r\n]+)\1/);
+      return m?m[2]:'';
+    };
+    const userId=extract('USER_ID'),apiKey=extract('API_KEY');
+    if(!/^\d{1,20}$/.test(userId)||!(/^[a-zA-Z0-9]{32,256}$/.test(apiKey)))
+      throw Error('다운로더에서 유효한 USER_ID/API_KEY 설정을 찾지 못했어');
+    return {userId,apiKey};
+  }
+  async function importDownloaderFile(input){
+    try{
+      const file=input?.files?.[0];
+      if(!file)throw Error('gelbooru.py 파일을 선택해');
+      if(file.size>3*1024*1024)throw Error('설정 파일 크기 제한 초과');
+      const content=await file.text();
+      const credentials=readDownloaderCredentials(content);
+      externalUserId=credentials.userId;
+      externalApiKey=credentials.apiKey;
+      await saveGelbooruAuth();
+      authStatus='gelbooru.py에서 기존 계정 정보를 가져왔어 · 이제 인증 테스트 가능';
+    }catch(e){authStatus='다운로더 설정 가져오기 실패: '+clip(e?.message||e,130);}
+    await render();
+  }
+  async function testGelbooruAuth(){
+    try{
+      if(!externalUserId.trim()||!externalApiKey.trim())throw Error('먼저 gelbooru.py를 가져와');
+      const params=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',limit:'1',
+        tags:'smile rating:general',user_id:externalUserId.trim(),api_key:externalApiKey.trim()});
+      const res=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
+      if(!res?.ok)throw Error('HTTP '+str(res?.status||'unknown'));
+      await res.json();
+      authStatus='Gelbooru 인증 성공 · 자동 수집 사용 가능';
+      externalProviderStatus='Gelbooru 인증 성공';
+      lastDiscovery.clear();
+    }catch(e){authStatus='인증 테스트 실패: '+clip(e?.message||e,110)+' · 네트워크 차단 여부도 확인 필요';}
+    await render();
+  }
   async function loadDisplayHistory(){
     try{const data=await risuai.pluginStorage.getItem(DISPLAY_KEY);
       displayHistory=data&&typeof data==='object'&&!Array.isArray(data)?data:{};
@@ -1407,7 +1471,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.4</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.5</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1462,9 +1526,14 @@
         '<p class="muted">Gelbooru에서 인증 오류가 나면 Danbooru 공개 검색을 시도해. 두 사이트 모두 실패하면 여기에서 오류를 확인할 수 있어.</p>'+
         '<label>'+(characterKindChoice==='original'?'장면 태그 검색 · 캐릭터 이름 불필요':'캐릭터 태그 검색')+'<input id="cm-booru-tags" type="text" value="'+esc(externalQuery)+'" placeholder="'+(characterKindChoice==='original'?'예: 1girl sitting indoors smile':'예: boa_hancock_(one_piece)')+'"/></label>'+
         (characterKindChoice==='original'?'<p class="muted">오리지널은 원작 캐릭터와 같은 얼굴일 필요가 없어. 대신 의상·행동·감정·장소가 맞는 이미지를 직접 골라 저장해. 이미지에 원래 그려진 캐릭터의 태그는 채팅 선택에 사용하지 않아.</p>':'')+
+        '<div class="top"><label>기존 Gelbooru Downloader 설정 가져오기<input id="cm-import-py" type="file" accept=".py,text/x-python,text/plain"/></label>'+ 
+        '<button id="cm-auth-test" type="button">기존 API 키 연결 테스트</button>'+ 
+        '<button id="cm-auth-clear" type="button">저장한 인증 정보 삭제</button></div>'+ 
+        '<p class="muted">'+esc(authStatus)+' · 다운로드한 gelbooru.py 파일을 한 번 선택하면 USER_ID/API_KEY를 추출해 재사용해.</p>'+ 
         '<div class="grid"><label>Gelbooru user_id (필요한 경우)<input id="cm-booru-user" type="text" value="'+esc(externalUserId)+'" autocomplete="off"/></label>'+
         '<label>API key (필요한 경우)<input id="cm-booru-key" type="password" value="'+esc(externalApiKey)+'" autocomplete="off"/></label></div>'+
-        '<p class="muted">인증 정보는 플러그인 저장소에 보관하지 않아. 다만 API 요청 URL에 포함되므로 해당 서비스와 네트워크 로그에 기록될 수 있어.</p>'+
+        '<p class="muted">인증 정보는 로컬 RisuBard 플러그인 저장소에 보관돼 (저장파일 동기화에 포함될 수 있어). GitHub 코드에는 포함하지 않아. Gelbooru API 요청 URL에 키가 포함되므로 네트워크 로그에 남을 수 있어.</p>'+ 
+        '<button id="cm-auth-save" type="button">현재 입력한 계정 정보 저장</button>'+
         '<div class="top"><button id="cm-booru-search" '+(externalBusy?'disabled':'')+'>태그 검색 · 일반 등급</button>'+
         '<button id="cm-booru-prev" '+(externalPage<=0||externalBusy?'disabled':'')+'>이전 페이지</button>'+
         '<span class="muted">'+(externalPage+1)+'페이지</span>'+
@@ -1569,6 +1638,10 @@
       tagInput.oninput=e=>{externalQuery=str(e.target.value).slice(0,200);};
       keyInput.oninput=e=>{externalApiKey=str(e.target.value).slice(0,250);};
       userInput.oninput=e=>{externalUserId=str(e.target.value).slice(0,50);};
+      el('cm-import-py').onchange=e=>void importDownloaderFile(e.target);
+      el('cm-auth-test').onclick=()=>void testGelbooruAuth();
+      el('cm-auth-clear').onclick=()=>void clearGelbooruAuth();
+      el('cm-auth-save').onclick=()=>void saveGelbooruAuth().then(()=>render()).catch(e=>{authStatus='저장 실패: '+clip(e?.message||e,100);void render();});
       el('cm-diagnose').onclick=()=>void testCurrentChatAuto();
       el('cm-auto-collect').onchange=e=>{autoCollectEnabled=Boolean(e.target.checked);
         void saveAutoPrefs().then(()=>render()).catch(error=>{autoCollectStatus='설정 저장 실패 '+str(error?.message||error);void render();});};
@@ -1606,6 +1679,7 @@
     }
     await loadPacks();
     await loadAutoPrefs();
+    await loadGelbooruAuth();
     await loadDisplayHistory();
     try{
       const ctx=await context(true);
@@ -1621,6 +1695,7 @@
   }
   await loadPacks();
   await loadAutoPrefs();
+  await loadGelbooruAuth();
   await loadDisplayHistory();
   async function openFeedback(){reviewFirst=true;await open();}
   // Register the settings entry first. An optional display hook failure must
