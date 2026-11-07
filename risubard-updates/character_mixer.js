@@ -1,9 +1,9 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.5.0
+//@version 0.6.0
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
-//@description Selectively blend an imported character's lore and asset references into the current chat without overwriting existing bots.
+//@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
   'use strict';
   const NAME='Character Mixer';
@@ -13,10 +13,13 @@
   const ARCHIVE_MARK='[CHARACTER_MIXER_ARCHIVE_V1]';
   let packLibrary=[];
   let legacyPanelOpen=false;
+  let externalQuery='',externalApiKey='',externalUserId='',externalResults=[],externalPage=0;
+  let externalBusy=false,externalError='',externalNotice='',speakerAliasInput='';
+  const externalSelected=new Set();
   const PROFILE_LIMIT=6000, LORE_LIMIT=30000;
   let destroyed=false, busy=false, opened=false, message='', sourceId='';
   let choices={mode:'adapt',notes:'',description:true,personality:true,scenario:false,
-    examples:false,greeting:false,assets:true,emotions:true,moduleAssets:true,moduleLore:false};
+    examples:false,greeting:false,assets:true,emotions:true,moduleAssets:true,moduleLore:false,autoImages:false};
   let loreChoices=new Set(),moduleChoices=new Set(),extraSourceIds=new Set();
   const str=v=>String(v??'');
   const esc=v=>str(v).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[ch]));
@@ -235,9 +238,57 @@
   const ALIAS_CACHE_MS=10000;
   let displayCache=null;
   function invalidateDisplayCache(){displayCache=null;}
+  function sceneEmotion(text){
+    const rules=[
+      ['crying',/(?:울었|눈물|흐느꼈|서럽|crying|tears|sobbed)/i],
+      ['angry',/(?:화가|짜증|화를 냈|분노|인상을 찌푸|angry|furious|annoyed)/i],
+      ['blush',/(?:얼굴이 붉|볼이 붉|귀가 붉|부끄러|당황|blush|embarrass|shy)/i],
+      ['surprised',/(?:놀랐|깜짝|눈이 커|경악|surpris|shock)/i],
+      ['smile',/(?:웃었|웃음|미소|싱긋|빙긋|smil|laugh|grin)/i],
+      ['sad',/(?:슬픔|우울|풀이 죽|sad|depress)/i]
+    ];
+    return rules.find(([name,pattern])=>pattern.test(text))?.[0]||'';
+  }
+  function pickTaggedAsset(content,cached){
+    if(!cached?.tagAssets?.length||/\{\{\s*(?:img|image|asset|emotion)\s*(?:::|=)/i.test(content))return '';
+    if(content.length>40000||content.length<40)return '';
+    const contentWindow=content.slice(-14000);
+    let latest=null;
+    for(const item of cached.tagAssets){
+      for(const name of asArray(item.characterAliases).filter(Boolean)){
+        const escaped=str(name).replace(/[^a-zA-Z0-9가-힣_]/g,ch=>'\\'+ch);
+        const pattern=new RegExp('\\['+escaped+'\\]','g');
+        let match;
+        while((match=pattern.exec(contentWindow))){
+          if(!latest||match.index>latest.index)latest={item,index:match.index,matched:item.sourceId};
+        }
+      }
+    }
+    if(!latest)return '';
+    const contextText=contentWindow.slice(latest.index,Math.min(contentWindow.length,latest.index+900));
+    const emotion=sceneEmotion(contextText);
+    if(!emotion)return '';
+    const synonyms={
+      smile:['smile','happy','laughing','grin','closed_eyes'],
+      angry:['angry','frown','annoyed','furrowed_brow'],
+      crying:['crying','tears','sad','crying_with_eyes_open'],
+      blush:['blush','embarrassed','shy','blushing'],
+      surprised:['surprised','wide_eyes','open_mouth','shock'],
+      sad:['sad','tears','frown','downcast_eyes']
+    };
+    const candidates=cached.tagAssets.filter(x=>x.sourceId===latest.matched);
+    let winning=null,score=0;
+    for(const item of candidates){
+      const tags=new Set(asArray(item.tags));
+      const value=asArray(synonyms[emotion]).reduce((n,t)=>n+(tags.has(t)?(t===emotion?3:1):0),0);
+      if(value>score){score=value;winning=item;}
+    }
+    return winning&&score>0?'{{img::'+winning.name+'}}':'';
+  }
   async function displayAssetCompatibility(content){
-    if(destroyed||typeof content!=='string'||!content.includes('{{')
-      ||!/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content))return content;
+    if(destroyed||typeof content!=='string')return content;
+    const hasAssetTag=/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content);
+    if(!hasAssetTag&&!/\[[^\]\n]{1,80}\]/.test(content))return content;
     try{
       const ci=await risuai.getCurrentCharacterIndex();
       const ti=await risuai.getCurrentChatIndex();
@@ -246,12 +297,22 @@
       if(!cached||cached.ci!==ci||cached.ti!==ti||now-cached.at>ALIAS_CACHE_MS){
         const ctx=await context();
         const aliases=activeAliases(ctx);
+        const tagAssets=[];
+        for(const mod of aliases.active){
+          const metadata=metadataOf(mod);
+          if(metadata?.autoImages!==true)continue;
+          for(const item of asArray(metadata.externalTagAssets))
+            if(asArray(mod.assets).some(x=>Array.isArray(x)&&x[0]===item.name))
+              tagAssets.push(item);
+        }
         cached={ci:ctx.ci,ti:ctx.ti,at:now,lookup:aliases.lookup,
-          hasActive:aliases.active.length>0,target:ctx.target};
+          hasActive:aliases.active.length>0,target:ctx.target,tagAssets};
         displayCache=cached;
       }
       if(!cached.hasActive)return content;
-      return rewriteAssetTokens(content,cached.lookup,cached.target);
+      const rewritten=hasAssetTag?rewriteAssetTokens(content,cached.lookup,cached.target):content;
+      const selected=pickTaggedAsset(rewritten,cached);
+      return selected?rewritten+'\n\n'+selected:rewritten;
     }catch(error){
       console.log('[CharacterMixer] asset preview fallback:',error?.message||error);
       return content;
@@ -346,7 +407,18 @@
         folder:undefined
       });
     }
+    const externalTagAssets=[];
+    for(const bot of sourceBots){
+      if(!str(bot.chaId).startsWith('pack:'))continue;
+      const pack=packLibrary.find(p=>'pack:'+p.id===bot.chaId);
+      for(const item of asArray(pack?.externalAssets)){
+        const mapped=assets.find(a=>a.path===item.path);
+        if(mapped)externalTagAssets.push({name:mapped.name,tags:asArray(item.tags).slice(0,60),
+          characterName:clip(pack.name,100),characterAliases:[clip(pack.name,100),...asArray(pack.speakerAliases)].filter(Boolean),sourceId:bot.chaId});
+      }
+    }
     const extra= {
+      externalTagAssets,autoImages:!!choices.autoImages,
       sourceId:src.chaId,sourceIds:sourceBots.map(x=>x.chaId),targetCharacterId:ctx.target.chaId,targetChatId:ctx.chat.id,
       mode:choices.mode,version:3,
       assetAliases:aliasRows
@@ -369,6 +441,17 @@
     }catch(e){console.warn('[CharacterMixer] pack loading failed',e);packLibrary=[];}
   }
   async function savePacks(){await risuai.pluginStorage.setItem(PACK_STORE,packLibrary);}
+  async function saveSpeakerAliases(){
+    try{
+      const pack=externalTarget();
+      const aliases=[...new Set(str(speakerAliasInput).split(',').map(x=>x.trim()).filter(Boolean))].slice(0,12);
+      const old=packLibrary;
+      packLibrary=packLibrary.map(p=>p.id===pack.id?{...p,speakerAliases:aliases}:p);
+      try{await savePacks();}catch(e){packLibrary=old;throw e;}
+      externalNotice='채팅 이름 태그 '+aliases.length+'개 저장 · 실제 채팅에 적용된 팩은 다시 불러와야 반영돼';
+    }catch(e){externalError=str(e?.message||e);}
+    await render();
+  }
   async function exportPackJson(){
     try{
       const pack=packLibrary.find(p=>'pack:'+p.id===sourceId);
@@ -466,7 +549,9 @@
         firstMessage:str(src.firstMessage),globalLore:lores,
         additionalAssets:assets,emotionImages:[],ccAssets:[],modules:[]};
       const record={id,name:src.name,updatedAt:Date.now(),
-        sources:bots.map(b=>({id:b.chaId,name:b.name})),binaryCopied:true,assetCount:assets.length,snapshot};
+        sources:bots.map(b=>({id:b.chaId,name:b.name})),binaryCopied:true,assetCount:assets.length,
+        externalAssets:asArray(previous?.externalAssets).filter(item=>assets.some(x=>x[1]===item.path)),
+        snapshot};
       const archiveId=archivedModuleId(id);
       const archive={
         id:archiveId,name:'Character Mixer Archive · '+clip(src.name,70),
@@ -496,6 +581,132 @@
     }catch(e){message='추출 실패 · '+str(e?.message||e);}
     finally{busy=false;await render();}
   }
+
+  // External provider integration: only user-initiated, limited-size search.
+  // No automatic crawling, no scheduled retrieval and no Pixiv access bypass.
+  function externalTarget(){
+    const pack=packLibrary.find(p=>'pack:'+p.id===sourceId);
+    if(!pack)throw Error('먼저 저장된 [PACK] 캐릭터를 선택해.');
+    return pack;
+  }
+  function gelbooruMediaURL(value){
+    try{
+      const u=new URL(str(value));
+      if(u.protocol!=='https:'||!/(^|\.)gelbooru\.com$/i.test(u.hostname))return '';
+      if(!/\.(?:png|jpg|jpeg|gif|webp)(?:$|\?)/i.test(u.pathname+u.search))return '';
+      return u.href;
+    }catch(_){return '';}
+  }
+  function booruTags(row){
+    const raw=Array.isArray(row?.tags)?row.tags:typeof row?.tags==='string'?row.tags.split(/\s+/):[];
+    return [...new Set(raw.map(x=>str(x).toLowerCase()).filter(Boolean))].slice(0,200);
+  }
+  function parseBooruPosts(data){
+    const list=Array.isArray(data)?data:Array.isArray(data?.post)?data.post:[];
+    return list.filter(x=>x&&Number.isFinite(Number(x.id)))
+      .filter(x=>['general','safe','s','g'].includes(str(x.rating).toLowerCase()))
+      .map(row=>({
+        id:String(row.id),tags:booruTags(row),rating:row.rating,
+        thumbnail:gelbooruMediaURL(row.preview_url||row.sample_url||row.file_url),
+        image:gelbooruMediaURL(row.file_url||row.sample_url),
+        source:clip(row.source||'',500),
+        postURL:'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(String(row.id))
+      })).filter(row=>row.image);
+  }
+  async function searchExternal(){
+    if(externalBusy)return;
+    externalBusy=true;externalError='';externalNotice='';
+    try{
+      externalResults=[];
+      const tokens=str(externalQuery).trim().split(/\s+/).filter(Boolean).slice(0,8);
+      if(!tokens.length)throw Error('캐릭터 태그를 입력해. 예: boa_hancock_(one_piece)');
+      const tags=[...tokens.filter(x=>!x.startsWith('rating:')),'rating:general'].join(' ');
+      const params=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
+        limit:'18',pid:String(externalPage),tags});
+      if(externalApiKey.trim()&&externalUserId.trim()){
+        params.set('api_key',externalApiKey.trim());params.set('user_id',externalUserId.trim());
+      }
+      if(typeof risuai.nativeFetch!=='function')throw Error('이 버전에서는 nativeFetch API를 사용할 수 없어');
+      const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
+      if(!response?.ok)throw Error('Gelbooru API 응답 '+(response?.status||'없음')+
+        ' · API 키/사용자 ID와 요청 제한을 확인해.');
+      const data=await response.json();
+      externalResults=parseBooruPosts(data);
+      externalSelected.clear();
+      externalNotice=externalResults.length+'개 일반 등급 이미지 검색 완료. 저장할 이미지를 직접 골라줘.';
+    }catch(e){externalError=str(e?.message||e);}
+    finally{externalBusy=false;await render();}
+  }
+  async function importExternalImages(){
+    if(externalBusy)return;
+    externalBusy=true;externalError='';externalNotice='';
+    try{
+      const pack=externalTarget();
+      const chosen=externalResults.filter(x=>externalSelected.has(x.id));
+      if(!chosen.length)throw Error('가져올 이미지를 선택해.');
+      if(chosen.length>12)throw Error('한 번에 12개까지만 저장할 수 있어.');
+      if(typeof risuai.nativeFetch!=='function'||typeof risuai.saveAsset!=='function')
+        throw Error('이미지 저장 API를 사용할 수 없어');
+      const existingIds=new Set(asArray(pack.externalAssets).map(x=>str(x.postId)));
+      const imported=[],problems=[];
+      for(const item of chosen){
+        if(existingIds.has(item.id))continue;
+        try{
+          const response=await risuai.nativeFetch(item.image,{method:'GET'});
+          if(!response?.ok)throw Error('이미지 응답 '+response?.status);
+          const size=Number(response.headers?.get?.('content-length')||0);
+          if(size>18*1024*1024)throw Error('18MB를 초과하는 이미지');
+          const contentType=str(response.headers?.get?.('content-type')).toLowerCase();
+          if(contentType&&!contentType.startsWith('image/'))throw Error('이미지 형식이 아닌 응답');
+          const bytes=new Uint8Array(await response.arrayBuffer());
+          if(!bytes.length||bytes.length>18*1024*1024)throw Error('빈 이미지 또는 18MB 초과');
+          const savedPath=await risuai.saveAsset(bytes);
+          if(!safePath(savedPath))throw Error('에셋 저장 경로가 유효하지 않아');
+          const verified=bytesOf(await risuai.readImage(savedPath));
+          if(!verified||verified.length!==bytes.length)throw Error('저장 검증 실패');
+          for(let i=0;i<bytes.length;i++)if(bytes[i]!==verified[i])throw Error('저장 내용이 원본과 달라');
+          const ext=item.image.match(/\.(png|jpe?g|gif|webp)(?:$|\?)/i)?.[1]?.replace('jpeg','jpg')||'png';
+          imported.push({...item,path:savedPath,name:'gelbooru_'+item.id,ext});
+        }catch(e){problems.push(item.id+': '+str(e?.message||e));}
+      }
+      if(!imported.length)throw Error(problems.length?'저장 실패: '+problems[0]:'이미 저장된 이미지야.');
+      // Save a deduplicated library record and archive module, never edit the source bot.
+      const oldLibrary=packLibrary;
+      const db=await risuai.getDatabase(),oldModules=asArray(db.modules);
+      const archiveId=archivedModuleId(pack.id);
+      const already=new Set(asArray(pack.snapshot.additionalAssets).map(x=>str(x[0])));
+      const newAssets=imported.map(item=>{
+        let name=item.name,i=2;while(already.has(name)){name=item.name+'_'+i;i++;}
+        already.add(name);
+        return {name,path:item.path,ext:item.ext,tags:item.tags,postId:item.id,
+          provider:'gelbooru',sourceURL:item.postURL,artistSource:item.source};
+      });
+      const newRecord={...pack,updatedAt:Date.now(),binaryCopied:true,
+        snapshot:{...pack.snapshot,additionalAssets:[
+          ...asArray(pack.snapshot.additionalAssets),
+          ...newAssets.map(a=>[a.name,a.path,a.ext])
+        ]},
+        externalAssets:[...asArray(pack.externalAssets),...newAssets]};
+      newRecord.assetCount=newRecord.snapshot.additionalAssets.length;
+      const archive={id:archiveId,name:'Character Mixer Archive · '+clip(pack.name,70),
+        description:ARCHIVE_MARK+JSON.stringify({packId:pack.id,version:2}),
+        lorebook:[],assets:newRecord.snapshot.additionalAssets.map(x=>[x[0],x[1],x[2]]),
+        namespace:'character-mixer-archive'};
+      await risuai.setDatabaseLite({modules:[...oldModules.filter(m=>m?.id!==archiveId),archive]});
+      packLibrary=packLibrary.map(p=>p.id===pack.id?newRecord:p);
+      try{await savePacks();}
+      catch(e){
+        packLibrary=oldLibrary;
+        try{await risuai.setDatabaseLite({modules:oldModules});}
+        catch(rollback){console.error('[CharacterMixer] archive rollback failed',rollback);}
+        throw e;
+      }
+      externalSelected.clear();invalidateDisplayCache();
+      externalNotice=newAssets.length+'개 독립 팩에 저장 ·'+(problems.length?' 실패 '+problems.length+'개: '+problems[0]:' 저장 후 검증 완료');
+    }catch(e){externalError=str(e?.message||e);}
+    finally{externalBusy=false;await render();}
+  }
+
   async function remember(action,ctx,src,mod){
     try{
       const old=await risuai.pluginStorage.getItem(LOG);
@@ -601,7 +812,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.5.0</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.6.0</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -617,6 +828,33 @@
         '<button type="button" id="cm-extract" class="primary">독립 캐릭터 팩 저장 (채팅 연결 없음)</button>'+
         '<button type="button" id="cm-export">선택한 저장 팩 JSON 내보내기</button>'+
         '<p class="muted">팩은 위 목록에서 [PACK]으로 표시돼. 저장 시 이미지 데이터를 RisuBard 에셋 저장소에 별도 복제하고 검증해. 복제 실패 시 팩은 갱신하지 않아.</p>'+
+
+        '<section><h3>채팅 화자 이름 연결</h3>'+
+        '<p class="muted">자동 이미지 표시를 사용할 때 채팅의 [강세라], [핸콕] 같은 화자 이름을 인식하는 용도야. 쉼표로 구분해.</p>'+
+        '<input id="cm-speaker-alias" type="text" value="'+esc(sourceId.startsWith('pack:')?(packLibrary.find(p=>'pack:'+p.id===sourceId)?.speakerAliases||[]).join(', '):'')+'" placeholder="예: 핸콕, 보아 핸콕"/>'+
+        '<button id="cm-speaker-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>화자 이름 저장</button></section>'+
+        '<section><h3>외부 이미지 검색 · Gelbooru</h3>'+
+        '<p class="muted">먼저 [PACK] 캐릭터를 선택해. 태그로 검색하고 직접 선택한 일반 등급 이미지만 독립 팩에 복제해. 자동 대량 수집은 하지 않아.</p>'+
+        '<label>검색 태그 (예: boa_hancock_(one_piece))<input id="cm-booru-tags" type="text" value="'+esc(externalQuery)+'" placeholder="character_name_(series)"/></label>'+
+        '<div class="grid"><label>Gelbooru user_id (필요한 경우)<input id="cm-booru-user" type="text" value="'+esc(externalUserId)+'" autocomplete="off"/></label>'+
+        '<label>API key (필요한 경우)<input id="cm-booru-key" type="password" value="'+esc(externalApiKey)+'" autocomplete="off"/></label></div>'+
+        '<p class="muted">인증 정보는 플러그인 저장소에 보관하지 않아. 다만 API 요청 URL에 포함되므로 해당 서비스와 네트워크 로그에 기록될 수 있어.</p>'+
+        '<div class="top"><button id="cm-booru-search" '+(externalBusy?'disabled':'')+'>태그 검색 · 일반 등급</button>'+
+        '<button id="cm-booru-prev" '+(externalPage<=0||externalBusy?'disabled':'')+'>이전 페이지</button>'+
+        '<span class="muted">'+(externalPage+1)+'페이지</span>'+
+        '<button id="cm-booru-next" '+(externalBusy?'disabled':'')+'>다음 페이지</button></div>'+
+        (externalError?'<p class="status">'+esc(externalError)+'</p>':'')+
+        (externalNotice?'<p class="status">'+esc(externalNotice)+'</p>':'')+
+        '<div class="grid">'+externalResults.map(item=>
+          '<label class="item"><input type="checkbox" data-cm-booru-id="'+esc(item.id)+'" '+(externalSelected.has(item.id)?'checked':'')+'/>'+
+          '<span style="min-width:0"><img loading="lazy" referrerpolicy="no-referrer" src="'+esc(item.thumbnail||item.image)+'" alt="Post '+esc(item.id)+'" style="width:132px;height:132px;object-fit:contain;display:block;background:#141b28;border-radius:6px"/>'+
+          '<small>#'+esc(item.id)+' · '+esc(item.tags.slice(0,6).join(' · '))+'</small>'+
+          '<a href="'+esc(item.postURL)+'" target="_blank" rel="noopener noreferrer">원본 게시물·출처 확인</a></span></label>').join('')+
+        '</div>'+
+        '<p class="muted">저작권과 이용 조건을 확인한 뒤 저장해. 가져온 이미지의 출처와 태그를 유지하며, 채팅에 자동 표시할지는 아래에서 별도로 선택해.</p>'+
+        '<button id="cm-booru-import" '+(externalBusy||!sourceId.startsWith('pack:')?'disabled':'')+'>선택한 이미지 팩에 저장 (최대 12개)</button>'+
+        '</section>'+
+
         '<details><summary>선택 사항 · 다른 세계관에 불러올 때의 설정</summary><label>세계관 합성<select id="cm-mode"><option value="adapt" '+(choices.mode==='adapt'?'selected':'')+
         '>A 세계관에 편입 (기본)</option><option value="original" '+(choices.mode==='original'?'selected':'')+
         '>B 원래 출신 유지</option></select></label>'+
@@ -631,6 +869,7 @@
         check('emotions','감정 이미지','B 표정 이미지를 이름으로 구분',choices.emotions)+
         check('moduleAssets','선택 모듈의 에셋','선택한 기존 모듈에서 이미지 가져오기',choices.moduleAssets)+
         check('moduleLore','선택 모듈의 로어','추가 로어 선택, 실행 코드 제외',choices.moduleLore)+
+        check('autoImages','태그 이미지 자동 표시','팩을 채팅에 불러온 뒤 감정이 일치하면 표시 (기본 꺼짐)',choices.autoImages)+
         '</div></section>'+
         '<section><div class="top"><h3>세부 로어북 선택</h3><button id="cm-select-lore">전체 선택/해제</button></div>'+
         (availableLore.length?availableLore.map((item,i)=>'<label class="item"><input type="checkbox" data-cm-lore="'+i+'" '+
@@ -689,6 +928,23 @@
       };
       el('cm-extract').onclick=()=>void extractPack();
       el('cm-export').onclick=()=>void exportPackJson();
+      const tagInput=el('cm-booru-tags'),keyInput=el('cm-booru-key'),userInput=el('cm-booru-user');
+      el('cm-speaker-alias').oninput=e=>{speakerAliasInput=str(e.target.value).slice(0,300);};
+      el('cm-speaker-save').onclick=()=>void saveSpeakerAliases();
+      tagInput.oninput=e=>{externalQuery=str(e.target.value).slice(0,200);};
+      keyInput.oninput=e=>{externalApiKey=str(e.target.value).slice(0,250);};
+      userInput.oninput=e=>{externalUserId=str(e.target.value).slice(0,50);};
+      el('cm-booru-search').onclick=()=>{externalPage=0;void searchExternal();};
+      el('cm-booru-prev').onclick=()=>{externalPage=Math.max(0,externalPage-1);void searchExternal();};
+      el('cm-booru-next').onclick=()=>{externalPage=Math.min(100,externalPage+1);void searchExternal();};
+      el('cm-booru-import').onclick=()=>void importExternalImages();
+      for(const node of document.querySelectorAll('[data-cm-booru-id]')){
+        node.onchange=e=>{
+          const id=str(node.getAttribute('data-cm-booru-id'));
+          if(e.target.checked)externalSelected.add(id);else externalSelected.delete(id);
+        };
+      }
+
       el('cm-apply').onclick=()=>void apply();
       for(const node of document.querySelectorAll('[data-cm-remove]'))
         node.onclick=()=>void detach(str(node.getAttribute('data-cm-remove')));
