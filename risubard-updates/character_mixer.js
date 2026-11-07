@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.6.1-beta.1
+//@version 0.6.1-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -860,7 +860,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.6.1-beta.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.6.1-beta.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -888,7 +888,8 @@
         '<button id="cm-speaker-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>화자 이름 저장</button></section>'+
         '<section><h3>외부 이미지 검색 · Gelbooru</h3>'+
         '<p class="muted">먼저 [PACK] 캐릭터를 선택해. 태그로 검색하고 직접 선택한 일반 등급 이미지만 독립 팩에 복제해. 자동 대량 수집은 하지 않아.</p>'+
-        '<label>검색 태그 (예: boa_hancock_(one_piece))<input id="cm-booru-tags" type="text" value="'+esc(externalQuery)+'" placeholder="character_name_(series)"/></label>'+
+        '<label>'+(characterKindChoice==='original'?'장면 태그 검색 · 캐릭터 이름 불필요':'캐릭터 태그 검색')+'<input id="cm-booru-tags" type="text" value="'+esc(externalQuery)+'" placeholder="'+(characterKindChoice==='original'?'예: 1girl sitting indoors smile':'예: boa_hancock_(one_piece)')+'"/></label>'+
+        (characterKindChoice==='original'?'<p class="muted">오리지널은 원작 캐릭터와 같은 얼굴일 필요가 없어. 대신 의상·행동·감정·장소가 맞는 이미지를 직접 골라 저장해. 이미지에 원래 그려진 캐릭터의 태그는 채팅 선택에 사용하지 않아.</p>':'')+
         '<div class="grid"><label>Gelbooru user_id (필요한 경우)<input id="cm-booru-user" type="text" value="'+esc(externalUserId)+'" autocomplete="off"/></label>'+
         '<label>API key (필요한 경우)<input id="cm-booru-key" type="password" value="'+esc(externalApiKey)+'" autocomplete="off"/></label></div>'+
         '<p class="muted">인증 정보는 플러그인 저장소에 보관하지 않아. 다만 API 요청 URL에 포함되므로 해당 서비스와 네트워크 로그에 기록될 수 있어.</p>'+
