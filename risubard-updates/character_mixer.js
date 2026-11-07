@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.0
+//@version 0.7.1-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -19,6 +19,7 @@
   const AUTO_PREF_KEY='character_mixer_auto_assets_v1';
   let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
   let rejectedPosts={},lastDiscovery=new Map(),discoveryRun=new Set();
+  let latestShown=null,reviewFirst=false;
   const externalSelected=new Set();
   const PROFILE_LIMIT=6000, LORE_LIMIT=30000;
   let destroyed=false, busy=false, opened=false, message='', sourceId='';
@@ -352,6 +353,15 @@
       const omitted=new Set(Object.keys(rejectedPosts).filter(k=>rejectedPosts[k]).map(k=>'gelbooru_'+k.slice(9)));
       const safe=rewritten.replace(/\{\{img::(gelbooru_\d+)\}\}/g,(token,name)=>omitted.has(name)?'':token);
       const selected=pickTaggedAsset(safe,{...cached,tagAssets:cached.tagAssets.filter(x=>!omitted.has(x.name))});
+      if(selected){
+        const assetName=selected.match(/^\{\{img::([^}]+)\}\}$/)?.[1];
+        const row=cached.tagAssets.find(x=>x.name===assetName);
+        if(row){
+          const pack=packLibrary.find(p=>'pack:'+p.id===row.sourceId);
+          const external=asArray(pack?.externalAssets).find(x=>x.name===assetName);
+          if(pack&&external&&!isRejected(external.postId))latestShown={packId:pack.id,postId:str(external.postId),assetName};
+        }
+      }
       if(autoCollectEnabled&&!selected&&!destroyed){
         // This happens outside the critical display path; network errors stay local.
         void discoverForScene(safe,await context()).catch(e=>console.warn('[CharacterMixer] discovery',e));
@@ -784,10 +794,19 @@
       })).filter(row=>row.image);
   }
   function isRejected(postId){return rejectedPosts['gelbooru:'+str(postId)]===true;}
+  function assetSceneScore(item,signals,kind){
+    if(kind!=='original'&&kind!=='fanwork')return 0;
+    const tags=new Set(asArray(item?.tags));
+    const effective=kind==='original'?asArray(signals):asArray(signals).filter(x=>x.weight===3).slice(0,1);
+    return effective.reduce((score,signal)=>score+(asArray(signal.tags).some(tag=>tags.has(tag))?signal.weight:0),0);
+  }
   function isRelevantPost(item,signals,kind){
-    const tagSet=new Set(asArray(item.tags));
-    const scene=asArray(signals).filter(x=>kind==='original'||x.weight===3);
-    return scene.some(x=>x.tags.some(t=>tagSet.has(t)));
+    return assetSceneScore(item,signals,kind)>=(kind==='original'?2:3);
+  }
+  function isUsablePackAsset(asset,pack,signals){
+    if(!asset||!pack||isRejected(asset.postId))return false;
+    if(!asArray(pack.snapshot?.additionalAssets).some(a=>Array.isArray(a)&&a[0]===asset.name))return false;
+    return isRelevantPost(asset,signals,pack.characterKind);
   }
   async function persistAssetToPack(pack,item,ctx=null){
     if(!pack||!item||isRejected(item.id))return false;
@@ -921,7 +940,8 @@
         // Auto discovery at most once per speaker/mood during this window.
         lastDiscovery.set(eventKey,now);
         const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
-        if(existing.some(x=>isRelevantPost(x,tagSignals,pack.characterKind)))continue;
+        // Reuse-first: an existing suitably tagged asset means no network call.
+        if(existing.some(x=>isUsablePackAsset(x,pack,tagSignals)))continue;
         const base=pack.characterKind==='original'?'1girl '+keys.join(' '):
           (asArray(pack.identityEvidence?.externalCandidates)[0]?.tag||
             str(pack.name).toLowerCase().replace(/\s+/g,'_'))+' '+keys[0];
@@ -1150,7 +1170,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.0</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.1-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
