@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.8
+//@version 0.7.9-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -1136,7 +1136,9 @@
         return {...mod,assets:[...asArray(mod.assets),[name,path,ext]]};
       }
       const meta=metadataOf(mod);
-      if(!ctx||(!meta?.autoImages&&!autoCollectEnabled)||meta.targetChatId!==ctx.chat.id
+      // Non-Character-Mixer modules have no MARK metadata. Never inspect
+      // targetChatId on null; preserve unrelated modules byte-for-byte.
+      if(!ctx||!meta||(!meta.autoImages&&!autoCollectEnabled)||meta.targetChatId!==ctx.chat.id
         ||!asArray(meta.sourceIds).includes('pack:'+pack.id))return mod;
       const tagItem={name,tags:item.tags,characterName:fresh.name,
         characterAliases:[fresh.name,...asArray(fresh.speakerAliases)],
@@ -1554,7 +1556,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.8</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.9-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
