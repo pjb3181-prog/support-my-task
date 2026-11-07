@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.5
+//@version 0.7.6
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -936,6 +936,7 @@
       .map(row=>({
         id:String(row.id),provider:'gelbooru',tags:booruTags(row),rating:row.rating,
         thumbnail:safeBooruMediaURL(row.preview_url||row.sample_url||row.file_url),
+        sample:safeBooruMediaURL(row.sample_url||row.preview_url),
         image:safeBooruMediaURL(row.file_url||row.sample_url),
         source:clip(row.source||'',500),
         postURL:'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(String(row.id))
@@ -951,6 +952,7 @@
         tags:booruTags({tags:str(row.tag_string||row.tag_string_general||'')}),
         rating:row.rating,
         thumbnail:safeBooruMediaURL(row.preview_file_url||row.large_file_url||row.file_url),
+        sample:safeBooruMediaURL(row.large_file_url||row.preview_file_url),
         image:safeBooruMediaURL(row.file_url||row.large_file_url),
         source:clip(row.source||'',500),
         postURL:'https://danbooru.donmai.us/posts/'+encodeURIComponent(String(row.id))
@@ -1018,17 +1020,62 @@
     if(!asArray(pack.snapshot?.additionalAssets).some(a=>Array.isArray(a)&&a[0]===asset.name))return false;
     return isRelevantPost(asset,signals,pack.characterKind);
   }
+  function imageMagic(bytes){
+    if(!bytes||bytes.length<12)return '';
+    if(bytes[0]===0x89&&bytes[1]===0x50&&bytes[2]===0x4e&&bytes[3]===0x47
+      &&bytes[4]===0x0d&&bytes[5]===0x0a&&bytes[6]===0x1a&&bytes[7]===0x0a)return 'png';
+    if(bytes[0]===0xff&&bytes[1]===0xd8&&bytes[2]===0xff)return 'jpg';
+    if(bytes[0]===0x47&&bytes[1]===0x49&&bytes[2]===0x46&&bytes[3]===0x38
+      &&(bytes[4]===0x37||bytes[4]===0x39)&&bytes[5]===0x61)return 'gif';
+    if(bytes[0]===0x52&&bytes[1]===0x49&&bytes[2]===0x46&&bytes[3]===0x46
+      &&bytes[8]===0x57&&bytes[9]===0x45&&bytes[10]===0x42&&bytes[11]===0x50)return 'webp';
+    return '';
+  }
+  function imageCandidateUrls(item){
+    const urls=[item?.image,item?.sample,item?.thumbnail].map(safeBooruMediaURL).filter(Boolean);
+    return [...new Set(urls)];
+  }
+  async function fetchImageBinary(item,limit=12*1024*1024){
+    const urls=imageCandidateUrls(item);
+    if(!urls.length)throw Error('허용된 이미지 URL이 없음');
+    const failures=[];
+    for(const url of urls){
+      try{
+        const response=await risuai.nativeFetch(url,{
+          method:'GET',
+          headers:{
+            // Same expected request context as the working downloader,
+            // without spoofing credentials or ignoring response validation.
+            'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+            'Referer':item?.provider==='danbooru'?'https://danbooru.donmai.us/':'https://gelbooru.com/',
+            'Accept':'image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8,*/*;q=0.2'
+          }
+        });
+        if(!response?.ok)throw Error('HTTP '+str(response?.status||'unknown'));
+        const declaredSize=Number(response.headers?.get?.('content-length')||0);
+        if(declaredSize>limit)throw Error('용량 제한 초과');
+        const contentType=str(response.headers?.get?.('content-type')||'unknown').toLowerCase();
+        const bytes=new Uint8Array(await response.arrayBuffer());
+        if(bytes.length<12||bytes.length>limit)throw Error('빈 파일 또는 용량 제한 초과');
+        const ext=imageMagic(bytes);
+        if(!ext)throw Error('실제 이미지 데이터 아님 (Content-Type '+clip(contentType,60)+', '+bytes.length+'B)');
+        // RisuBard's proxy may label genuine binary as application/octet-stream.
+        // Trust an actual PNG/JPEG/WebP/GIF header over a proxy MIME label.
+        return {bytes,ext,url};
+      }catch(e){
+        let host='unknown';
+        try{host=new URL(url).hostname;}catch(_){}
+        failures.push(host+': '+clip(e?.message||e,105));
+      }
+    }
+    throw Error('이미지 다운로드 실패 · '+failures.join(' / ').slice(0,330));
+  }
+
   async function persistAssetToPack(pack,item,ctx=null){
     if(!pack||!item||isRejected(item.id))return false;
     if(asArray(pack.externalAssets).some(x=>str(x.postId)===str(item.id)))return false;
-    const fetchResult=await risuai.nativeFetch(item.image,{method:'GET'});
-    if(!fetchResult?.ok)throw Error('이미지 다운로드 실패 '+str(fetchResult?.status));
-    const type=str(fetchResult.headers?.get?.('content-type')).toLowerCase();
-    if(type&&!type.startsWith('image/'))throw Error('이미지 형식 아님');
-    const length=Number(fetchResult.headers?.get?.('content-length')||0);
-    if(length>12*1024*1024)throw Error('12MB 초과');
-    const bytes=new Uint8Array(await fetchResult.arrayBuffer());
-    if(!bytes.length||bytes.length>12*1024*1024)throw Error('이미지 크기 제한');
+    const download=await fetchImageBinary(item);
+    const {bytes}=download;
     const path=await risuai.saveAsset(bytes);
     if(!safePath(path)||!str(path).startsWith('assets/'))throw Error('에셋 저장 실패');
     const verified=bytesOf(await risuai.readImage(path));
@@ -1040,7 +1087,7 @@
     const existing=asArray(fresh.snapshot?.additionalAssets);
     const name='gelbooru_'+item.id;
     if(existing.some(x=>x[0]===name))return false;
-    const ext=item.image.match(/\.(png|jpe?g|webp|gif)(?:$|\?)/i)?.[1]?.replace('jpeg','jpg')||'png';
+    const ext=download.ext;
     const asset={name,path,ext,postId:str(item.id),tags:item.tags,
       provider:item.provider||'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source||'',autoAdded:true};
     const updated={...fresh,updatedAt:Date.now(),
@@ -1254,13 +1301,21 @@
         autoCollectBusy=true;
         try{
           const rows=await searchBooruWithFallback(tags,12,0);
-          const candidate=rows.find(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
-            &&isRelevantPost(x,tagSignals,pack.characterKind));
-          if(candidate&&await persistAssetToPack(pack,candidate,ctx)){
-            autoCollectStatus=pack.name+' · 에셋 #'+candidate.id+' 자동 저장';
-            outputLastResult=autoCollectStatus;
+          const candidates=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
+            &&isRelevantPost(x,tagSignals,pack.characterKind)).slice(0,3);
+          let saved=null,lastFailure='';
+          for(const candidate of candidates){
+            try{
+              if(await persistAssetToPack(pack,candidate,ctx)){saved=candidate;break;}
+            }catch(e){lastFailure=clip(e?.message||e,210);}
           }
-          else {autoCollectStatus=pack.name+' · 새로운 적합 이미지 없음';outputLastResult=autoCollectStatus;}
+          if(saved){
+            autoCollectStatus=pack.name+' · 에셋 #'+saved.id+' 자동 저장';
+          }else{
+            autoCollectStatus=lastFailure?'자동 검색은 성공했지만 이미지 다운로드 실패: '+lastFailure:
+              pack.name+' · 조건에 맞는 신규 이미지 없음';
+          }
+          outputLastResult=autoCollectStatus;
         }catch(e){autoCollectStatus='자동 검색 실패: '+clip(e?.message||e,150);}
         finally{autoCollectBusy=false;}
         return; // One search and at most one image per display event.
@@ -1297,20 +1352,14 @@
       for(const item of chosen){
         if(existingIds.has(item.id))continue;
         try{
-          const response=await risuai.nativeFetch(item.image,{method:'GET'});
-          if(!response?.ok)throw Error('이미지 응답 '+response?.status);
-          const size=Number(response.headers?.get?.('content-length')||0);
-          if(size>18*1024*1024)throw Error('18MB를 초과하는 이미지');
-          const contentType=str(response.headers?.get?.('content-type')).toLowerCase();
-          if(contentType&&!contentType.startsWith('image/'))throw Error('이미지 형식이 아닌 응답');
-          const bytes=new Uint8Array(await response.arrayBuffer());
-          if(!bytes.length||bytes.length>18*1024*1024)throw Error('빈 이미지 또는 18MB 초과');
+          const download=await fetchImageBinary(item,18*1024*1024);
+          const {bytes}=download;
           const savedPath=await risuai.saveAsset(bytes);
           if(!safePath(savedPath))throw Error('에셋 저장 경로가 유효하지 않아');
           const verified=bytesOf(await risuai.readImage(savedPath));
           if(!verified||verified.length!==bytes.length)throw Error('저장 검증 실패');
           for(let i=0;i<bytes.length;i++)if(bytes[i]!==verified[i])throw Error('저장 내용이 원본과 달라');
-          const ext=item.image.match(/\.(png|jpe?g|gif|webp)(?:$|\?)/i)?.[1]?.replace('jpeg','jpg')||'png';
+          const ext=download.ext;
           imported.push({...item,path:savedPath,name:'gelbooru_'+item.id,ext});
         }catch(e){problems.push(item.id+': '+str(e?.message||e));}
       }
@@ -1471,7 +1520,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.5</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.6</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
