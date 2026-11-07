@@ -238,9 +238,57 @@
   const ALIAS_CACHE_MS=10000;
   let displayCache=null;
   function invalidateDisplayCache(){displayCache=null;}
+  function sceneEmotion(text){
+    const rules=[
+      ['crying',/(?:울었|눈물|흐느꼈|서럽|crying|tears|sobbed)/i],
+      ['angry',/(?:화가|짜증|화를 냈|분노|인상을 찌푸|angry|furious|annoyed)/i],
+      ['blush',/(?:얼굴이 붉|볼이 붉|귀가 붉|부끄러|당황|blush|embarrass|shy)/i],
+      ['surprised',/(?:놀랐|깜짝|눈이 커|경악|surpris|shock)/i],
+      ['smile',/(?:웃었|웃음|미소|싱긋|빙긋|smil|laugh|grin)/i],
+      ['sad',/(?:슬픔|우울|풀이 죽|sad|depress)/i]
+    ];
+    return rules.find(([name,pattern])=>pattern.test(text))?.[0]||'';
+  }
+  function pickTaggedAsset(content,cached){
+    if(!cached?.tagAssets?.length||/\{\{\s*(?:img|image|asset|emotion)\s*(?:::|=)/i.test(content))return '';
+    if(content.length>40000||content.length<40)return '';
+    const contentWindow=content.slice(-14000);
+    let latest=null;
+    for(const item of cached.tagAssets){
+      const name=str(item.characterName).trim();
+      if(!name)continue;
+      const escaped=name.replace(/[^a-zA-Z0-9가-힣_]/g,ch=>'\\'+ch);
+      const pattern=new RegExp('\\['+escaped+'\\]','g');
+      let match;
+      while((match=pattern.exec(contentWindow))){
+        if(!latest||match.index>latest.index)latest={item,index:match.index,matched:name};
+      }
+    }
+    if(!latest)return '';
+    const contextText=contentWindow.slice(latest.index,Math.min(contentWindow.length,latest.index+900));
+    const emotion=sceneEmotion(contextText);
+    if(!emotion)return '';
+    const synonyms={
+      smile:['smile','happy','laughing','grin','closed_eyes'],
+      angry:['angry','frown','annoyed','furrowed_brow'],
+      crying:['crying','tears','sad','crying_with_eyes_open'],
+      blush:['blush','embarrassed','shy','blushing'],
+      surprised:['surprised','wide_eyes','open_mouth','shock'],
+      sad:['sad','tears','frown','downcast_eyes']
+    };
+    const candidates=cached.tagAssets.filter(x=>x.characterName===latest.matched);
+    let winning=null,score=0;
+    for(const item of candidates){
+      const tags=new Set(asArray(item.tags));
+      const value=asArray(synonyms[emotion]).reduce((n,t)=>n+(tags.has(t)?(t===emotion?3:1):0),0);
+      if(value>score){score=value;winning=item;}
+    }
+    return winning&&score>0?'{{img::'+winning.name+'}}':'';
+  }
   async function displayAssetCompatibility(content){
-    if(destroyed||typeof content!=='string'||!content.includes('{{')
-      ||!/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content))return content;
+    if(destroyed||typeof content!=='string')return content;
+    const hasAssetTag=/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content);
+    if(!hasAssetTag&&!/\[[^\]\n]{1,80}\]/.test(content))return content;
     try{
       const ci=await risuai.getCurrentCharacterIndex();
       const ti=await risuai.getCurrentChatIndex();
@@ -249,12 +297,22 @@
       if(!cached||cached.ci!==ci||cached.ti!==ti||now-cached.at>ALIAS_CACHE_MS){
         const ctx=await context();
         const aliases=activeAliases(ctx);
+        const tagAssets=[];
+        for(const mod of aliases.active){
+          const metadata=metadataOf(mod);
+          if(metadata?.autoImages!==true)continue;
+          for(const item of asArray(metadata.externalTagAssets))
+            if(asArray(mod.assets).some(x=>Array.isArray(x)&&x[0]===item.name))
+              tagAssets.push(item);
+        }
         cached={ci:ctx.ci,ti:ctx.ti,at:now,lookup:aliases.lookup,
-          hasActive:aliases.active.length>0,target:ctx.target};
+          hasActive:aliases.active.length>0,target:ctx.target,tagAssets};
         displayCache=cached;
       }
       if(!cached.hasActive)return content;
-      return rewriteAssetTokens(content,cached.lookup,cached.target);
+      const rewritten=hasAssetTag?rewriteAssetTokens(content,cached.lookup,cached.target):content;
+      const selected=pickTaggedAsset(rewritten,cached);
+      return selected?rewritten+'\n\n'+selected:rewritten;
     }catch(error){
       console.log('[CharacterMixer] asset preview fallback:',error?.message||error);
       return content;
