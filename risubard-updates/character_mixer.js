@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.0-beta.3
+//@version 0.7.0-beta.4
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -17,13 +17,13 @@
   let externalBusy=false,externalError='',externalNotice='',speakerAliasInput='';
   let characterKindChoice='unknown',characterWorkInput='';
   const AUTO_PREF_KEY='character_mixer_auto_assets_v1';
-  let autoCollectEnabled=false,autoCollectStatus='',autoCollectBusy=false;
+  let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
   let rejectedPosts={},lastDiscovery=new Map(),discoveryRun=new Set();
   const externalSelected=new Set();
   const PROFILE_LIMIT=6000, LORE_LIMIT=30000;
   let destroyed=false, busy=false, opened=false, message='', sourceId='';
   let choices={mode:'adapt',notes:'',description:true,personality:true,scenario:false,
-    examples:false,greeting:false,assets:true,emotions:true,moduleAssets:true,moduleLore:false,autoImages:false};
+    examples:false,greeting:false,assets:true,emotions:true,moduleAssets:true,moduleLore:false,autoImages:true};
   let loreChoices=new Set(),moduleChoices=new Set(),extraSourceIds=new Set();
   const str=v=>String(v??'');
   const esc=v=>str(v).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[ch]));
@@ -338,7 +338,7 @@
         const tagAssets=[];
         for(const mod of aliases.active){
           const metadata=metadataOf(mod);
-          if(metadata?.autoImages!==true)continue;
+          if(metadata?.autoImages!==true&&!autoCollectEnabled)continue;
           for(const item of asArray(metadata.externalTagAssets))
             if(asArray(mod.assets).some(x=>Array.isArray(x)&&x[0]===item.name))
               tagAssets.push(item);
@@ -488,7 +488,7 @@
   async function savePacks(){await risuai.pluginStorage.setItem(PACK_STORE,packLibrary);}
   async function loadAutoPrefs(){
     try{const p=await risuai.pluginStorage.getItem(AUTO_PREF_KEY);
-      autoCollectEnabled=p?.enabled===true;
+      autoCollectEnabled=p?.enabled!==false;
       rejectedPosts=p&&typeof p.rejected==='object'&&p.rejected? p.rejected:{};
     }catch(e){autoCollectStatus='자동 에셋 설정 읽기 실패: '+str(e?.message||e);}
   }
@@ -826,7 +826,7 @@
         return {...mod,assets:[...asArray(mod.assets),[name,path,ext]]};
       }
       const meta=metadataOf(mod);
-      if(!ctx||!meta?.autoImages||meta.targetChatId!==ctx.chat.id
+      if(!ctx||(!meta?.autoImages&&!autoCollectEnabled)||meta.targetChatId!==ctx.chat.id
         ||!asArray(meta.sourceIds).includes('pack:'+pack.id))return mod;
       const tagItem={name,tags:item.tags,characterName:fresh.name,
         characterAliases:[fresh.name,...asArray(fresh.speakerAliases)],
@@ -893,8 +893,13 @@
   async function discoverForScene(content,ctx){
     if(!autoCollectEnabled||autoCollectBusy||destroyed||ctx.libraryOnly)return;
     const active=installedInChat(ctx).map(m=>({mod:m,meta:metadataOf(m)}))
-      .filter(x=>x.meta?.autoImages);
+      .filter(x=>x.meta?.autoImages||autoCollectEnabled);
     if(!active.length)return;
+    // Display hooks can render the entire old chat. Only fetch assets for the
+    // newest assistant/character message, never retroactively crawl history.
+    const last=asArray(ctx.chat?.message).filter(m=>['char','assistant'].includes(str(m?.role))).at(-1);
+    const raw=str(last?.data).trim();
+    if(!raw||!content.includes(raw.slice(0,Math.min(100,raw.length))))return;
     const window=content.slice(-1600);
     const signals=sceneTagSignals(window);
     if(!signals.length)return;
@@ -1143,7 +1148,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.0-beta.3</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.0-beta.4</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
