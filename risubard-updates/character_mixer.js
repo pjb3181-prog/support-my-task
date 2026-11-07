@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.3
+//@version 0.7.4
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -21,6 +21,7 @@
   const DISPLAY_MIN_GAP=3, DISPLAY_RECENT_WINDOW=5, DISPLAY_REPEAT_TURN_WINDOW=15;
   let displayHistory={};
   let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
+  let externalProviderStatus='',authFailureCount=0;
   let rejectedPosts={},lastDiscovery=new Map(),discoveryRun=new Set();
   let latestShown=null,reviewFirst=false;
   let outputListenerAvailable=false,outputEventCount=0,outputLastResult='아직 생성 완료 이벤트를 받지 못함';
@@ -281,7 +282,8 @@
   function pickTaggedAsset(content,cached,excludedNames=new Set()){
     if(!cached?.tagAssets?.length||/\{\{\s*(?:img|image|asset|emotion)\s*(?:::|=)/i.test(content))return '';
     if(content.length>40000||content.length<40)return '';
-    const window=content.slice(-14000);
+    const window=sanitizeSceneText(content).slice(-14000);
+    if(!window)return '';
     let latest=null;
     for(const item of cached.tagAssets){
       for(const name of asArray(item.characterAliases).filter(Boolean)){
@@ -397,7 +399,7 @@
       if(!cached.hasActive)return content;
       const rewritten=hasAssetTag?rewriteAssetTokens(content,cached.lookup,cached.target):content;
       const omitted=new Set(Object.keys(rejectedPosts).filter(k=>rejectedPosts[k]).map(k=>'gelbooru_'+k.slice(9)));
-      const safe=rewritten.replace(/\{\{img::(gelbooru_\d+)\}\}/g,(token,name)=>omitted.has(name)?'':token);
+      const safe=rewritten.replace(/\{\{img::(gelbooru_(?:db_)?\d+)\}\}/g,(token,name)=>omitted.has(name)?'':token);
       const decision=currentDisplayDecision(ctx,safe);
       if(!decision)return safe;
       // Preserve images already written explicitly in the chat; never append
@@ -847,14 +849,18 @@
     if(!pack)throw Error('먼저 저장된 [PACK] 캐릭터를 선택해.');
     return pack;
   }
-  function gelbooruMediaURL(value){
+  function safeBooruMediaURL(value){
     try{
       const u=new URL(str(value));
-      if(u.protocol!=='https:'||!/(^|\.)gelbooru\.com$/i.test(u.hostname))return '';
-      if(!/\.(?:png|jpg|jpeg|gif|webp)(?:$|\?)/i.test(u.pathname+u.search))return '';
+      if(u.protocol!=='https:')return '';
+      const allowed=/(^|\.)gelbooru\.com$/i.test(u.hostname)||
+        /(^|\.)donmai\.us$/i.test(u.hostname);
+      if(!allowed||!/\.(?:png|jpe?g|gif|webp)(?:$|\?)/i.test(u.pathname+u.search))return '';
       return u.href;
     }catch(_){return '';}
   }
+  // Retain older renderer and settings references.
+  function gelbooruMediaURL(value){return safeBooruMediaURL(value);}
   function booruTags(row){
     const raw=Array.isArray(row?.tags)?row.tags:typeof row?.tags==='string'?row.tags.split(/\s+/):[];
     return [...new Set(raw.map(x=>str(x).toLowerCase()).filter(Boolean))].slice(0,200);
@@ -864,12 +870,74 @@
     return list.filter(x=>x&&Number.isFinite(Number(x.id)))
       .filter(x=>['general','safe','s','g'].includes(str(x.rating).toLowerCase()))
       .map(row=>({
-        id:String(row.id),tags:booruTags(row),rating:row.rating,
-        thumbnail:gelbooruMediaURL(row.preview_url||row.sample_url||row.file_url),
-        image:gelbooruMediaURL(row.file_url||row.sample_url),
+        id:String(row.id),provider:'gelbooru',tags:booruTags(row),rating:row.rating,
+        thumbnail:safeBooruMediaURL(row.preview_url||row.sample_url||row.file_url),
+        image:safeBooruMediaURL(row.file_url||row.sample_url),
         source:clip(row.source||'',500),
         postURL:'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(String(row.id))
       })).filter(row=>row.image);
+  }
+  function parseDanbooruPosts(data){
+    if(!Array.isArray(data))return [];
+    return data.filter(x=>x&&Number.isSafeInteger(Number(x.id)))
+      .filter(x=>['g','general'].includes(str(x.rating).toLowerCase()))
+      .map(row=>({
+        // Provider-qualified IDs keep existing Gelbooru post IDs unique.
+        id:'db_'+String(row.id),provider:'danbooru',
+        tags:booruTags({tags:str(row.tag_string||row.tag_string_general||'')}),
+        rating:row.rating,
+        thumbnail:safeBooruMediaURL(row.preview_file_url||row.large_file_url||row.file_url),
+        image:safeBooruMediaURL(row.file_url||row.large_file_url),
+        source:clip(row.source||'',500),
+        postURL:'https://danbooru.donmai.us/posts/'+encodeURIComponent(String(row.id))
+      })).filter(x=>x.image);
+  }
+  function sanitizeSceneText(value){
+    let text=str(value);
+    // Do not treat a model's internal reasoning as fictional scene content.
+    text=text.replace(/<\s*(?:thoughts?|thinking|analysis)\b[^>]*>[\s\S]*?<\s*\/\s*(?:thoughts?|thinking|analysis)\s*>/gi,' ');
+    text=text.replace(/<\|im_start\|>\s*(?:analysis|thinking)[\s\S]*?<\|im_end\|>/gi,' ');
+    text=text.replace(/<\|channel\s*=\s*analysis\|>[\s\S]*?<\|channel\s*=\s*final\|>/gi,' ');
+    if(/<\s*(?:thoughts?|thinking|analysis)\b[^>]*>/i.test(text)){
+      // An unclosed thought block cannot be reliably separated: skip the scene.
+      return '';
+    }
+    return text.trim();
+  }
+  async function searchBooruWithFallback(baseTags,limit=12,page=0){
+    const userTags=asArray(baseTags).map(x=>str(x).trim()).filter(x=>x&&!x.startsWith('rating:'));
+    const gelParams=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
+      limit:String(limit),pid:String(page),tags:[...userTags,'rating:general'].join(' ')});
+    if(externalApiKey.trim()&&externalUserId.trim()){
+      gelParams.set('api_key',externalApiKey.trim());
+      gelParams.set('user_id',externalUserId.trim());
+    }
+    let gelFailure='';
+    try{
+      const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+gelParams.toString(),{method:'GET'});
+      if(!response?.ok)throw Error('HTTP '+str(response?.status||'unknown'));
+      const posts=parseBooruPosts(await response.json());
+      externalProviderStatus='Gelbooru API 정상 ('+posts.length+'건)';
+      return posts;
+    }catch(e){
+      gelFailure=clip(e?.message||e,100);
+    }
+    // Danbooru public search: one descriptive tag + rating:g to stay within
+    // common unauthenticated tag-count restrictions; verify all tags locally.
+    const distinctive=userTags.find(x=>x!=='1girl'&&x!=='1boy')||userTags[0]||'smile';
+    const danParams=new URLSearchParams({limit:String(Math.min(30,Math.max(12,limit))),page:String(page+1),
+      tags:distinctive+' rating:g'});
+    try{
+      const response=await risuai.nativeFetch('https://danbooru.donmai.us/posts.json?'+danParams.toString(),{method:'GET'});
+      if(!response?.ok)throw Error('HTTP '+str(response?.status||'unknown'));
+      const posts=parseDanbooruPosts(await response.json());
+      externalProviderStatus='Gelbooru 실패 ('+gelFailure+') → Danbooru 정상 ('+posts.length+'건)';
+      return posts;
+    }catch(e){
+      const second=clip(e?.message||e,100);
+      externalProviderStatus='Gelbooru '+gelFailure+' / Danbooru '+second;
+      throw Error('이미지 검색 서버 접근 실패: '+externalProviderStatus);
+    }
   }
   function isRejected(postId){return rejectedPosts['gelbooru:'+str(postId)]===true;}
   function assetSceneScore(item,signals,kind){
@@ -910,7 +978,7 @@
     if(existing.some(x=>x[0]===name))return false;
     const ext=item.image.match(/\.(png|jpe?g|webp|gif)(?:$|\?)/i)?.[1]?.replace('jpeg','jpg')||'png';
     const asset={name,path,ext,postId:str(item.id),tags:item.tags,
-      provider:'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source||'',autoAdded:true};
+      provider:item.provider||'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source||'',autoAdded:true};
     const updated={...fresh,updatedAt:Date.now(),
       externalAssets:[...asArray(fresh.externalAssets),asset],
       snapshot:{...fresh.snapshot,additionalAssets:[...existing,[name,path,ext]]}};
@@ -1073,8 +1141,9 @@
       const raw=str(msg.data);
       if(raw.length<40)return;
       const active=installedInChat(ctx).length?ctx:await bootstrapCurrentChat(ctx);
-      outputLastResult='장면 분석: '+clip(raw.slice(0,80).replace(/\s+/g,' '),80);
-      await discoverForScene(raw,active);
+      const cleanScene=sanitizeSceneText(raw);
+      outputLastResult=cleanScene?'장면 분석: '+clip(cleanScene.slice(0,80).replace(/\s+/g,' '),80):'내부 Thoughts 구간 제외 · 분석 가능한 장면 없음';
+      if(cleanScene)await discoverForScene(raw,active);
     }catch(e){outputLastResult='자동 처리 실패: '+clip(e?.message||e,160);console.warn('[CharacterMixer] output event',e);}
   }
 
@@ -1088,7 +1157,8 @@
     const last=asArray(ctx.chat?.message).filter(m=>['char','assistant'].includes(str(m?.role))).at(-1);
     const raw=str(last?.data).trim();
     if(!raw||(!content.includes(raw.slice(0,Math.min(100,raw.length)))&&content!==raw))return;
-    const window=content.slice(-1600);
+    const window=sanitizeSceneText(content).slice(-3000);
+    if(window.length<30){autoCollectStatus='장면 텍스트 없음 · Thoughts/내부 분석을 제외했어';return;}
     const signals=sceneTagSignals(window);
     if(!signals.length)return;
     const now=Date.now();
@@ -1119,14 +1189,7 @@
         if(!tags.length)continue;
         autoCollectBusy=true;
         try{
-          const params=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
-            limit:'12',pid:'0',tags:[...tags,'rating:general'].join(' ')});
-          if(externalApiKey&&externalUserId){
-            params.set('api_key',externalApiKey.trim());params.set('user_id',externalUserId.trim());
-          }
-          const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
-          if(!response?.ok)throw Error('검색 API '+str(response?.status));
-          const rows=parseBooruPosts(await response.json());
+          const rows=await searchBooruWithFallback(tags,12,0);
           const candidate=rows.find(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
             &&isRelevantPost(x,tagSignals,pack.characterKind));
           if(candidate&&await persistAssetToPack(pack,candidate,ctx)){
@@ -1148,20 +1211,10 @@
       externalResults=[];
       const tokens=str(externalQuery).trim().split(/\s+/).filter(Boolean).slice(0,8);
       if(!tokens.length)throw Error('캐릭터 태그를 입력해. 예: boa_hancock_(one_piece)');
-      const tags=[...tokens.filter(x=>!x.startsWith('rating:')),'rating:general'].join(' ');
-      const params=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
-        limit:'18',pid:String(externalPage),tags});
-      if(externalApiKey.trim()&&externalUserId.trim()){
-        params.set('api_key',externalApiKey.trim());params.set('user_id',externalUserId.trim());
-      }
       if(typeof risuai.nativeFetch!=='function')throw Error('이 버전에서는 nativeFetch API를 사용할 수 없어');
-      const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
-      if(!response?.ok)throw Error('Gelbooru API 응답 '+(response?.status||'없음')+
-        ' · API 키/사용자 ID와 요청 제한을 확인해.');
-      const data=await response.json();
-      externalResults=parseBooruPosts(data);
+      externalResults=await searchBooruWithFallback(tokens,18,externalPage);
       externalSelected.clear();
-      externalNotice=externalResults.length+'개 일반 등급 이미지 검색 완료. 저장할 이미지를 직접 골라줘.';
+      externalNotice=externalResults.length+'개 일반 등급 이미지 검색 완료 · '+externalProviderStatus;
     }catch(e){externalError=str(e?.message||e);}
     finally{externalBusy=false;await render();}
   }
@@ -1207,7 +1260,7 @@
         let name=item.name,i=2;while(already.has(name)){name=item.name+'_'+i;i++;}
         already.add(name);
         return {name,path:item.path,ext:item.ext,tags:item.tags,postId:item.id,
-          provider:'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source};
+          provider:item.provider||'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source};
       });
       const newRecord={...pack,updatedAt:Date.now(),binaryCopied:true,
         snapshot:{...pack.snapshot,additionalAssets:[
@@ -1354,7 +1407,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.3</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.4</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1388,7 +1441,8 @@
         '<section><h3>채팅 이미지 자동 수집 · 싫어요</h3>'+ 
         '<p class="muted">실제 생성 이벤트 연결: '+(outputListenerAvailable?'정상 등록':'미등록 · 플러그인의 replacer 권한이나 앱 버전 확인')+' / 수신 '+outputEventCount+'회</p>'+ 
         '<p class="muted">최근 자동 처리: '+esc(outputLastResult)+'</p>'+
-        '<p class="muted">외부 검색 결과: '+esc(autoCollectStatus||'검색 실행 기록 없음')+'</p>'+
+        '<p class="muted">외부 검색 결과: '+esc(autoCollectStatus||'검색 실행 기록 없음')+'</p>'+ 
+        '<p class="muted">검색 제공처: '+esc(externalProviderStatus||'아직 확인 안 됨')+'</p>'+
         '<button id="cm-diagnose" type="button">현재 채팅 자동 연결 및 최근 답변 테스트</button>'+
         '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
         '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<br/><small>한번에 최대 1장 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
@@ -1405,7 +1459,7 @@
           '</div>':'<p class="muted">저장된 [PACK]을 선택하면 이미지별 싫어요를 누를 수 있어.</p>')+
         '<p class="muted">싫어요 이미지는 팩과 연결된 채팅 모듈에서 제외하고, 같은 Gelbooru 게시물을 다시 가져오지 않아. 원본 바이너리 파일은 안전을 위해 즉시 삭제하지 않아.</p></section>'+
         '<section><h3>외부 이미지 검색 · Gelbooru</h3>'+
-        '<p class="muted">수동 검색도 가능해. 채팅 자동 수집은 위에서 켜고 끌 수 있어.</p>'+
+        '<p class="muted">Gelbooru에서 인증 오류가 나면 Danbooru 공개 검색을 시도해. 두 사이트 모두 실패하면 여기에서 오류를 확인할 수 있어.</p>'+
         '<label>'+(characterKindChoice==='original'?'장면 태그 검색 · 캐릭터 이름 불필요':'캐릭터 태그 검색')+'<input id="cm-booru-tags" type="text" value="'+esc(externalQuery)+'" placeholder="'+(characterKindChoice==='original'?'예: 1girl sitting indoors smile':'예: boa_hancock_(one_piece)')+'"/></label>'+
         (characterKindChoice==='original'?'<p class="muted">오리지널은 원작 캐릭터와 같은 얼굴일 필요가 없어. 대신 의상·행동·감정·장소가 맞는 이미지를 직접 골라 저장해. 이미지에 원래 그려진 캐릭터의 태그는 채팅 선택에 사용하지 않아.</p>':'')+
         '<div class="grid"><label>Gelbooru user_id (필요한 경우)<input id="cm-booru-user" type="text" value="'+esc(externalUserId)+'" autocomplete="off"/></label>'+
