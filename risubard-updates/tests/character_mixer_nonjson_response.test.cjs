@@ -1,0 +1,10 @@
+'use strict';const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
+const src=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
+const a=src.indexOf('  function inspectResponseBody('),b=src.indexOf('  async function searchBooruWithFallback(',a);
+const parser=vm.runInNewContext('const str=x=>String(x??"");const clip=(x,n)=>str(x).slice(0,n);'+src.slice(a,b)+'({readBooruJson,inspectResponseBody})');
+const response=(body,type='text/html')=>({ok:true,status:200,headers:{get:()=>type},text:async()=>body});
+test('syntax',()=>new vm.Script(src));
+test('valid JSON',async()=>{assert.equal((await parser.readBooruJson(response('{"post":[]}','application/json'))).post.length,0)});
+test('HTML challenge distinguished without exposing HTML',async()=>{await assert.rejects(()=>parser.readBooruJson(response('<html>Cloudflare verify you are human</html>')),e=>e.message.includes('HTML 보안 확인')&&!e.message.includes('verify you are human'))});
+test('empty response diagnosed',async()=>{await assert.rejects(()=>parser.readBooruJson(response('')),/빈 응답/)});
+test('malformed JSON diagnosed',async()=>{await assert.rejects(()=>parser.readBooruJson(response('{bad json','application/json')),/JSON 문법 오류/)});
