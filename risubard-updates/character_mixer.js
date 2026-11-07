@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.6
+//@version 0.7.7
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -798,7 +798,9 @@
       throw Error('RisuBard에서 readImage/saveAsset API를 사용할 수 없어');
     const raw=bytesOf(await risuai.readImage(path));
     if(!raw||!raw.length)throw Error('에셋을 읽을 수 없거나 빈 파일이야: '+clip(path,100));
-    const stored=await risuai.saveAsset(raw);
+    // Plugin RPC transfers Uint8Array buffers and detaches the sent view.
+    // Keep raw for post-save verification; transfer only a separate copy.
+    const stored=await risuai.saveAsset(new Uint8Array(raw));
     if(!safePath(stored)||!stored.startsWith('assets/'))throw Error('독립 저장 경로가 아닌 에셋이 반환됐어');
     const check=bytesOf(await risuai.readImage(stored));
     if(!check||check.length!==raw.length)throw Error('복제 후 재검증 실패: '+clip(path,100));
@@ -1076,7 +1078,9 @@
     if(asArray(pack.externalAssets).some(x=>str(x.postId)===str(item.id)))return false;
     const download=await fetchImageBinary(item);
     const {bytes}=download;
-    const path=await risuai.saveAsset(bytes);
+    // The plugin iframe transfers the argument buffer (zero-copy).
+    // Preserve the original byte array for readback verification.
+    const path=await risuai.saveAsset(new Uint8Array(bytes));
     if(!safePath(path)||!str(path).startsWith('assets/'))throw Error('에셋 저장 실패');
     const verified=bytesOf(await risuai.readImage(path));
     if(!verified||verified.length!==bytes.length)throw Error('복제 검증 실패');
@@ -1354,7 +1358,7 @@
         try{
           const download=await fetchImageBinary(item,18*1024*1024);
           const {bytes}=download;
-          const savedPath=await risuai.saveAsset(bytes);
+          const savedPath=await risuai.saveAsset(new Uint8Array(bytes));
           if(!safePath(savedPath))throw Error('에셋 저장 경로가 유효하지 않아');
           const verified=bytesOf(await risuai.readImage(savedPath));
           if(!verified||verified.length!==bytes.length)throw Error('저장 검증 실패');
@@ -1520,7 +1524,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.6</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.7</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
