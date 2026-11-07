@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.0-beta.2
+//@version 0.7.0-beta.3
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -813,7 +813,7 @@
     if(existing.some(x=>x[0]===name))return false;
     const ext=item.image.match(/\.(png|jpe?g|webp|gif)(?:$|\?)/i)?.[1]?.replace('jpeg','jpg')||'png';
     const asset={name,path,ext,postId:str(item.id),tags:item.tags,
-      provider:'gelbooru',sourceURL:item.postURL,artistSource:item.source||'',autoAdded:true};
+      provider:'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source||'',autoAdded:true};
     const updated={...fresh,updatedAt:Date.now(),
       externalAssets:[...asArray(fresh.externalAssets),asset],
       snapshot:{...fresh.snapshot,additionalAssets:[...existing,[name,path,ext]]}};
@@ -971,7 +971,7 @@
     externalBusy=true;externalError='';externalNotice='';
     try{
       const pack=externalTarget();
-      const chosen=externalResults.filter(x=>externalSelected.has(x.id));
+      const chosen=externalResults.filter(x=>externalSelected.has(x.id)&&!isRejected(x.id));
       if(!chosen.length)throw Error('가져올 이미지를 선택해.');
       if(chosen.length>12)throw Error('한 번에 12개까지만 저장할 수 있어.');
       if(typeof risuai.nativeFetch!=='function'||typeof risuai.saveAsset!=='function')
@@ -1008,7 +1008,7 @@
         let name=item.name,i=2;while(already.has(name)){name=item.name+'_'+i;i++;}
         already.add(name);
         return {name,path:item.path,ext:item.ext,tags:item.tags,postId:item.id,
-          provider:'gelbooru',sourceURL:item.postURL,artistSource:item.source};
+          provider:'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source};
       });
       const newRecord={...pack,updatedAt:Date.now(),binaryCopied:true,
         snapshot:{...pack.snapshot,additionalAssets:[
@@ -1143,7 +1143,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.0-beta.2</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.0-beta.3</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1182,7 +1182,7 @@
         (sourceId.startsWith('pack:')?
           '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4><div class="grid">'+
           asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.externalAssets).slice(-60).reverse().map(item=>
-            '<div class="item"><span><img loading="lazy" referrerpolicy="no-referrer" src="'+esc('https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(str(item.postId)))+'" alt="원본 #'+esc(item.postId)+'" style="display:none"/>'+
+            '<div class="item"><span>'+(gelbooruMediaURL(item.previewURL)?'<img loading="lazy" referrerpolicy="no-referrer" src="'+esc(gelbooruMediaURL(item.previewURL))+'" alt="원본 #'+esc(item.postId)+'" style="display:block;width:120px;height:120px;object-fit:contain"/>':'')+
             '<small>#'+esc(item.postId)+' · '+esc(asArray(item.tags).slice(0,8).join(', '))+'</small>'+
             '<a target="_blank" rel="noopener noreferrer" href="'+esc(item.sourceURL||'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(str(item.postId)))+'">원본 보기</a></span>'+
             '<button type="button" data-cm-dislike="'+esc(item.postId)+'" data-cm-dislike-pack="'+esc(sourceId.slice(5))+'">👎 싫어요 · 영구 제외</button></div>').join('')+
