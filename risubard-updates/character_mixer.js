@@ -239,52 +239,81 @@
   const ALIAS_CACHE_MS=10000;
   let displayCache=null;
   function invalidateDisplayCache(){displayCache=null;}
-  function sceneEmotion(text){
+  // Distinguish character-faithful fanwork images from scene-first OC images.
+  // A saved OC pack may contain unrelated source characters; never require a
+  // Gelbooru character tag for those, only sufficiently matching scene tags.
+  function sceneTagSignals(text){
     const rules=[
-      ['crying',/(?:울었|눈물|흐느꼈|서럽|crying|tears|sobbed)/i],
-      ['angry',/(?:화가|짜증|화를 냈|분노|인상을 찌푸|angry|furious|annoyed)/i],
-      ['blush',/(?:얼굴이 붉|볼이 붉|귀가 붉|부끄러|당황|blush|embarrass|shy)/i],
-      ['surprised',/(?:놀랐|깜짝|눈이 커|경악|surpris|shock)/i],
-      ['smile',/(?:웃었|웃음|미소|싱긋|빙긋|smil|laugh|grin)/i],
-      ['sad',/(?:슬픔|우울|풀이 죽|sad|depress)/i]
+      [['crying','tears','sad'],/(?:울었|눈물|흐느꼈|서럽|crying|tears|sobbed)/i,3],
+      [['angry','frown','annoyed'],/(?:화가|짜증|화를 냈|분노|인상을 찌푸|angry|furious|annoyed)/i,3],
+      [['blush','embarrassed','shy'],/(?:얼굴이 붉|볼이 붉|귀가 붉|부끄러|당황|blush|embarrass|shy)/i,3],
+      [['surprised','wide_eyes','open_mouth'],/(?:놀랐|깜짝|눈이 커|경악|surpris|shock)/i,3],
+      [['smile','happy','laughing','grin'],/(?:웃었|웃음|미소|싱긋|빙긋|smil|laugh|grin)/i,3],
+      [['sad','downcast_eyes'],/(?:슬픔|우울|풀이 죽|sad|depress)/i,3],
+      [['sitting','seated'],/(?:앉았|앉아|의자|sitting|seated)/i,2],
+      [['standing'],/(?:일어섰|서 있|일어서|standing)/i,2],
+      [['lying','on_bed'],/(?:누웠|누워|침대|lying|on.bed)/i,2],
+      [['walking'],/(?:걷|걸어|산책|walking)/i,2],
+      [['school_uniform','uniform'],/(?:교복|school uniform)/i,2],
+      [['dress'],/(?:드레스|원피스|dress)/i,2],
+      [['kimono'],/(?:기모노|kimono)/i,2],
+      [['swimsuit'],/(?:수영복|swimsuit)/i,2],
+      [['indoors'],/(?:실내|교실|방 안|방에서|카페|가게 안|inside|indoors)/i,1],
+      [['outdoors'],/(?:실외|거리|길거리|공원|바깥|outside|outdoors)/i,1],
+      [['night'],/(?:한밤|밤하늘|밤거리|야밤|night)/i,1],
+      [['day'],/(?:대낮|한낮|햇살|낮 시간|daytime)/i,1]
     ];
-    return rules.find(([name,pattern])=>pattern.test(text))?.[0]||'';
+    const hits=[];
+    for(const [tags,regex,weight] of rules)
+      if(regex.test(text))hits.push({tags,weight});
+    return hits;
   }
   function pickTaggedAsset(content,cached){
     if(!cached?.tagAssets?.length||/\{\{\s*(?:img|image|asset|emotion)\s*(?:::|=)/i.test(content))return '';
     if(content.length>40000||content.length<40)return '';
-    const contentWindow=content.slice(-14000);
+    const window=content.slice(-14000);
     let latest=null;
     for(const item of cached.tagAssets){
       for(const name of asArray(item.characterAliases).filter(Boolean)){
         const escaped=str(name).replace(/[^a-zA-Z0-9가-힣_]/g,ch=>'\\'+ch);
         const pattern=new RegExp('\\['+escaped+'\\]','g');
         let match;
-        while((match=pattern.exec(contentWindow))){
-          if(!latest||match.index>latest.index)latest={item,index:match.index,matched:item.sourceId};
+        while((match=pattern.exec(window))){
+          if(!latest||match.index>latest.index)latest={sourceId:item.sourceId,index:match.index};
         }
       }
     }
-    if(!latest)return '';
-    const contextText=contentWindow.slice(latest.index,Math.min(contentWindow.length,latest.index+900));
-    const emotion=sceneEmotion(contextText);
-    if(!emotion)return '';
-    const synonyms={
-      smile:['smile','happy','laughing','grin','closed_eyes'],
-      angry:['angry','frown','annoyed','furrowed_brow'],
-      crying:['crying','tears','sad','crying_with_eyes_open'],
-      blush:['blush','embarrassed','shy','blushing'],
-      surprised:['surprised','wide_eyes','open_mouth','shock'],
-      sad:['sad','tears','frown','downcast_eyes']
-    };
-    const candidates=cached.tagAssets.filter(x=>x.sourceId===latest.matched);
-    let winning=null,score=0;
+    // Only one OC pack may fall back to a speaker-less scene. Multiple active
+    // packs without explicit speaker mapping are ambiguous; show no image.
+    let selectedSource=latest?.sourceId;
+    if(!selectedSource){
+      const candidates=[...new Set(cached.tagAssets.filter(x=>x.characterKind==='original').map(x=>x.sourceId))];
+      if(candidates.length!==1)return '';
+      selectedSource=candidates[0];
+    }
+    const candidates=cached.tagAssets.filter(x=>x.sourceId===selectedSource);
+    if(!candidates.length)return '';
+    const kind=candidates[0].characterKind==='original'?'original':'fanwork';
+    const excerpt=latest?window.slice(latest.index,Math.min(window.length,latest.index+1200)):window.slice(-1200);
+    const signals=sceneTagSignals(excerpt);
+    if(!signals.length)return '';
+    // A fanwork pack uses only the leading emotion signal, preserving v0.6.0
+    // behavior. OC packs may match clothing, action, and setting as well.
+    const effective=kind==='original'?signals:signals.filter(x=>x.weight===3).slice(0,1);
+    if(!effective.length)return '';
+    let winner=null,best=0;
     for(const item of candidates){
       const tags=new Set(asArray(item.tags));
-      const value=asArray(synonyms[emotion]).reduce((n,t)=>n+(tags.has(t)?(t===emotion?3:1):0),0);
-      if(value>score){score=value;winning=item;}
+      let score=0;
+      for(const signal of effective){
+        if(signal.tags.some(t=>tags.has(t)))score+=signal.weight;
+      }
+      if(score>best){best=score;winner=item;}
     }
-    return winning&&score>0?'{{img::'+winning.name+'}}':'';
+    // A single strongly relevant expression, or two independent scene
+    // features, is enough. Reject incidental backdrop-only matches.
+    const min=kind==='original'?2:3;
+    return winner&&best>=min?'{{img::'+winner.name+'}}':'';
   }
   async function displayAssetCompatibility(content){
     if(destroyed||typeof content!=='string')return content;
