@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.1-beta.1
+//@version 0.7.1-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -359,7 +359,7 @@
         if(row){
           const pack=packLibrary.find(p=>'pack:'+p.id===row.sourceId);
           const external=asArray(pack?.externalAssets).find(x=>x.name===assetName);
-          if(pack&&external&&!isRejected(external.postId))latestShown={packId:pack.id,postId:str(external.postId),assetName};
+          if(pack&&external&&!isRejected(external.postId))latestShown={packId:pack.id,postId:str(external.postId),assetName,chatIndex:ti,characterIndex:ci};
         }
       }
       if(autoCollectEnabled&&!selected&&!destroyed){
@@ -1159,6 +1159,18 @@
           '</code> -> <code>'+esc(newName)+'</code></p>').join(''):
           '<p class="muted">No imported image aliases. Check B image assets and any separate asset module selections.</p>')+
         '<p class="muted">Native RisuBard tag: {{img::ASSET_NAME}}. Legacy {{img="NAME"}} is remapped only when NAME matches an imported image.</p></section>';
+      const recent=latestShown&&reviewFirst
+        ?packLibrary.find(p=>p.id===latestShown.packId)?.externalAssets?.find(x=>str(x.postId)===latestShown.postId)
+        :null;
+      const recentFeedback=reviewFirst?(
+        '<section><h3>최근 표시된 이미지 · 빠른 피드백</h3>'+
+        (recent?'<div class="item"><span>'+
+          (gelbooruMediaURL(recent.previewURL)?'<img loading="lazy" src="'+esc(gelbooruMediaURL(recent.previewURL))+
+            '" style="max-width:240px;max-height:260px;object-fit:contain" alt="최근 이미지"/>':'')+
+          '<small>Gelbooru #'+esc(recent.postId)+'</small></span>'+
+          '<button id="cm-dislike-recent" type="button">👎 이 이미지 싫어요 · 다시 표시하지 않기</button></div>'
+        :'<p class="muted">아직 이 채팅에서 자동으로 표시한 에셋이 없어. 팩의 이미지 목록에서는 개별적으로 제외할 수 있어.</p>')+
+        '</section>'):''; 
       document.body.innerHTML='<style>'+
         'body{margin:0;padding:18px;background:#171c2a;color:#eaf0ff;font:14px/1.55 system-ui}main{max-width:940px;margin:auto}'+
         'select,textarea,button{background:#263650;color:inherit;border:1px solid #63748f;border-radius:8px;padding:8px;font:inherit}'+
@@ -1170,8 +1182,8 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.1-beta.1</h2><button id="cm-close">닫기</button></div>'+
-        '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.1-beta.2</h2><button id="cm-close">닫기</button></div>'+
+        '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
         (packLibrary.length?packLibrary.map(p=>'<div class="installed"><span><b>📦 '+esc(p.name)+'</b><small>로어 '+loreOf(p.snapshot).length+'개 / 에셋 '+asArray(p.snapshot.additionalAssets).length+'개'+(p.binaryCopied?' · 이미지 복제 기록 있음':' · 이미지 참조만 저장됨')+'</small></span>'+
@@ -1276,7 +1288,12 @@
         '<button id="cm-apply" '+(!src||busy||ctx.libraryOnly?'disabled':'')+'>선택한 캐릭터를 현재 채팅에 명시적으로 불러오기</button></details>'+
         '</main>';
       const el=id=>document.getElementById(id);
-      el('cm-close').onclick=()=>{opened=false;void risuai.hideContainer();};
+      el('cm-close').onclick=()=>{opened=false;reviewFirst=false;void risuai.hideContainer();};
+      if(el('cm-dislike-recent'))el('cm-dislike-recent').onclick=()=>{
+        if(!latestShown)return;
+        void dislikeAsset(latestShown.packId,latestShown.postId).then(()=>{latestShown=null;reviewFirst=true;void render();})
+          .catch(e=>{externalError='싫어요 처리 실패: '+str(e?.message||e);void render();});
+      };
       for(const node of document.querySelectorAll('[data-cm-select-pack]'))node.onclick=()=>{
         sourceId='pack:'+str(node.getAttribute('data-cm-select-pack'));
         loreChoices.clear();moduleChoices.clear();extraSourceIds.clear();void render();
@@ -1350,6 +1367,11 @@
   }
   async function open(){
     opened=true;message='';
+    if(reviewFirst&&latestShown){
+      const ci=await risuai.getCurrentCharacterIndex().catch(()=>-1);
+      const ti=await risuai.getCurrentChatIndex().catch(()=>-1);
+      if(ci!==latestShown.characterIndex||ti!==latestShown.chatIndex)latestShown=null;
+    }
     await loadPacks();
     await loadAutoPrefs();
     try{
@@ -1366,6 +1388,7 @@
   }
   await loadPacks();
   await loadAutoPrefs();
+  async function openFeedback(){reviewFirst=true;await open();}
   // Register the settings entry first. An optional display hook failure must
   // never make the entire Character Mixer disappear from the UI.
   await risuai.registerSetting(NAME,open,'🧩','html','character-mixer-settings');
@@ -1373,6 +1396,10 @@
     await risuai.registerButton({name:NAME,icon:'🧩',iconType:'html',location:'hamburger',
       id:'character-mixer-hamburger'},open);
   }catch(error){console.log('[CharacterMixer] optional menu button unavailable',error);}
+  try{
+    await risuai.registerButton({name:'에셋 싫어요',icon:'👎',iconType:'html',location:'chat',
+      id:'character-mixer-dislike-chat'},openFeedback);
+  }catch(error){console.warn('[CharacterMixer] chat feedback button unavailable',error);}
   let displayHandler=typeof risuai.addRisuScriptHandler==='function'
     ? async content=>displayAssetCompatibility(content):null;
   if(displayHandler){
