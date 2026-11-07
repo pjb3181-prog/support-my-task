@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.0-beta.1
+//@version 0.7.0-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -349,8 +349,14 @@
       }
       if(!cached.hasActive)return content;
       const rewritten=hasAssetTag?rewriteAssetTokens(content,cached.lookup,cached.target):content;
-      const selected=pickTaggedAsset(rewritten,cached);
-      return selected?rewritten+'\n\n'+selected:rewritten;
+      const omitted=new Set(Object.keys(rejectedPosts).filter(k=>rejectedPosts[k]).map(k=>'gelbooru_'+k.slice(9)));
+      const safe=rewritten.replace(/\{\{img::(gelbooru_\d+)\}\}/g,(token,name)=>omitted.has(name)?'':token);
+      const selected=pickTaggedAsset(safe,{...cached,tagAssets:cached.tagAssets.filter(x=>!omitted.has(x.name))});
+      if(autoCollectEnabled&&!selected&&!destroyed){
+        // This happens outside the critical display path; network errors stay local.
+        void discoverForScene(safe,await context()).catch(e=>console.warn('[CharacterMixer] discovery',e));
+      }
+      return selected?safe+'\n\n'+selected:safe;
     }catch(error){
       console.log('[CharacterMixer] asset preview fallback:',error?.message||error);
       return content;
@@ -1137,7 +1143,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.0-beta.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.0-beta.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1168,8 +1174,22 @@
         '<p class="muted">자동 이미지 표시를 사용할 때 채팅의 [강세라], [핸콕] 같은 화자 이름을 인식하는 용도야. 쉼표로 구분해.</p>'+
         '<input id="cm-speaker-alias" type="text" value="'+esc(sourceId.startsWith('pack:')?(packLibrary.find(p=>'pack:'+p.id===sourceId)?.speakerAliases||[]).join(', '):'')+'" placeholder="예: 핸콕, 보아 핸콕"/>'+
         '<button id="cm-speaker-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>화자 이름 저장</button></section>'+
+        '<section><h3>채팅 이미지 자동 수집 · 싫어요</h3>'+
+        '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
+        '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<br/><small>한번에 최대 1장 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
+        '<p class="muted">채팅에 명시적으로 연결되고 자동 이미지 표시가 켜진 팩에만 적용돼. 현재 설정: '+(autoCollectEnabled?'자동 수집 ON':'자동 수집 OFF')+'</p>'+
+        '<p class="muted">'+esc(autoCollectStatus||'아직 자동 수집 기록 없음')+'</p>'+
+        (sourceId.startsWith('pack:')?
+          '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4><div class="grid">'+
+          asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.externalAssets).slice(-60).reverse().map(item=>
+            '<div class="item"><span><img loading="lazy" referrerpolicy="no-referrer" src="'+esc('https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(str(item.postId)))+'" alt="원본 #'+esc(item.postId)+'" style="display:none"/>'+
+            '<small>#'+esc(item.postId)+' · '+esc(asArray(item.tags).slice(0,8).join(', '))+'</small>'+
+            '<a target="_blank" rel="noopener noreferrer" href="'+esc(item.sourceURL||'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(str(item.postId)))+'">원본 보기</a></span>'+
+            '<button type="button" data-cm-dislike="'+esc(item.postId)+'" data-cm-dislike-pack="'+esc(sourceId.slice(5))+'">👎 싫어요 · 영구 제외</button></div>').join('')+
+          '</div>':'<p class="muted">저장된 [PACK]을 선택하면 이미지별 싫어요를 누를 수 있어.</p>')+
+        '<p class="muted">싫어요 이미지는 팩과 연결된 채팅 모듈에서 제외하고, 같은 Gelbooru 게시물을 다시 가져오지 않아. 원본 바이너리 파일은 안전을 위해 즉시 삭제하지 않아.</p></section>'+
         '<section><h3>외부 이미지 검색 · Gelbooru</h3>'+
-        '<p class="muted">먼저 [PACK] 캐릭터를 선택해. 태그로 검색하고 직접 선택한 일반 등급 이미지만 독립 팩에 복제해. 자동 대량 수집은 하지 않아.</p>'+
+        '<p class="muted">수동 검색도 가능해. 채팅 자동 수집은 위에서 켜고 끌 수 있어.</p>'+
         '<label>'+(characterKindChoice==='original'?'장면 태그 검색 · 캐릭터 이름 불필요':'캐릭터 태그 검색')+'<input id="cm-booru-tags" type="text" value="'+esc(externalQuery)+'" placeholder="'+(characterKindChoice==='original'?'예: 1girl sitting indoors smile':'예: boa_hancock_(one_piece)')+'"/></label>'+
         (characterKindChoice==='original'?'<p class="muted">오리지널은 원작 캐릭터와 같은 얼굴일 필요가 없어. 대신 의상·행동·감정·장소가 맞는 이미지를 직접 골라 저장해. 이미지에 원래 그려진 캐릭터의 태그는 채팅 선택에 사용하지 않아.</p>':'')+
         '<div class="grid"><label>Gelbooru user_id (필요한 경우)<input id="cm-booru-user" type="text" value="'+esc(externalUserId)+'" autocomplete="off"/></label>'+
@@ -1274,6 +1294,12 @@
       tagInput.oninput=e=>{externalQuery=str(e.target.value).slice(0,200);};
       keyInput.oninput=e=>{externalApiKey=str(e.target.value).slice(0,250);};
       userInput.oninput=e=>{externalUserId=str(e.target.value).slice(0,50);};
+      el('cm-auto-collect').onchange=e=>{autoCollectEnabled=Boolean(e.target.checked);
+        void saveAutoPrefs().then(()=>render()).catch(error=>{autoCollectStatus='설정 저장 실패 '+str(error?.message||error);void render();});};
+      for(const node of document.querySelectorAll('[data-cm-dislike]')){
+        node.onclick=()=>void dislikeAsset(str(node.getAttribute('data-cm-dislike-pack')),str(node.getAttribute('data-cm-dislike')))
+          .catch(error=>{externalError='싫어요 실패 '+str(error?.message||error);void render();});
+      }
       el('cm-booru-search').onclick=()=>{externalPage=0;void searchExternal();};
       el('cm-booru-prev').onclick=()=>{externalPage=Math.max(0,externalPage-1);void searchExternal();};
       el('cm-booru-next').onclick=()=>{externalPage=Math.min(100,externalPage+1);void searchExternal();};
