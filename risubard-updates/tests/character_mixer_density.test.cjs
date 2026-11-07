@@ -37,8 +37,7 @@ test('recent selection expires; single-image packs do not deadlock',()=>{
 });
 test('dislike forgets pending cached rendering',()=>{
  f.rememberFeedback('gelbooru_1');
- const row=Object.values(f.get())[0];
- assert.notEqual(row.lastAsset,'gelbooru_1');
+ assert.equal(Object.values(f.get()).length,0);
 });
 test('defaults and reuse-first check remain available',()=>{
  assert.match(source,/DISPLAY_MIN_GAP=3/);
