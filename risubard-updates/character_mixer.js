@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.7
+//@version 0.7.8
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -630,7 +630,7 @@
         tags:'smile rating:general',user_id:externalUserId.trim(),api_key:externalApiKey.trim()});
       const res=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
       if(!res?.ok)throw Error('HTTP '+str(res?.status||'unknown'));
-      await res.json();
+      await readBooruJson(res,'Gelbooru');
       authStatus='Gelbooru 인증 성공 · 자동 수집 사용 가능';
       externalProviderStatus='Gelbooru 인증 성공';
       lastDiscovery.clear();
@@ -698,7 +698,7 @@
     }
     const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
     if(!response?.ok)throw Error('외부 태그 조회 응답 '+str(response?.status));
-    const body=await response.json();
+    const body=await readBooruJson(response,'Gelbooru');
     const rows=Array.isArray(body)?body:asArray(body?.tag);
     return rows.filter(x=>Number(x?.type??x?.category)===4)
       .map(x=>({tag:clip(x.name,120),count:Number(x.count)||0}))
@@ -972,6 +972,34 @@
     }
     return text.trim();
   }
+  function inspectResponseBody(value){
+    const raw=str(value).replace(/^\uFEFF/,'').trimStart();
+    const sample=raw.slice(0,500).toLowerCase();
+    if(!raw)return '빈 응답';
+    if(/^<!doctype html|^<html|^<head|^<body|^<script|^<div/i.test(raw))
+      return /cloudflare|challenge|just a moment|captcha|verify you are human/i.test(sample)?
+        'HTML 보안 확인·차단 페이지':'JSON 대신 HTML 페이지 반환';
+    if(/^<\?xml|^<\w+/i.test(raw))return 'JSON 대신 XML/HTML 문서 반환';
+    if(/^access denied|^forbidden|^unauthorized/i.test(raw))return '접근 거부 텍스트';
+    if(/^error|^bad gateway|^upstream|^proxy error/i.test(raw))return '서버/프록시 오류 텍스트';
+    return '알 수 없는 비JSON 응답';
+  }
+  async function readBooruJson(response,provider){
+    if(!response?.ok)throw Error('HTTP '+str(response?.status||'unknown'));
+    const type=str(response.headers?.get?.('content-type')||'미표시').split(';')[0].toLowerCase();
+    const raw=await response.text();
+    const trimmed=raw.replace(/^\uFEFF/,'').trim();
+    if(!trimmed||(!trimmed.startsWith('{')&&!trimmed.startsWith('['))){
+      throw Error('HTTP '+str(response.status)+' · '+inspectResponseBody(raw)+
+        ' · Content-Type '+clip(type,45)+' · 본문 '+raw.length+'자');
+    }
+    try{
+      return JSON.parse(trimmed);
+    }catch(e){
+      throw Error('HTTP '+str(response.status)+' · JSON 문법 오류 ('+clip(e?.message||e,65)+
+        ') · Content-Type '+clip(type,45));
+    }
+  }
   async function searchBooruWithFallback(baseTags,limit=12,page=0){
     const userTags=asArray(baseTags).map(x=>str(x).trim()).filter(x=>x&&!x.startsWith('rating:'));
     const gelParams=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
@@ -982,9 +1010,10 @@
     }
     let gelFailure='';
     try{
-      const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+gelParams.toString(),{method:'GET'});
+      const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+gelParams.toString(),
+        {method:'GET',headers:{'Accept':'application/json,text/json;q=0.9,*/*;q=0.2'}});
       if(!response?.ok)throw Error('HTTP '+str(response?.status||'unknown'));
-      const posts=parseBooruPosts(await response.json());
+      const posts=parseBooruPosts(await readBooruJson(response,'Gelbooru'));
       externalProviderStatus='Gelbooru API 정상 ('+posts.length+'건)';
       return posts;
     }catch(e){
@@ -996,9 +1025,10 @@
     const danParams=new URLSearchParams({limit:String(Math.min(30,Math.max(12,limit))),page:String(page+1),
       tags:distinctive+' rating:g'});
     try{
-      const response=await risuai.nativeFetch('https://danbooru.donmai.us/posts.json?'+danParams.toString(),{method:'GET'});
+      const response=await risuai.nativeFetch('https://danbooru.donmai.us/posts.json?'+danParams.toString(),
+        {method:'GET',headers:{'Accept':'application/json,text/json;q=0.9,*/*;q=0.2'}});
       if(!response?.ok)throw Error('HTTP '+str(response?.status||'unknown'));
-      const posts=parseDanbooruPosts(await response.json());
+      const posts=parseDanbooruPosts(await readBooruJson(response,'Danbooru'));
       externalProviderStatus='Gelbooru 실패 ('+gelFailure+') → Danbooru 정상 ('+posts.length+'건)';
       return posts;
     }catch(e){
@@ -1524,7 +1554,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.7</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.8</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
