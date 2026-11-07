@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.9
+//@version 0.7.10
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -270,7 +270,16 @@
       [['dress'],/(?:드레스|원피스|dress)/i,2],
       [['kimono'],/(?:기모노|kimono)/i,2],
       [['swimsuit'],/(?:수영복|swimsuit)/i,2],
-      [['indoors'],/(?:실내|교실|방 안|방에서|카페|가게 안|inside|indoors)/i,1],
+      [['convenience_store','shop'],/(?:편의점|convenience.store)/i,3],
+      [['supermarket','grocery_store','shop'],/(?:마트|슈퍼마켓|슈퍼에서|supermarket|grocery.store)/i,3],
+      [['restaurant','dining'],/(?:식당|음식점|레스토랑|restaurant)/i,3],
+      [['cafe','coffee_shop'],/(?:카페|커피숍|coffee.shop|cafe)/i,3],
+      [['classroom','school'],/(?:교실|수업 시간|칠판|classroom)/i,3],
+      [['bedroom','indoors'],/(?:침실|원룸|자취방|침대 옆|bedroom)/i,3],
+      [['kitchen','cooking'],/(?:부엌|주방|요리하|조리대|kitchen|cooking)/i,3],
+      [['eating','food'],/(?:밥을 먹|식사를 하|음식을 먹|먹기 시작|식탁|eating|having.lunch)/i,3],
+      [['entrance','door'],/(?:현관|문을 열|문 앞|entrance)/i,2],
+      [['indoors'],/(?:실내|방 안|방에서|가게 안|inside|indoors)/i,1],
       [['outdoors'],/(?:실외|거리|길거리|공원|바깥|outside|outdoors)/i,1],
       [['night'],/(?:한밤|밤하늘|밤거리|야밤|night)/i,1],
       [['day'],/(?:대낮|한낮|햇살|낮 시간|daytime)/i,1]
@@ -1271,7 +1280,8 @@
       const last=asArray(ctx.chat?.message).filter(x=>['char','assistant'].includes(str(x?.role))).at(-1);
       if(!last)throw Error('분석할 AI 답변이 없어');
       const source=installedInChat(ctx).length?ctx:await bootstrapCurrentChat(ctx);
-      await discoverForScene(str(last.data),source);
+      autoCollectStatus='';
+      await discoverForScene(str(last.data),source,{manual:true});
       if(!autoCollectStatus)outputLastResult='최근 답변 분석 실행 완료 · 이미지가 나오지 않으면 캐릭터·표정 태그 또는 API를 확인해';
     }catch(e){outputLastResult='진단 실패: '+clip(e?.message||e,160);}
     await render();
@@ -1294,46 +1304,51 @@
     }catch(e){outputLastResult='자동 처리 실패: '+clip(e?.message||e,160);console.warn('[CharacterMixer] output event',e);}
   }
 
-  async function discoverForScene(content,ctx){
-    if(!autoCollectEnabled||autoCollectBusy||destroyed||ctx.libraryOnly)return;
+  async function discoverForScene(content,ctx,options={}){
+    const manual=options.manual===true;
+    const skipped=reason=>{autoCollectStatus='검색 생략: '+reason;outputLastResult=autoCollectStatus;};
+    if(!autoCollectEnabled){skipped('자동 수집 꺼짐');return;}
+    if(autoCollectBusy){skipped('다른 이미지 검색 진행 중');return;}
+    if(destroyed||ctx.libraryOnly){skipped('채팅 외부 실행 또는 플러그인 종료');return;}
     const active=installedInChat(ctx).map(m=>({mod:m,meta:metadataOf(m)}))
       .filter(x=>x.meta?.autoImages||autoCollectEnabled);
-    if(!active.length)return;
+    if(!active.length){skipped('현재 채팅에 연결된 이미지 모듈 없음');return;}
     // Display hooks can render the entire old chat. Only fetch assets for the
     // newest assistant/character message, never retroactively crawl history.
     const last=asArray(ctx.chat?.message).filter(m=>['char','assistant'].includes(str(m?.role))).at(-1);
     const raw=str(last?.data).trim();
-    if(!raw||(!content.includes(raw.slice(0,Math.min(100,raw.length)))&&content!==raw))return;
+    if(!raw){skipped('최신 AI 답변이 없음');return;}
+    if(!manual&&!content.includes(raw.slice(0,Math.min(100,raw.length)))&&content!==raw){skipped('현재 화면의 최신 답변과 불일치');return;}
     const window=sanitizeSceneText(content).slice(-3000);
     if(window.length<30){autoCollectStatus='장면 텍스트 없음 · Thoughts/내부 분석을 제외했어';return;}
     const signals=sceneTagSignals(window);
-    if(!signals.length)return;
+    if(!signals.length){skipped('분석 가능한 장면·행동·표정 태그 없음');return;}
     const now=Date.now();
     for(const entry of active){
-      for(const id of asArray(entry.meta.sourceIds).filter(x=>str(x).startsWith('pack:'))){
+      for(const id of asArray(entry.meta?.sourceIds).filter(x=>str(x).startsWith('pack:'))){
         const pack=packLibrary.find(p=>'pack:'+p.id===id);
-        if(!pack||!['original','fanwork'].includes(pack.characterKind))continue;
+        if(!pack||!['original','fanwork'].includes(pack.characterKind)){skipped('연결된 캐릭터 팩이 없거나 유형 판별 실패');continue;}
         const aliases=[pack.name,...asArray(pack.speakerAliases)];
         // Avoid cross-character contamination: explicit speaker match.
         const named=aliases.some(name=>name&&(window.includes('['+name+']')||window.includes(name)));
         const singlePack=active.flatMap(x=>asArray(x.meta?.sourceIds)).filter(x=>str(x).startsWith('pack:')).length===1;
         const onlyOC=pack.characterKind==='original'&&active.flatMap(x=>asArray(x.meta?.sourceIds)).filter(id=>str(id).startsWith('pack:')).length===1;
-        if(!named&&!onlyOC&&!singlePack)continue;
+        if(!named&&!onlyOC&&!singlePack){skipped('현재 장면의 캐릭터 연결 불확실');continue;}
         const tagSignals=pack.characterKind==='original'?signals:signals.filter(x=>x.weight===3);
-        if(!tagSignals.length)continue;
+        if(!tagSignals.length){skipped('2차창작 이미지와 일치하는 감정 태그 없음');continue;}
         const keys=tagSignals.map(x=>x.tags[0]).slice(0,2);
         const eventKey=ctx.chat.id+'|'+pack.id+'|'+keys.join('|');
-        if(now-(lastDiscovery.get(eventKey)||0)<5*60*1000)continue;
-        // Auto discovery at most once per speaker/mood during this window.
-        lastDiscovery.set(eventKey,now);
+        if(!manual&&now-(lastDiscovery.get(eventKey)||0)<5*60*1000){skipped('동일 장면 최근 검색됨 (5분 제한)');continue;}
+        // Do not throttle manual diagnostics; record automatic attempts only.
+        if(!manual)lastDiscovery.set(eventKey,now);
         const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
         // Reuse-first: an existing suitably tagged asset means no network call.
-        if(existing.some(x=>isUsablePackAsset(x,pack,tagSignals)))continue;
+        if(existing.some(x=>isUsablePackAsset(x,pack,tagSignals))){skipped('기존 라이브러리에 적합한 이미지 있음 · 외부 검색 불필요');continue;}
         const base=pack.characterKind==='original'?'1girl '+keys.join(' '):
           (asArray(pack.identityEvidence?.externalCandidates)[0]?.tag||
             str(pack.name).toLowerCase().replace(/\s+/g,'_'))+' '+keys[0];
         const tags=base.split(/\s+/).slice(0,6).filter(Boolean);
-        if(!tags.length)continue;
+        if(!tags.length){skipped('검색 태그 생성 실패');continue;}
         autoCollectBusy=true;
         try{
           const rows=await searchBooruWithFallback(tags,12,0);
@@ -1357,6 +1372,7 @@
         return; // One search and at most one image per display event.
       }
     }
+    if(!autoCollectStatus||autoCollectStatus.startsWith('검색 실행 기록'))skipped('검색 대상 캐릭터 팩이 없음');
   }
 
   async function searchExternal(){
@@ -1556,7 +1572,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.9</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.10</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
