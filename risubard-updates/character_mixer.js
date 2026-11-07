@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.3-beta.3
+//@version 0.7.3-beta.4
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -1050,6 +1050,17 @@
       return await context();
     }finally{bootstrapBusy.delete(lock);}
   }
+  async function testCurrentChatAuto(){
+    try{
+      const ctx=await context();
+      const last=asArray(ctx.chat?.message).filter(x=>['char','assistant'].includes(str(x?.role))).at(-1);
+      if(!last)throw Error('분석할 AI 답변이 없어');
+      const source=installedInChat(ctx).length?ctx:await bootstrapCurrentChat(ctx);
+      await discoverForScene(str(last.data),source);
+      if(!autoCollectStatus)outputLastResult='최근 답변 분석 실행 완료 · 이미지가 나오지 않으면 캐릭터·표정 태그 또는 API를 확인해';
+    }catch(e){outputLastResult='진단 실패: '+clip(e?.message||e,160);}
+    await render();
+  }
   async function onCommittedChatOutput(payload){
     if(destroyed||!autoCollectEnabled)return;
     outputEventCount++;
@@ -1343,7 +1354,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.3-beta.3</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.3-beta.4</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1377,6 +1388,8 @@
         '<section><h3>채팅 이미지 자동 수집 · 싫어요</h3>'+ 
         '<p class="muted">실제 생성 이벤트 연결: '+(outputListenerAvailable?'정상 등록':'미등록 · 플러그인의 replacer 권한이나 앱 버전 확인')+' / 수신 '+outputEventCount+'회</p>'+ 
         '<p class="muted">최근 자동 처리: '+esc(outputLastResult)+'</p>'+
+        '<p class="muted">외부 검색 결과: '+esc(autoCollectStatus||'검색 실행 기록 없음')+'</p>'+
+        '<button id="cm-diagnose" type="button">현재 채팅 자동 연결 및 최근 답변 테스트</button>'+
         '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
         '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<br/><small>한번에 최대 1장 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
         '<p class="muted">채팅에 명시적으로 연결되고 자동 이미지 표시가 켜진 팩에만 적용돼. 현재 설정: '+(autoCollectEnabled?'자동 수집 ON':'자동 수집 OFF')+'</p>'+
@@ -1502,6 +1515,7 @@
       tagInput.oninput=e=>{externalQuery=str(e.target.value).slice(0,200);};
       keyInput.oninput=e=>{externalApiKey=str(e.target.value).slice(0,250);};
       userInput.oninput=e=>{externalUserId=str(e.target.value).slice(0,50);};
+      el('cm-diagnose').onclick=()=>void testCurrentChatAuto();
       el('cm-auto-collect').onchange=e=>{autoCollectEnabled=Boolean(e.target.checked);
         void saveAutoPrefs().then(()=>render()).catch(error=>{autoCollectStatus='설정 저장 실패 '+str(error?.message||error);void render();});};
       for(const node of document.querySelectorAll('[data-cm-dislike]')){
