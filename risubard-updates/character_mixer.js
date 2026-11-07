@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.6.2
+//@version 0.7.0
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -16,11 +16,14 @@
   let externalQuery='',externalApiKey='',externalUserId='',externalResults=[],externalPage=0;
   let externalBusy=false,externalError='',externalNotice='',speakerAliasInput='';
   let characterKindChoice='unknown',characterWorkInput='';
+  const AUTO_PREF_KEY='character_mixer_auto_assets_v1';
+  let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
+  let rejectedPosts={},lastDiscovery=new Map(),discoveryRun=new Set();
   const externalSelected=new Set();
   const PROFILE_LIMIT=6000, LORE_LIMIT=30000;
   let destroyed=false, busy=false, opened=false, message='', sourceId='';
   let choices={mode:'adapt',notes:'',description:true,personality:true,scenario:false,
-    examples:false,greeting:false,assets:true,emotions:true,moduleAssets:true,moduleLore:false,autoImages:false};
+    examples:false,greeting:false,assets:true,emotions:true,moduleAssets:true,moduleLore:false,autoImages:true};
   let loreChoices=new Set(),moduleChoices=new Set(),extraSourceIds=new Set();
   const str=v=>String(v??'');
   const esc=v=>str(v).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[ch]));
@@ -323,7 +326,7 @@
   async function displayAssetCompatibility(content){
     if(destroyed||typeof content!=='string')return content;
     const hasAssetTag=/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content);
-    if(!hasAssetTag&&!/\[[^\]\n]{1,80}\]/.test(content))return content;
+    if(!hasAssetTag&&!/\[[^\]\n]{1,80}\]/.test(content)&&!autoCollectEnabled)return content;
     try{
       const ci=await risuai.getCurrentCharacterIndex();
       const ti=await risuai.getCurrentChatIndex();
@@ -335,7 +338,7 @@
         const tagAssets=[];
         for(const mod of aliases.active){
           const metadata=metadataOf(mod);
-          if(metadata?.autoImages!==true)continue;
+          if(metadata?.autoImages!==true&&!autoCollectEnabled)continue;
           for(const item of asArray(metadata.externalTagAssets))
             if(asArray(mod.assets).some(x=>Array.isArray(x)&&x[0]===item.name))
               tagAssets.push(item);
@@ -346,8 +349,14 @@
       }
       if(!cached.hasActive)return content;
       const rewritten=hasAssetTag?rewriteAssetTokens(content,cached.lookup,cached.target):content;
-      const selected=pickTaggedAsset(rewritten,cached);
-      return selected?rewritten+'\n\n'+selected:rewritten;
+      const omitted=new Set(Object.keys(rejectedPosts).filter(k=>rejectedPosts[k]).map(k=>'gelbooru_'+k.slice(9)));
+      const safe=rewritten.replace(/\{\{img::(gelbooru_\d+)\}\}/g,(token,name)=>omitted.has(name)?'':token);
+      const selected=pickTaggedAsset(safe,{...cached,tagAssets:cached.tagAssets.filter(x=>!omitted.has(x.name))});
+      if(autoCollectEnabled&&!selected&&!destroyed){
+        // This happens outside the critical display path; network errors stay local.
+        void discoverForScene(safe,await context()).catch(e=>console.warn('[CharacterMixer] discovery',e));
+      }
+      return selected?safe+'\n\n'+selected:safe;
     }catch(error){
       console.log('[CharacterMixer] asset preview fallback:',error?.message||error);
       return content;
@@ -477,6 +486,13 @@
     }catch(e){console.warn('[CharacterMixer] pack loading failed',e);packLibrary=[];}
   }
   async function savePacks(){await risuai.pluginStorage.setItem(PACK_STORE,packLibrary);}
+  async function loadAutoPrefs(){
+    try{const p=await risuai.pluginStorage.getItem(AUTO_PREF_KEY);
+      autoCollectEnabled=p?.enabled!==false;
+      rejectedPosts=p&&typeof p.rejected==='object'&&p.rejected? p.rejected:{};
+    }catch(e){autoCollectStatus='자동 에셋 설정 읽기 실패: '+str(e?.message||e);}
+  }
+  async function saveAutoPrefs(){await risuai.pluginStorage.setItem(AUTO_PREF_KEY,{enabled:autoCollectEnabled,rejected:rejectedPosts});}
   // Classify from source provenance, not a name-only lookup. A name such as
   // "가영" can describe either an OC or a character from Inuyasha.
   function inferCharacterIdentity(bot,lores=[]){
@@ -767,6 +783,172 @@
         postURL:'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(String(row.id))
       })).filter(row=>row.image);
   }
+  function isRejected(postId){return rejectedPosts['gelbooru:'+str(postId)]===true;}
+  function isRelevantPost(item,signals,kind){
+    const tagSet=new Set(asArray(item.tags));
+    const scene=asArray(signals).filter(x=>kind==='original'||x.weight===3);
+    return scene.some(x=>x.tags.some(t=>tagSet.has(t)));
+  }
+  async function persistAssetToPack(pack,item,ctx=null){
+    if(!pack||!item||isRejected(item.id))return false;
+    if(asArray(pack.externalAssets).some(x=>str(x.postId)===str(item.id)))return false;
+    const fetchResult=await risuai.nativeFetch(item.image,{method:'GET'});
+    if(!fetchResult?.ok)throw Error('이미지 다운로드 실패 '+str(fetchResult?.status));
+    const type=str(fetchResult.headers?.get?.('content-type')).toLowerCase();
+    if(type&&!type.startsWith('image/'))throw Error('이미지 형식 아님');
+    const length=Number(fetchResult.headers?.get?.('content-length')||0);
+    if(length>12*1024*1024)throw Error('12MB 초과');
+    const bytes=new Uint8Array(await fetchResult.arrayBuffer());
+    if(!bytes.length||bytes.length>12*1024*1024)throw Error('이미지 크기 제한');
+    const path=await risuai.saveAsset(bytes);
+    if(!safePath(path)||!str(path).startsWith('assets/'))throw Error('에셋 저장 실패');
+    const verified=bytesOf(await risuai.readImage(path));
+    if(!verified||verified.length!==bytes.length)throw Error('복제 검증 실패');
+    for(let i=0;i<bytes.length;i++)if(verified[i]!==bytes[i])throw Error('복제 내용 불일치');
+    // Re-fetch the newest pack, because other UI operations might have run.
+    const fresh=packLibrary.find(x=>x.id===pack.id);
+    if(!fresh||isRejected(item.id)||asArray(fresh.externalAssets).some(x=>str(x.postId)===str(item.id)))return false;
+    const existing=asArray(fresh.snapshot?.additionalAssets);
+    const name='gelbooru_'+item.id;
+    if(existing.some(x=>x[0]===name))return false;
+    const ext=item.image.match(/\.(png|jpe?g|webp|gif)(?:$|\?)/i)?.[1]?.replace('jpeg','jpg')||'png';
+    const asset={name,path,ext,postId:str(item.id),tags:item.tags,
+      provider:'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source||'',autoAdded:true};
+    const updated={...fresh,updatedAt:Date.now(),
+      externalAssets:[...asArray(fresh.externalAssets),asset],
+      snapshot:{...fresh.snapshot,additionalAssets:[...existing,[name,path,ext]]}};
+    updated.assetCount=updated.snapshot.additionalAssets.length;
+    const db=await risuai.getDatabase();
+    const oldModules=asArray(db?.modules);
+    const archiveId=archivedModuleId(pack.id);
+    const nextModules=oldModules.map(mod=>{
+      if(mod?.id===archiveId){
+        return {...mod,assets:[...asArray(mod.assets),[name,path,ext]]};
+      }
+      const meta=metadataOf(mod);
+      if(!ctx||(!meta?.autoImages&&!autoCollectEnabled)||meta.targetChatId!==ctx.chat.id
+        ||!asArray(meta.sourceIds).includes('pack:'+pack.id))return mod;
+      const tagItem={name,tags:item.tags,characterName:fresh.name,
+        characterAliases:[fresh.name,...asArray(fresh.speakerAliases)],
+        sourceId:'pack:'+pack.id,characterKind:fresh.characterKind};
+      return {...mod,assets:[...asArray(mod.assets),[name,path,ext]],
+        description:MARK+JSON.stringify({...meta,externalTagAssets:[...asArray(meta.externalTagAssets),tagItem]})};
+    });
+    if(!nextModules.some(m=>m?.id===archiveId)){
+      nextModules.push({id:archiveId,name:'Character Mixer Archive · '+clip(fresh.name,70),
+        description:ARCHIVE_MARK+JSON.stringify({packId:fresh.id,version:3}),
+        namespace:'character-mixer-archive',lorebook:[],
+        assets:updated.snapshot.additionalAssets.map(x=>[x[0],x[1],x[2]])});
+    }
+    const before=packLibrary;
+    await risuai.setDatabaseLite({modules:nextModules});
+    packLibrary=before.map(p=>p.id===fresh.id?updated:p);
+    try{await savePacks();}
+    catch(error){
+      packLibrary=before;
+      try{await risuai.setDatabaseLite({modules:oldModules});}catch(e){console.error('[CharacterMixer] automatic asset rollback failed',e);}
+      throw error;
+    }
+    invalidateDisplayCache();
+    return true;
+  }
+  async function dislikeAsset(packId,postId){
+    const key='gelbooru:'+str(postId);
+    if(rejectedPosts[key])return;
+    const previous={...rejectedPosts};
+    rejectedPosts={...rejectedPosts,[key]:true};
+    try{await saveAutoPrefs();}
+    catch(e){rejectedPosts=previous;throw e;}
+    const before=packLibrary;
+    const fresh=before.find(p=>p.id===packId);
+    const removed=asArray(fresh?.externalAssets).filter(x=>str(x.postId)===str(postId));
+    if(fresh&&removed.length){
+      const removedNames=new Set(removed.map(x=>x.name));
+      const next={...fresh,externalAssets:asArray(fresh.externalAssets).filter(x=>!removedNames.has(x.name)),
+        snapshot:{...fresh.snapshot,additionalAssets:asArray(fresh.snapshot.additionalAssets).filter(x=>!removedNames.has(x[0]))}};
+      next.assetCount=next.snapshot.additionalAssets.length;
+      const db=await risuai.getDatabase();
+      const oldModules=asArray(db.modules);
+      const changed=oldModules.map(mod=>{
+        const meta=metadataOf(mod);
+        if(mod?.id!==archivedModuleId(packId)&&!asArray(meta?.sourceIds).includes('pack:'+packId))return mod;
+        const nextMod={...mod,assets:asArray(mod.assets).filter(x=>!removedNames.has(x[0]))};
+        if(meta)nextMod.description=MARK+JSON.stringify({...meta,
+          externalTagAssets:asArray(meta.externalTagAssets).filter(x=>!removedNames.has(x.name))});
+        return nextMod;
+      });
+      await risuai.setDatabaseLite({modules:changed});
+      packLibrary=before.map(p=>p.id===packId?next:p);
+      try{await savePacks();}
+      catch(error){
+        packLibrary=before;
+        try{await risuai.setDatabaseLite({modules:oldModules});}catch(e){console.error('[CharacterMixer] dislike rollback failed',e);}
+        throw error;
+      }
+    }
+    invalidateDisplayCache();
+    externalNotice='싫어요 반영: #'+str(postId)+' · 라이브러리와 채팅 이미지 선택에서 제외, 다시 자동 수집하지 않아.';
+    await render();
+  }
+  async function discoverForScene(content,ctx){
+    if(!autoCollectEnabled||autoCollectBusy||destroyed||ctx.libraryOnly)return;
+    const active=installedInChat(ctx).map(m=>({mod:m,meta:metadataOf(m)}))
+      .filter(x=>x.meta?.autoImages||autoCollectEnabled);
+    if(!active.length)return;
+    // Display hooks can render the entire old chat. Only fetch assets for the
+    // newest assistant/character message, never retroactively crawl history.
+    const last=asArray(ctx.chat?.message).filter(m=>['char','assistant'].includes(str(m?.role))).at(-1);
+    const raw=str(last?.data).trim();
+    if(!raw||!content.includes(raw.slice(0,Math.min(100,raw.length))))return;
+    const window=content.slice(-1600);
+    const signals=sceneTagSignals(window);
+    if(!signals.length)return;
+    const now=Date.now();
+    for(const entry of active){
+      for(const id of asArray(entry.meta.sourceIds).filter(x=>str(x).startsWith('pack:'))){
+        const pack=packLibrary.find(p=>'pack:'+p.id===id);
+        if(!pack||!['original','fanwork'].includes(pack.characterKind))continue;
+        const aliases=[pack.name,...asArray(pack.speakerAliases)];
+        // Avoid cross-character contamination: explicit speaker match.
+        const named=aliases.some(name=>name&&window.includes('['+name+']'));
+        const onlyOC=pack.characterKind==='original'&&active.flatMap(x=>asArray(x.meta?.sourceIds)).filter(id=>str(id).startsWith('pack:')).length===1;
+        if(!named&&!onlyOC)continue;
+        const tagSignals=pack.characterKind==='original'?signals:signals.filter(x=>x.weight===3);
+        if(!tagSignals.length)continue;
+        const keys=tagSignals.map(x=>x.tags[0]).slice(0,2);
+        const eventKey=ctx.chat.id+'|'+pack.id+'|'+keys.join('|');
+        if(now-(lastDiscovery.get(eventKey)||0)<5*60*1000)continue;
+        // Auto discovery at most once per speaker/mood during this window.
+        lastDiscovery.set(eventKey,now);
+        const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
+        if(existing.some(x=>isRelevantPost(x,tagSignals,pack.characterKind)))continue;
+        const base=pack.characterKind==='original'?'1girl '+keys.join(' '):
+          (asArray(pack.identityEvidence?.externalCandidates)[0]?.tag||
+            str(pack.name).toLowerCase().replace(/\s+/g,'_'))+' '+keys[0];
+        const tags=base.split(/\s+/).slice(0,6).filter(Boolean);
+        if(!tags.length)continue;
+        autoCollectBusy=true;
+        try{
+          const params=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
+            limit:'12',pid:'0',tags:[...tags,'rating:general'].join(' ')});
+          if(externalApiKey&&externalUserId){
+            params.set('api_key',externalApiKey.trim());params.set('user_id',externalUserId.trim());
+          }
+          const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
+          if(!response?.ok)throw Error('검색 API '+str(response?.status));
+          const rows=parseBooruPosts(await response.json());
+          const candidate=rows.find(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
+            &&isRelevantPost(x,tagSignals,pack.characterKind));
+          if(candidate&&await persistAssetToPack(pack,candidate,ctx))
+            autoCollectStatus=pack.name+' · 에셋 #'+candidate.id+' 자동 저장';
+          else autoCollectStatus=pack.name+' · 새로운 적합 이미지 없음';
+        }catch(e){autoCollectStatus='자동 검색 실패: '+clip(e?.message||e,150);}
+        finally{autoCollectBusy=false;}
+        return; // One search and at most one image per display event.
+      }
+    }
+  }
+
   async function searchExternal(){
     if(externalBusy)return;
     externalBusy=true;externalError='';externalNotice='';
@@ -796,7 +978,7 @@
     externalBusy=true;externalError='';externalNotice='';
     try{
       const pack=externalTarget();
-      const chosen=externalResults.filter(x=>externalSelected.has(x.id));
+      const chosen=externalResults.filter(x=>externalSelected.has(x.id)&&!isRejected(x.id));
       if(!chosen.length)throw Error('가져올 이미지를 선택해.');
       if(chosen.length>12)throw Error('한 번에 12개까지만 저장할 수 있어.');
       if(typeof risuai.nativeFetch!=='function'||typeof risuai.saveAsset!=='function')
@@ -833,7 +1015,7 @@
         let name=item.name,i=2;while(already.has(name)){name=item.name+'_'+i;i++;}
         already.add(name);
         return {name,path:item.path,ext:item.ext,tags:item.tags,postId:item.id,
-          provider:'gelbooru',sourceURL:item.postURL,artistSource:item.source};
+          provider:'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source};
       });
       const newRecord={...pack,updatedAt:Date.now(),binaryCopied:true,
         snapshot:{...pack.snapshot,additionalAssets:[
@@ -968,7 +1150,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.6.2</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.0</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -999,8 +1181,22 @@
         '<p class="muted">자동 이미지 표시를 사용할 때 채팅의 [강세라], [핸콕] 같은 화자 이름을 인식하는 용도야. 쉼표로 구분해.</p>'+
         '<input id="cm-speaker-alias" type="text" value="'+esc(sourceId.startsWith('pack:')?(packLibrary.find(p=>'pack:'+p.id===sourceId)?.speakerAliases||[]).join(', '):'')+'" placeholder="예: 핸콕, 보아 핸콕"/>'+
         '<button id="cm-speaker-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>화자 이름 저장</button></section>'+
+        '<section><h3>채팅 이미지 자동 수집 · 싫어요</h3>'+
+        '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
+        '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<br/><small>한번에 최대 1장 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
+        '<p class="muted">채팅에 명시적으로 연결되고 자동 이미지 표시가 켜진 팩에만 적용돼. 현재 설정: '+(autoCollectEnabled?'자동 수집 ON':'자동 수집 OFF')+'</p>'+
+        '<p class="muted">'+esc(autoCollectStatus||'아직 자동 수집 기록 없음')+'</p>'+
+        (sourceId.startsWith('pack:')?
+          '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4><div class="grid">'+
+          asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.externalAssets).slice(-60).reverse().map(item=>
+            '<div class="item"><span>'+(gelbooruMediaURL(item.previewURL)?'<img loading="lazy" referrerpolicy="no-referrer" src="'+esc(gelbooruMediaURL(item.previewURL))+'" alt="원본 #'+esc(item.postId)+'" style="display:block;width:120px;height:120px;object-fit:contain"/>':'')+
+            '<small>#'+esc(item.postId)+' · '+esc(asArray(item.tags).slice(0,8).join(', '))+'</small>'+
+            '<a target="_blank" rel="noopener noreferrer" href="'+esc(item.sourceURL||'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(str(item.postId)))+'">원본 보기</a></span>'+
+            '<button type="button" data-cm-dislike="'+esc(item.postId)+'" data-cm-dislike-pack="'+esc(sourceId.slice(5))+'">👎 싫어요 · 영구 제외</button></div>').join('')+
+          '</div>':'<p class="muted">저장된 [PACK]을 선택하면 이미지별 싫어요를 누를 수 있어.</p>')+
+        '<p class="muted">싫어요 이미지는 팩과 연결된 채팅 모듈에서 제외하고, 같은 Gelbooru 게시물을 다시 가져오지 않아. 원본 바이너리 파일은 안전을 위해 즉시 삭제하지 않아.</p></section>'+
         '<section><h3>외부 이미지 검색 · Gelbooru</h3>'+
-        '<p class="muted">먼저 [PACK] 캐릭터를 선택해. 태그로 검색하고 직접 선택한 일반 등급 이미지만 독립 팩에 복제해. 자동 대량 수집은 하지 않아.</p>'+
+        '<p class="muted">수동 검색도 가능해. 채팅 자동 수집은 위에서 켜고 끌 수 있어.</p>'+
         '<label>'+(characterKindChoice==='original'?'장면 태그 검색 · 캐릭터 이름 불필요':'캐릭터 태그 검색')+'<input id="cm-booru-tags" type="text" value="'+esc(externalQuery)+'" placeholder="'+(characterKindChoice==='original'?'예: 1girl sitting indoors smile':'예: boa_hancock_(one_piece)')+'"/></label>'+
         (characterKindChoice==='original'?'<p class="muted">오리지널은 원작 캐릭터와 같은 얼굴일 필요가 없어. 대신 의상·행동·감정·장소가 맞는 이미지를 직접 골라 저장해. 이미지에 원래 그려진 캐릭터의 태그는 채팅 선택에 사용하지 않아.</p>':'')+
         '<div class="grid"><label>Gelbooru user_id (필요한 경우)<input id="cm-booru-user" type="text" value="'+esc(externalUserId)+'" autocomplete="off"/></label>'+
@@ -1105,6 +1301,12 @@
       tagInput.oninput=e=>{externalQuery=str(e.target.value).slice(0,200);};
       keyInput.oninput=e=>{externalApiKey=str(e.target.value).slice(0,250);};
       userInput.oninput=e=>{externalUserId=str(e.target.value).slice(0,50);};
+      el('cm-auto-collect').onchange=e=>{autoCollectEnabled=Boolean(e.target.checked);
+        void saveAutoPrefs().then(()=>render()).catch(error=>{autoCollectStatus='설정 저장 실패 '+str(error?.message||error);void render();});};
+      for(const node of document.querySelectorAll('[data-cm-dislike]')){
+        node.onclick=()=>void dislikeAsset(str(node.getAttribute('data-cm-dislike-pack')),str(node.getAttribute('data-cm-dislike')))
+          .catch(error=>{externalError='싫어요 실패 '+str(error?.message||error);void render();});
+      }
       el('cm-booru-search').onclick=()=>{externalPage=0;void searchExternal();};
       el('cm-booru-prev').onclick=()=>{externalPage=Math.max(0,externalPage-1);void searchExternal();};
       el('cm-booru-next').onclick=()=>{externalPage=Math.min(100,externalPage+1);void searchExternal();};
@@ -1129,6 +1331,7 @@
   async function open(){
     opened=true;message='';
     await loadPacks();
+    await loadAutoPrefs();
     try{
       const ctx=await context(true);
       const active=installedInChat(ctx);
@@ -1141,6 +1344,8 @@
     await render();
     await risuai.showContainer('fullscreen');
   }
+  await loadPacks();
+  await loadAutoPrefs();
   // Register the settings entry first. An optional display hook failure must
   // never make the entire Character Mixer disappear from the UI.
   await risuai.registerSetting(NAME,open,'🧩','html','character-mixer-settings');
