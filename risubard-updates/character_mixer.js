@@ -549,7 +549,7 @@
       // Character + named work together corroborate a structured title clue.
       result.kind='fanwork';
       result.confidence='high';
-      result.work=result.work||str(bot?.name).match(/[([]([^)]]+)[)]]s*$/)?.[1]||'';
+      result.work=hintedWork;
       result.evidence.push('Gelbooru 캐릭터·작품 태그 확인');
     }
     return result;
