@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.10-beta.1
+//@version 0.7.10-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -270,7 +270,16 @@
       [['dress'],/(?:드레스|원피스|dress)/i,2],
       [['kimono'],/(?:기모노|kimono)/i,2],
       [['swimsuit'],/(?:수영복|swimsuit)/i,2],
-      [['indoors'],/(?:실내|교실|방 안|방에서|카페|가게 안|inside|indoors)/i,1],
+      [['convenience_store','shop'],/(?:편의점|convenience.store)/i,3],
+      [['supermarket','grocery_store','shop'],/(?:마트|슈퍼마켓|슈퍼에서|supermarket|grocery.store)/i,3],
+      [['restaurant','dining'],/(?:식당|음식점|레스토랑|restaurant)/i,3],
+      [['cafe','coffee_shop'],/(?:카페|커피숍|coffee.shop|cafe)/i,3],
+      [['classroom','school'],/(?:교실|수업 시간|칠판|classroom)/i,3],
+      [['bedroom','indoors'],/(?:침실|원룸|자취방|침대 옆|bedroom)/i,3],
+      [['kitchen','cooking'],/(?:부엌|주방|요리하|조리대|kitchen|cooking)/i,3],
+      [['eating','food'],/(?:밥을 먹|식사를 하|음식을 먹|먹기 시작|식탁|eating|having.lunch)/i,3],
+      [['entrance','door'],/(?:현관|문을 열|문 앞|entrance)/i,2],
+      [['indoors'],/(?:실내|방 안|방에서|가게 안|inside|indoors)/i,1],
       [['outdoors'],/(?:실외|거리|길거리|공원|바깥|outside|outdoors)/i,1],
       [['night'],/(?:한밤|밤하늘|밤거리|야밤|night)/i,1],
       [['day'],/(?:대낮|한낮|햇살|낮 시간|daytime)/i,1]
@@ -1563,7 +1572,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.10-beta.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.10-beta.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
