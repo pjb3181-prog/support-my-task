@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.6.0
+//@version 0.6.1-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -15,6 +15,7 @@
   let legacyPanelOpen=false;
   let externalQuery='',externalApiKey='',externalUserId='',externalResults=[],externalPage=0;
   let externalBusy=false,externalError='',externalNotice='',speakerAliasInput='';
+  let characterKindChoice='fanwork';
   const externalSelected=new Set();
   const PROFILE_LIMIT=6000, LORE_LIMIT=30000;
   let destroyed=false, busy=false, opened=false, message='', sourceId='';
@@ -414,7 +415,8 @@
       for(const item of asArray(pack?.externalAssets)){
         const mapped=assets.find(a=>a.path===item.path);
         if(mapped)externalTagAssets.push({name:mapped.name,tags:asArray(item.tags).slice(0,60),
-          characterName:clip(pack.name,100),characterAliases:[clip(pack.name,100),...asArray(pack.speakerAliases)].filter(Boolean),sourceId:bot.chaId});
+          characterName:clip(pack.name,100),characterAliases:[clip(pack.name,100),...asArray(pack.speakerAliases)].filter(Boolean),sourceId:bot.chaId,
+          characterKind:pack.characterKind==='original'?'original':'fanwork'});
       }
     }
     const extra= {
@@ -441,6 +443,20 @@
     }catch(e){console.warn('[CharacterMixer] pack loading failed',e);packLibrary=[];}
   }
   async function savePacks(){await risuai.pluginStorage.setItem(PACK_STORE,packLibrary);}
+  async function saveCharacterKind(){
+    try{
+      const pack=externalTarget();
+      const kind=characterKindChoice==='original'?'original':'fanwork';
+      const before=packLibrary;
+      packLibrary=packLibrary.map(p=>p.id===pack.id?{...p,characterKind:kind}:p);
+      try{await savePacks();}catch(e){packLibrary=before;throw e;}
+      externalNotice=kind==='original'
+        ?'오리지널 캐릭터로 저장 · 이미지의 캐릭터명 일치 대신 장면 태그로 선택해'
+        :'2차창작 캐릭터로 저장 · 캐릭터에 맞게 수집한 이미지에서 선택해';
+      invalidateDisplayCache();
+    }catch(e){externalError=str(e?.message||e);}
+    await render();
+  }
   async function saveSpeakerAliases(){
     try{
       const pack=externalTarget();
@@ -550,6 +566,8 @@
         additionalAssets:assets,emotionImages:[],ccAssets:[],modules:[]};
       const record={id,name:src.name,updatedAt:Date.now(),
         sources:bots.map(b=>({id:b.chaId,name:b.name})),binaryCopied:true,assetCount:assets.length,
+        characterKind:previous?.characterKind==='original'?'original':'fanwork',
+        speakerAliases:asArray(previous?.speakerAliases),
         externalAssets:asArray(previous?.externalAssets).filter(item=>assets.some(x=>x[1]===item.path)),
         snapshot};
       const archiveId=archivedModuleId(id);
@@ -789,6 +807,7 @@
       const availableLore=src?loreOf(src):[];
       const availableModules=src?optionalModuleList(ctx,src):[];
       const extraCandidates=available(ctx.db,ctx.target.chaId).filter(x=>x.chaId!==sourceId);
+      characterKindChoice=sourceId.startsWith('pack:')?(packLibrary.find(p=>'pack:'+p.id===sourceId)?.characterKind==='original'?'original':'fanwork'):'fanwork';
       const installedHtml=active.length?active.map(m=>'<div class="installed"><span><b>'+
         esc(m.name)+'</b><small>이 채팅에 연결됨 · 로어 '+asArray(m.lorebook).length+
         '개 / 에셋 '+asArray(m.assets).length+'개</small></span>'+
@@ -812,7 +831,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.6.0</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.6.1-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -829,6 +848,11 @@
         '<button type="button" id="cm-export">선택한 저장 팩 JSON 내보내기</button>'+
         '<p class="muted">팩은 위 목록에서 [PACK]으로 표시돼. 저장 시 이미지 데이터를 RisuBard 에셋 저장소에 별도 복제하고 검증해. 복제 실패 시 팩은 갱신하지 않아.</p>'+
 
+        '<section><h3>캐릭터 유형 · 이미지 매칭 기준</h3>'+
+        '<p class="muted">2차창작은 캐릭터 자체를 우선하고, 오리지널은 장면·표정·행동·장소 태그를 우선해. 유형은 저장된 [PACK]에만 적용돼.</p>'+
+        '<label>유형<select id="cm-kind"><option value="fanwork" '+(characterKindChoice==='fanwork'?'selected':'')+'>2차창작 · 캐릭터 일치 우선</option>'+
+        '<option value="original" '+(characterKindChoice==='original'?'selected':'')+'>오리지널 · 장면 일치 우선</option></select></label>'+
+        '<button id="cm-kind-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>캐릭터 유형 저장</button></section>'+
         '<section><h3>채팅 화자 이름 연결</h3>'+
         '<p class="muted">자동 이미지 표시를 사용할 때 채팅의 [강세라], [핸콕] 같은 화자 이름을 인식하는 용도야. 쉼표로 구분해.</p>'+
         '<input id="cm-speaker-alias" type="text" value="'+esc(sourceId.startsWith('pack:')?(packLibrary.find(p=>'pack:'+p.id===sourceId)?.speakerAliases||[]).join(', '):'')+'" placeholder="예: 핸콕, 보아 핸콕"/>'+
@@ -869,7 +893,7 @@
         check('emotions','감정 이미지','B 표정 이미지를 이름으로 구분',choices.emotions)+
         check('moduleAssets','선택 모듈의 에셋','선택한 기존 모듈에서 이미지 가져오기',choices.moduleAssets)+
         check('moduleLore','선택 모듈의 로어','추가 로어 선택, 실행 코드 제외',choices.moduleLore)+
-        check('autoImages','태그 이미지 자동 표시','팩을 채팅에 불러온 뒤 감정이 일치하면 표시 (기본 꺼짐)',choices.autoImages)+
+        check('autoImages','태그 이미지 자동 표시','팩을 채팅에 불러온 뒤 유형별로 캐릭터 또는 장면이 맞으면 표시 (기본 꺼짐)',choices.autoImages)+
         '</div></section>'+
         '<section><div class="top"><h3>세부 로어북 선택</h3><button id="cm-select-lore">전체 선택/해제</button></div>'+
         (availableLore.length?availableLore.map((item,i)=>'<label class="item"><input type="checkbox" data-cm-lore="'+i+'" '+
@@ -929,6 +953,8 @@
       el('cm-extract').onclick=()=>void extractPack();
       el('cm-export').onclick=()=>void exportPackJson();
       const tagInput=el('cm-booru-tags'),keyInput=el('cm-booru-key'),userInput=el('cm-booru-user');
+      el('cm-kind').onchange=e=>{characterKindChoice=e.target.value==='original'?'original':'fanwork';};
+      el('cm-kind-save').onclick=()=>void saveCharacterKind();
       el('cm-speaker-alias').oninput=e=>{speakerAliasInput=str(e.target.value).slice(0,300);};
       el('cm-speaker-save').onclick=()=>void saveSpeakerAliases();
       tagInput.oninput=e=>{externalQuery=str(e.target.value).slice(0,200);};
