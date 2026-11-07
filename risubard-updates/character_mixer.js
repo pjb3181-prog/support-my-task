@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.5.0
+//@version 0.6.0-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Selectively blend an imported character's lore and asset references into the current chat without overwriting existing bots.
 (async () => {
@@ -13,10 +13,13 @@
   const ARCHIVE_MARK='[CHARACTER_MIXER_ARCHIVE_V1]';
   let packLibrary=[];
   let legacyPanelOpen=false;
+  let externalQuery='',externalApiKey='',externalUserId='',externalResults=[],externalPage=0;
+  let externalBusy=false,externalError='',externalNotice='';
+  const externalSelected=new Set();
   const PROFILE_LIMIT=6000, LORE_LIMIT=30000;
   let destroyed=false, busy=false, opened=false, message='', sourceId='';
   let choices={mode:'adapt',notes:'',description:true,personality:true,scenario:false,
-    examples:false,greeting:false,assets:true,emotions:true,moduleAssets:true,moduleLore:false};
+    examples:false,greeting:false,assets:true,emotions:true,moduleAssets:true,moduleLore:false,autoImages:false};
   let loreChoices=new Set(),moduleChoices=new Set(),extraSourceIds=new Set();
   const str=v=>String(v??'');
   const esc=v=>str(v).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[ch]));
@@ -346,7 +349,18 @@
         folder:undefined
       });
     }
+    const externalTagAssets=[];
+    for(const bot of sourceBots){
+      if(!str(bot.chaId).startsWith('pack:'))continue;
+      const pack=packLibrary.find(p=>'pack:'+p.id===bot.chaId);
+      for(const item of asArray(pack?.externalAssets)){
+        const mapped=assets.find(a=>a.path===item.path);
+        if(mapped)externalTagAssets.push({name:mapped.name,tags:asArray(item.tags).slice(0,60),
+          characterName:clip(pack.name,100),sourceId:bot.chaId});
+      }
+    }
     const extra= {
+      externalTagAssets,autoImages:!!choices.autoImages,
       sourceId:src.chaId,sourceIds:sourceBots.map(x=>x.chaId),targetCharacterId:ctx.target.chaId,targetChatId:ctx.chat.id,
       mode:choices.mode,version:3,
       assetAliases:aliasRows
@@ -466,7 +480,9 @@
         firstMessage:str(src.firstMessage),globalLore:lores,
         additionalAssets:assets,emotionImages:[],ccAssets:[],modules:[]};
       const record={id,name:src.name,updatedAt:Date.now(),
-        sources:bots.map(b=>({id:b.chaId,name:b.name})),binaryCopied:true,assetCount:assets.length,snapshot};
+        sources:bots.map(b=>({id:b.chaId,name:b.name})),binaryCopied:true,assetCount:assets.length,
+        externalAssets:asArray(previous?.externalAssets).filter(item=>assets.some(x=>x[1]===item.path)),
+        snapshot};
       const archiveId=archivedModuleId(id);
       const archive={
         id:archiveId,name:'Character Mixer Archive · '+clip(src.name,70),
@@ -496,6 +512,132 @@
     }catch(e){message='추출 실패 · '+str(e?.message||e);}
     finally{busy=false;await render();}
   }
+
+  // External provider integration: only user-initiated, limited-size search.
+  // No automatic crawling, no scheduled retrieval and no Pixiv access bypass.
+  function externalTarget(){
+    const pack=packLibrary.find(p=>'pack:'+p.id===sourceId);
+    if(!pack)throw Error('먼저 저장된 [PACK] 캐릭터를 선택해.');
+    return pack;
+  }
+  function gelbooruMediaURL(value){
+    try{
+      const u=new URL(str(value));
+      if(u.protocol!=='https:'||!/(^|\.)gelbooru\.com$/i.test(u.hostname))return '';
+      if(!/\.(?:png|jpg|jpeg|gif|webp)(?:$|\?)/i.test(u.pathname+u.search))return '';
+      return u.href;
+    }catch(_){return '';}
+  }
+  function booruTags(row){
+    const raw=Array.isArray(row?.tags)?row.tags:typeof row?.tags==='string'?row.tags.split(/\s+/):[];
+    return [...new Set(raw.map(x=>str(x).toLowerCase()).filter(Boolean))].slice(0,200);
+  }
+  function parseBooruPosts(data){
+    const list=Array.isArray(data)?data:Array.isArray(data?.post)?data.post:[];
+    return list.filter(x=>x&&Number.isFinite(Number(x.id)))
+      .filter(x=>['general','safe','s','g'].includes(str(x.rating).toLowerCase()))
+      .map(row=>({
+        id:String(row.id),tags:booruTags(row),rating:row.rating,
+        thumbnail:gelbooruMediaURL(row.preview_url||row.sample_url||row.file_url),
+        image:gelbooruMediaURL(row.file_url||row.sample_url),
+        source:clip(row.source||'',500),
+        postURL:'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(String(row.id))
+      })).filter(row=>row.image);
+  }
+  async function searchExternal(){
+    if(externalBusy)return;
+    externalBusy=true;externalError='';externalNotice='';
+    try{
+      externalResults=[];
+      const tokens=str(externalQuery).trim().split(/\s+/).filter(Boolean).slice(0,8);
+      if(!tokens.length)throw Error('캐릭터 태그를 입력해. 예: boa_hancock_(one_piece)');
+      const tags=[...tokens.filter(x=>!x.startsWith('rating:')),'rating:general'].join(' ');
+      const params=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
+        limit:'18',pid:String(externalPage),tags});
+      if(externalApiKey.trim()&&externalUserId.trim()){
+        params.set('api_key',externalApiKey.trim());params.set('user_id',externalUserId.trim());
+      }
+      if(typeof risuai.nativeFetch!=='function')throw Error('이 버전에서는 nativeFetch API를 사용할 수 없어');
+      const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
+      if(!response?.ok)throw Error('Gelbooru API 응답 '+(response?.status||'없음')+
+        ' · API 키/사용자 ID와 요청 제한을 확인해.');
+      const data=await response.json();
+      externalResults=parseBooruPosts(data);
+      externalSelected.clear();
+      externalNotice=externalResults.length+'개 일반 등급 이미지 검색 완료. 저장할 이미지를 직접 골라줘.';
+    }catch(e){externalError=str(e?.message||e);}
+    finally{externalBusy=false;await render();}
+  }
+  async function importExternalImages(){
+    if(externalBusy)return;
+    externalBusy=true;externalError='';externalNotice='';
+    try{
+      const pack=externalTarget();
+      const chosen=externalResults.filter(x=>externalSelected.has(x.id));
+      if(!chosen.length)throw Error('가져올 이미지를 선택해.');
+      if(chosen.length>12)throw Error('한 번에 12개까지만 저장할 수 있어.');
+      if(typeof risuai.nativeFetch!=='function'||typeof risuai.saveAsset!=='function')
+        throw Error('이미지 저장 API를 사용할 수 없어');
+      const existingIds=new Set(asArray(pack.externalAssets).map(x=>str(x.postId)));
+      const imported=[],problems=[];
+      for(const item of chosen){
+        if(existingIds.has(item.id))continue;
+        try{
+          const response=await risuai.nativeFetch(item.image,{method:'GET'});
+          if(!response?.ok)throw Error('이미지 응답 '+response?.status);
+          const size=Number(response.headers?.get?.('content-length')||0);
+          if(size>18*1024*1024)throw Error('18MB를 초과하는 이미지');
+          const contentType=str(response.headers?.get?.('content-type')).toLowerCase();
+          if(contentType&&!contentType.startsWith('image/'))throw Error('이미지 형식이 아닌 응답');
+          const bytes=new Uint8Array(await response.arrayBuffer());
+          if(!bytes.length||bytes.length>18*1024*1024)throw Error('빈 이미지 또는 18MB 초과');
+          const savedPath=await risuai.saveAsset(bytes);
+          if(!safePath(savedPath))throw Error('에셋 저장 경로가 유효하지 않아');
+          const verified=bytesOf(await risuai.readImage(savedPath));
+          if(!verified||verified.length!==bytes.length)throw Error('저장 검증 실패');
+          for(let i=0;i<bytes.length;i++)if(bytes[i]!==verified[i])throw Error('저장 내용이 원본과 달라');
+          const ext=item.image.match(/\.(png|jpe?g|gif|webp)(?:$|\?)/i)?.[1]?.replace('jpeg','jpg')||'png';
+          imported.push({...item,path:savedPath,name:'gelbooru_'+item.id,ext});
+        }catch(e){problems.push(item.id+': '+str(e?.message||e));}
+      }
+      if(!imported.length)throw Error(problems.length?'저장 실패: '+problems[0]:'이미 저장된 이미지야.');
+      // Save a deduplicated library record and archive module, never edit the source bot.
+      const oldLibrary=packLibrary;
+      const db=await risuai.getDatabase(),oldModules=asArray(db.modules);
+      const archiveId=archivedModuleId(pack.id);
+      const already=new Set(asArray(pack.snapshot.additionalAssets).map(x=>str(x[0])));
+      const newAssets=imported.map(item=>{
+        let name=item.name,i=2;while(already.has(name)){name=item.name+'_'+i;i++;}
+        already.add(name);
+        return {name,path:item.path,ext:item.ext,tags:item.tags,postId:item.id,
+          provider:'gelbooru',sourceURL:item.postURL,artistSource:item.source};
+      });
+      const newRecord={...pack,updatedAt:Date.now(),binaryCopied:true,
+        snapshot:{...pack.snapshot,additionalAssets:[
+          ...asArray(pack.snapshot.additionalAssets),
+          ...newAssets.map(a=>[a.name,a.path,a.ext])
+        ]},
+        externalAssets:[...asArray(pack.externalAssets),...newAssets]};
+      newRecord.assetCount=newRecord.snapshot.additionalAssets.length;
+      const archive={id:archiveId,name:'Character Mixer Archive · '+clip(pack.name,70),
+        description:ARCHIVE_MARK+JSON.stringify({packId:pack.id,version:2}),
+        lorebook:[],assets:newRecord.snapshot.additionalAssets.map(x=>[x[0],x[1],x[2]]),
+        namespace:'character-mixer-archive'};
+      await risuai.setDatabaseLite({modules:[...oldModules.filter(m=>m?.id!==archiveId),archive]});
+      packLibrary=packLibrary.map(p=>p.id===pack.id?newRecord:p);
+      try{await savePacks();}
+      catch(e){
+        packLibrary=oldLibrary;
+        try{await risuai.setDatabaseLite({modules:oldModules});}
+        catch(rollback){console.error('[CharacterMixer] archive rollback failed',rollback);}
+        throw e;
+      }
+      externalSelected.clear();invalidateDisplayCache();
+      externalNotice=newAssets.length+'개 독립 팩에 저장 ·'+(problems.length?' 실패 '+problems.length+'개: '+problems[0]:' 저장 후 검증 완료');
+    }catch(e){externalError=str(e?.message||e);}
+    finally{externalBusy=false;await render();}
+  }
+
   async function remember(action,ctx,src,mod){
     try{
       const old=await risuai.pluginStorage.getItem(LOG);
@@ -601,7 +743,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.5.0</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.6.0-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
