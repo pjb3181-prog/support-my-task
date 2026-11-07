@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.3-beta.1
+//@version 0.7.3-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -24,6 +24,7 @@
   let rejectedPosts={},lastDiscovery=new Map(),discoveryRun=new Set();
   let latestShown=null,reviewFirst=false;
   let outputListenerAvailable=false,outputEventCount=0,outputLastResult='아직 생성 완료 이벤트를 받지 못함';
+  let outputListener=null;
   const bootstrapBusy=new Set();
   const externalSelected=new Set();
   const PROFILE_LIMIT=6000, LORE_LIMIT=30000;
@@ -1342,7 +1343,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.3-beta.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.3-beta.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1373,7 +1374,9 @@
         '<p class="muted">자동 이미지 표시를 사용할 때 채팅의 [강세라], [핸콕] 같은 화자 이름을 인식하는 용도야. 쉼표로 구분해.</p>'+
         '<input id="cm-speaker-alias" type="text" value="'+esc(sourceId.startsWith('pack:')?(packLibrary.find(p=>'pack:'+p.id===sourceId)?.speakerAliases||[]).join(', '):'')+'" placeholder="예: 핸콕, 보아 핸콕"/>'+
         '<button id="cm-speaker-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>화자 이름 저장</button></section>'+
-        '<section><h3>채팅 이미지 자동 수집 · 싫어요</h3>'+
+        '<section><h3>채팅 이미지 자동 수집 · 싫어요</h3>'+ 
+        '<p class="muted">실제 생성 이벤트 연결: '+(outputListenerAvailable?'정상 등록':'미등록 · 플러그인의 replacer 권한이나 앱 버전 확인')+' / 수신 '+outputEventCount+'회</p>'+ 
+        '<p class="muted">최근 자동 처리: '+esc(outputLastResult)+'</p>'+
         '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
         '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<br/><small>한번에 최대 1장 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
         '<p class="muted">채팅에 명시적으로 연결되고 자동 이미지 표시가 켜진 팩에만 적용돼. 현재 설정: '+(autoCollectEnabled?'자동 수집 ON':'자동 수집 OFF')+'</p>'+
@@ -1563,6 +1566,13 @@
     await risuai.registerButton({name:'에셋 싫어요',icon:'👎',iconType:'html',location:'chat',
       id:'character-mixer-dislike-chat'},openFeedback);
   }catch(error){console.warn('[CharacterMixer] chat feedback button unavailable',error);}
+  if(typeof risuai.addRisuChatListener==='function'){
+    outputListener=async arg=>onCommittedChatOutput(arg);
+    try{
+      await risuai.addRisuChatListener('output',outputListener);
+      outputListenerAvailable=true;
+    }catch(e){outputListenerAvailable=false;outputLastResult='출력 이벤트 등록 실패: '+clip(e?.message||e,140);}
+  }else outputLastResult='현재 RisuBard에 생성 완료 이벤트 API가 없어';
   let displayHandler=typeof risuai.addRisuScriptHandler==='function'
     ? async content=>displayAssetCompatibility(content):null;
   if(displayHandler){
@@ -1576,6 +1586,10 @@
   }
   await risuai.onUnload(async()=>{
     destroyed=true;opened=false;
+    if(outputListener&&typeof risuai.removeRisuChatListener==='function'){
+      try{await risuai.removeRisuChatListener('output',outputListener);}
+      catch(e){console.warn('[CharacterMixer] output listener cleanup failed',e);}
+    }
     if(displayHandler&&typeof risuai.removeRisuScriptHandler==='function'){
       try{await risuai.removeRisuScriptHandler('display',displayHandler);}
       catch(error){console.warn('[CharacterMixer] display hook cleanup:',error);}
