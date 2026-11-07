@@ -544,8 +544,11 @@
     // reference. Even 1000 exact-name Gelbooru matches cannot classify an OC.
     const normalized=str(result.work).toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,'');
     const corroborated=normalized&&candidates.some(x=>x.tag.toLowerCase().includes(normalized));
-    if(result.kind==='fanwork'&&corroborated){
+    if(corroborated&&result.scores.original===0&&result.scores.fanwork>=2){
+      // Character + named work together corroborate a structured title clue.
+      result.kind='fanwork';
       result.confidence='high';
+      result.work=result.work||str(bot?.name).match(/[([]([^)]]+)[)]]s*$/)?.[1]||'';
       result.evidence.push('Gelbooru 캐릭터·작품 태그 확인');
     }
     return result;
