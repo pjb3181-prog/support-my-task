@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.6.1
+//@version 0.6.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -477,12 +477,108 @@
     }catch(e){console.warn('[CharacterMixer] pack loading failed',e);packLibrary=[];}
   }
   async function savePacks(){await risuai.pluginStorage.setItem(PACK_STORE,packLibrary);}
+  // Classify from source provenance, not a name-only lookup. A name such as
+  // "가영" can describe either an OC or a character from Inuyasha.
+  function inferCharacterIdentity(bot,lores=[]){
+    const parts=[str(bot?.name),str(bot?.desc),str(bot?.personality),
+      str(bot?.scenario),str(bot?.firstMessage),
+      ...asArray(lores).slice(0,80).map(x=>str(x?.content))];
+    const text=parts.join('\n').slice(0,30000);
+    const lines=text.split(/\n/).map(x=>x.trim()).filter(Boolean);
+    const evidence=[];
+    let work='',fanScore=0,originalScore=0;
+    const originalRule=/(?:오리지널\s*(?:캐릭터|인물|자캐)|자작\s*(?:캐릭터|인물)|창작\s*(?:캐릭터|인물)|original\s*character|\bOC\s*(?:character|profile)\b|비공식\s*자작\s*캐릭터)/i;
+    const workRule=/^(?:[-*#]\s*)?(?:원작|원작명|작품명|출전|소속\s*작품|프랜차이즈|fandom|franchise|copyright|source\s*series|series\s*name)\s*[:：]\s*(.+)$/i;
+    const explicitFan=/(?:원작\s*캐릭터|공식\s*캐릭터|2차\s*창작|팬\s*캐릭터|fanfiction|fanwork)/i;
+    for(const line of lines){
+      if(originalRule.test(line)){originalScore+=5;evidence.push('오리지널 명시: '+clip(line,105));}
+      const m=line.match(workRule);
+      if(m){
+        const candidate=clip(m[1].split(/[|;]/)[0],80);
+        if(candidate&&!/^(?:없음|무|none|n\/a|original|오리지널|자체\s*세계관)$/i.test(candidate)){
+          work=candidate;fanScore+=6;
+          evidence.push('원작 필드: '+clip(line,120));
+        }else if(candidate){originalScore+=5;evidence.push('원작 없음 명시: '+clip(line,100));}
+      }
+      if(explicitFan.test(line)){fanScore+=3;evidence.push('2차창작 언급: '+clip(line,105));}
+    }
+    const titleMatch=str(bot?.name).match(/[([]([^)\]]{2,80})[)\]]\s*$/);
+    if(titleMatch&&!work&&!/^(?:oc|original|오리지널)$/i.test(titleMatch[1])){
+      // A title suffix is a clue, never sufficient by itself.
+      work=titleMatch[1];fanScore+=2;
+      evidence.push('이름의 작품명 후보: '+clip(titleMatch[1],80));
+    }
+    let kind='unknown';
+    if(fanScore>=6&&fanScore>originalScore+2)kind='fanwork';
+    if(originalScore>=5&&originalScore>fanScore+2)kind='original';
+    if(originalScore>=5&&fanScore>=5)kind='unknown';
+    return {kind,work:kind==='fanwork'?work:'',confidence:kind==='unknown'?'low':(Math.max(fanScore,originalScore)>=10?'high':'medium'),
+      evidence:evidence.slice(0,6),scores:{fanwork:fanScore,original:originalScore},method:'source-metadata-v1'};
+  }
+  async function externalIdentityCandidates(name){
+    // Gelbooru tag metadata can corroborate a source, but a same-name tag
+    // cannot prove that an arbitrary custom character is that fandom character.
+    const raw=str(name).replace(/\s*[([][^)\]]+[)\]]\s*$/,'').trim();
+    const search=raw.toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,'');
+    if(search.length<3||typeof risuai.nativeFetch!=='function')return [];
+    const params=new URLSearchParams({page:'dapi',s:'tag',q:'index',json:'1',
+      limit:'16',name_pattern:'%'+search+'%'});
+    if(externalApiKey.trim()&&externalUserId.trim()){
+      params.set('api_key',externalApiKey.trim());params.set('user_id',externalUserId.trim());
+    }
+    const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
+    if(!response?.ok)throw Error('외부 태그 조회 응답 '+str(response?.status));
+    const body=await response.json();
+    const rows=Array.isArray(body)?body:asArray(body?.tag);
+    return rows.filter(x=>Number(x?.type??x?.category)===4)
+      .map(x=>({tag:clip(x.name,120),count:Number(x.count)||0}))
+      .filter(x=>x.tag.toLowerCase().includes(search)).slice(0,10);
+  }
+  async function detectIdentityFromSources(bot,lores=[]){
+    const result=inferCharacterIdentity(bot,lores);
+    let candidates=[];
+    try{candidates=await externalIdentityCandidates(bot?.name);}
+    catch(e){result.externalLookupError=clip(e?.message||e,120);}
+    result.externalCandidates=candidates;
+    // Candidate tags are suggestions unless paired with an explicit source
+    // reference. Even 1000 exact-name Gelbooru matches cannot classify an OC.
+    const hintedWork=result.work||str(bot?.name).match(/[([]([^)]{2,80})[)\]]\s*$/)?.[1]||'';
+    const normalized=str(hintedWork).toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,'');
+    const corroborated=normalized&&candidates.some(x=>x.tag.toLowerCase().includes(normalized));
+    if(corroborated&&result.scores.original===0&&result.scores.fanwork>=2){
+      // Character + named work together corroborate a structured title clue.
+      result.kind='fanwork';
+      result.confidence='high';
+      result.work=hintedWork;
+      result.evidence.push('Gelbooru 캐릭터·작품 태그 확인');
+    }
+    return result;
+  }
+  async function autoIdentifyPack(){
+    if(busy)return;
+    busy=true;
+    try{
+      const pack=externalTarget();
+      const prediction=await detectIdentityFromSources(pack.snapshot,loreOf(pack.snapshot));
+      const old=packLibrary;
+      const record={...pack,characterKind:prediction.kind,
+        originalWork:prediction.work,identityEvidence:prediction,identitySource:'auto'};
+      packLibrary=packLibrary.map(p=>p.id===pack.id?record:p);
+      try{await savePacks();}catch(e){packLibrary=old;throw e;}
+      externalNotice=prediction.kind==='unknown'
+        ?'원본 설정만으로 확정 어려움 · 외부 캐릭터 태그 후보 '+asArray(prediction.externalCandidates).map(x=>x.tag).slice(0,3).join(', ')+' · 미분류 유지.'
+        :'자동 판별: '+(prediction.kind==='original'?'오리지널':'2차창작')+
+          (prediction.work?' / '+prediction.work:'')+' · '+prediction.evidence.join(' / ');
+      invalidateDisplayCache();
+    }catch(e){externalError=str(e?.message||e);}
+    finally{busy=false;await render();}
+  }
   async function saveCharacterKind(){
     try{
       const pack=externalTarget();
       const kind=['original','fanwork'].includes(characterKindChoice)?characterKindChoice:'unknown';
       const before=packLibrary;
-      packLibrary=packLibrary.map(p=>p.id===pack.id?{...p,characterKind:kind,originalWork:kind==='fanwork'?clip(characterWorkInput,120):''}:p);
+      packLibrary=packLibrary.map(p=>p.id===pack.id?{...p,characterKind:kind,originalWork:kind==='fanwork'?clip(characterWorkInput,120):'',identitySource:'manual'}:p);
       try{await savePacks();}catch(e){packLibrary=before;throw e;}
       externalNotice=kind==='original'
         ?'오리지널로 저장 · 장면 태그 중심으로 이미지를 선택해'
@@ -599,10 +695,14 @@
         scenario:str(src.scenario),exampleMessage:str(src.exampleMessage),
         firstMessage:str(src.firstMessage),globalLore:lores,
         additionalAssets:assets,emotionImages:[],ccAssets:[],modules:[]};
+      const identity=previous?.identitySource==='manual'
+        ?null:await detectIdentityFromSources(src,lores);
       const record={id,name:src.name,updatedAt:Date.now(),
         sources:bots.map(b=>({id:b.chaId,name:b.name})),binaryCopied:true,assetCount:assets.length,
-        characterKind:['original','fanwork'].includes(previous?.characterKind)?previous.characterKind:'unknown',
-        originalWork:str(previous?.originalWork||''),
+        characterKind:previous?.identitySource==='manual'?previous.characterKind:(identity?.kind||'unknown'),
+        originalWork:previous?.identitySource==='manual'?str(previous?.originalWork||''):str(identity?.work||''),
+        identitySource:previous?.identitySource==='manual'?'manual':'auto',
+        identityEvidence:previous?.identitySource==='manual'?previous?.identityEvidence:identity,
         speakerAliases:asArray(previous?.speakerAliases),
         externalAssets:asArray(previous?.externalAssets).filter(item=>assets.some(x=>x[1]===item.path)),
         snapshot};
@@ -868,7 +968,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.6.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.6.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -891,7 +991,10 @@
         '<option value="original" '+(characterKindChoice==='original'?'selected':'')+'>오리지널 · 장면 일치 우선</option></select></label>'+
         '<label>원작 이름 (2차창작인 경우)<input id="cm-original-work" type="text" value="'+esc(characterWorkInput)+'" placeholder="예: 이누야샤"/></label>'+
         '<p class="muted">이름만으로 판별하지 않아. 예: 가영은 이누야샤의 가영일 수도, 오리지널 인물일 수도 있어. 원작 정보는 분류의 근거로 기록하지만 자동 확정하지 않아.</p>'+
-        '<button id="cm-kind-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>캐릭터 유형 저장</button></section>'+
+        '<div class="top"><button id="cm-kind-auto" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>설정·로어북으로 자동 판별</button>'+
+        '<button id="cm-kind-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>수동 지정 저장</button></div>'+
+        (sourceId.startsWith('pack:')?'<p class="muted">판별 근거: '+esc(asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.identityEvidence?.evidence).join(' / ')||'없음 · 이름만으로 단정하지 않음')+'</p>'+ 
+          '<p class="muted">외부 캐릭터 태그 후보: '+esc(asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.identityEvidence?.externalCandidates).map(x=>x.tag).slice(0,5).join(', ')||'검색 근거 없음')+'</p>':'')+'</section>'+
         '<section><h3>채팅 화자 이름 연결</h3>'+
         '<p class="muted">자동 이미지 표시를 사용할 때 채팅의 [강세라], [핸콕] 같은 화자 이름을 인식하는 용도야. 쉼표로 구분해.</p>'+
         '<input id="cm-speaker-alias" type="text" value="'+esc(sourceId.startsWith('pack:')?(packLibrary.find(p=>'pack:'+p.id===sourceId)?.speakerAliases||[]).join(', '):'')+'" placeholder="예: 핸콕, 보아 핸콕"/>'+
@@ -995,6 +1098,7 @@
       const tagInput=el('cm-booru-tags'),keyInput=el('cm-booru-key'),userInput=el('cm-booru-user');
       el('cm-kind').onchange=e=>{characterKindChoice=['original','fanwork'].includes(e.target.value)?e.target.value:'unknown';};
       el('cm-original-work').oninput=e=>{characterWorkInput=str(e.target.value).slice(0,120);};
+      el('cm-kind-auto').onclick=()=>void autoIdentifyPack();
       el('cm-kind-save').onclick=()=>void saveCharacterKind();
       el('cm-speaker-alias').oninput=e=>{speakerAliasInput=str(e.target.value).slice(0,300);};
       el('cm-speaker-save').onclick=()=>void saveSpeakerAliases();
