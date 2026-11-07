@@ -542,7 +542,8 @@
     result.externalCandidates=candidates;
     // Candidate tags are suggestions unless paired with an explicit source
     // reference. Even 1000 exact-name Gelbooru matches cannot classify an OC.
-    const normalized=str(result.work).toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,'');
+    const hintedWork=result.work||str(bot?.name).match(/[([]([^)]{2,80})[)\]]\s*$/)?.[1]||'';
+    const normalized=str(hintedWork).toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,'');
     const corroborated=normalized&&candidates.some(x=>x.tag.toLowerCase().includes(normalized));
     if(corroborated&&result.scores.original===0&&result.scores.fanwork>=2){
       // Character + named work together corroborate a structured title clue.
