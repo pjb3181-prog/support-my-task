@@ -294,7 +294,11 @@
     const candidates=cached.tagAssets.filter(x=>x.sourceId===selectedSource);
     if(!candidates.length)return '';
     const kind=candidates[0].characterKind==='original'?'original':'fanwork';
-    const excerpt=latest?window.slice(latest.index,Math.min(window.length,latest.index+1200)):window.slice(-1200);
+    let excerpt=latest?window.slice(latest.index,Math.min(window.length,latest.index+1200)):window.slice(-1200);
+    if(latest){
+      const boundary=excerpt.slice(1).search(/\n\[[^\]\n]{1,80}\]/);
+      if(boundary>=0)excerpt=excerpt.slice(0,boundary+1);
+    }
     const signals=sceneTagSignals(excerpt);
     if(!signals.length)return '';
     // A fanwork pack uses only the leading emotion signal, preserving v0.6.0
