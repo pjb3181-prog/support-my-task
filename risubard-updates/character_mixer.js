@@ -759,6 +759,29 @@
         '<button type="button" id="cm-extract" class="primary">독립 캐릭터 팩 저장 (채팅 연결 없음)</button>'+
         '<button type="button" id="cm-export">선택한 저장 팩 JSON 내보내기</button>'+
         '<p class="muted">팩은 위 목록에서 [PACK]으로 표시돼. 저장 시 이미지 데이터를 RisuBard 에셋 저장소에 별도 복제하고 검증해. 복제 실패 시 팩은 갱신하지 않아.</p>'+
+
+        '<section><h3>외부 이미지 검색 · Gelbooru</h3>'+
+        '<p class="muted">먼저 [PACK] 캐릭터를 선택해. 태그로 검색하고 직접 선택한 일반 등급 이미지만 독립 팩에 복제해. 자동 대량 수집은 하지 않아.</p>'+
+        '<label>검색 태그 (예: boa_hancock_(one_piece))<input id="cm-booru-tags" type="text" value="'+esc(externalQuery)+'" placeholder="character_name_(series)"/></label>'+
+        '<div class="grid"><label>Gelbooru user_id (필요한 경우)<input id="cm-booru-user" type="text" value="'+esc(externalUserId)+'" autocomplete="off"/></label>'+
+        '<label>API key (필요한 경우)<input id="cm-booru-key" type="password" value="'+esc(externalApiKey)+'" autocomplete="off"/></label></div>'+
+        '<p class="muted">인증 정보는 플러그인 저장소에 보관하지 않아. 다만 API 요청 URL에 포함되므로 해당 서비스와 네트워크 로그에 기록될 수 있어.</p>'+
+        '<div class="top"><button id="cm-booru-search" '+(externalBusy?'disabled':'')+'>태그 검색 · 일반 등급</button>'+
+        '<button id="cm-booru-prev" '+(externalPage<=0||externalBusy?'disabled':'')+'>이전 페이지</button>'+
+        '<span class="muted">'+(externalPage+1)+'페이지</span>'+
+        '<button id="cm-booru-next" '+(externalBusy?'disabled':'')+'>다음 페이지</button></div>'+
+        (externalError?'<p class="status">'+esc(externalError)+'</p>':'')+
+        (externalNotice?'<p class="status">'+esc(externalNotice)+'</p>':'')+
+        '<div class="grid">'+externalResults.map(item=>
+          '<label class="item"><input type="checkbox" data-cm-booru-id="'+esc(item.id)+'" '+(externalSelected.has(item.id)?'checked':'')+'/>'+
+          '<span style="min-width:0"><img loading="lazy" referrerpolicy="no-referrer" src="'+esc(item.thumbnail||item.image)+'" alt="Post '+esc(item.id)+'" style="width:132px;height:132px;object-fit:contain;display:block;background:#141b28;border-radius:6px"/>'+
+          '<small>#'+esc(item.id)+' · '+esc(item.tags.slice(0,6).join(' · '))+'</small>'+
+          '<a href="'+esc(item.postURL)+'" target="_blank" rel="noopener noreferrer">원본 게시물·출처 확인</a></span></label>').join('')+
+        '</div>'+
+        '<p class="muted">저작권과 이용 조건을 확인한 뒤 저장해. 가져온 이미지의 출처와 태그를 유지하며, 채팅에 자동 표시할지는 아래에서 별도로 선택해.</p>'+
+        '<button id="cm-booru-import" '+(externalBusy||!sourceId.startsWith('pack:')?'disabled':'')+'>선택한 이미지 팩에 저장 (최대 12개)</button>'+
+        '</section>'+
+
         '<details><summary>선택 사항 · 다른 세계관에 불러올 때의 설정</summary><label>세계관 합성<select id="cm-mode"><option value="adapt" '+(choices.mode==='adapt'?'selected':'')+
         '>A 세계관에 편입 (기본)</option><option value="original" '+(choices.mode==='original'?'selected':'')+
         '>B 원래 출신 유지</option></select></label>'+
@@ -773,6 +796,7 @@
         check('emotions','감정 이미지','B 표정 이미지를 이름으로 구분',choices.emotions)+
         check('moduleAssets','선택 모듈의 에셋','선택한 기존 모듈에서 이미지 가져오기',choices.moduleAssets)+
         check('moduleLore','선택 모듈의 로어','추가 로어 선택, 실행 코드 제외',choices.moduleLore)+
+        check('autoImages','태그 이미지 자동 표시','팩을 채팅에 불러온 뒤 감정이 일치하면 표시 (기본 꺼짐)',choices.autoImages)+
         '</div></section>'+
         '<section><div class="top"><h3>세부 로어북 선택</h3><button id="cm-select-lore">전체 선택/해제</button></div>'+
         (availableLore.length?availableLore.map((item,i)=>'<label class="item"><input type="checkbox" data-cm-lore="'+i+'" '+
@@ -831,6 +855,21 @@
       };
       el('cm-extract').onclick=()=>void extractPack();
       el('cm-export').onclick=()=>void exportPackJson();
+      const tagInput=el('cm-booru-tags'),keyInput=el('cm-booru-key'),userInput=el('cm-booru-user');
+      tagInput.oninput=e=>{externalQuery=str(e.target.value).slice(0,200);};
+      keyInput.oninput=e=>{externalApiKey=str(e.target.value).slice(0,250);};
+      userInput.oninput=e=>{externalUserId=str(e.target.value).slice(0,50);};
+      el('cm-booru-search').onclick=()=>{externalPage=0;void searchExternal();};
+      el('cm-booru-prev').onclick=()=>{externalPage=Math.max(0,externalPage-1);void searchExternal();};
+      el('cm-booru-next').onclick=()=>{externalPage=Math.min(100,externalPage+1);void searchExternal();};
+      el('cm-booru-import').onclick=()=>void importExternalImages();
+      for(const node of document.querySelectorAll('[data-cm-booru-id]')){
+        node.onchange=e=>{
+          const id=str(node.getAttribute('data-cm-booru-id'));
+          if(e.target.checked)externalSelected.add(id);else externalSelected.delete(id);
+        };
+      }
+
       el('cm-apply').onclick=()=>void apply();
       for(const node of document.querySelectorAll('[data-cm-remove]'))
         node.onclick=()=>void detach(str(node.getAttribute('data-cm-remove')));
