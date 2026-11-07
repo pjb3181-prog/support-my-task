@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.6.0-beta.1
+//@version 0.6.0-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Selectively blend an imported character's lore and asset references into the current chat without overwriting existing bots.
 (async () => {
@@ -14,7 +14,7 @@
   let packLibrary=[];
   let legacyPanelOpen=false;
   let externalQuery='',externalApiKey='',externalUserId='',externalResults=[],externalPage=0;
-  let externalBusy=false,externalError='',externalNotice='';
+  let externalBusy=false,externalError='',externalNotice='',speakerAliasInput='';
   const externalSelected=new Set();
   const PROFILE_LIMIT=6000, LORE_LIMIT=30000;
   let destroyed=false, busy=false, opened=false, message='', sourceId='';
@@ -255,13 +255,13 @@
     const contentWindow=content.slice(-14000);
     let latest=null;
     for(const item of cached.tagAssets){
-      const name=str(item.characterName).trim();
-      if(!name)continue;
-      const escaped=name.replace(/[^a-zA-Z0-9가-힣_]/g,ch=>'\\'+ch);
-      const pattern=new RegExp('\\['+escaped+'\\]','g');
-      let match;
-      while((match=pattern.exec(contentWindow))){
-        if(!latest||match.index>latest.index)latest={item,index:match.index,matched:name};
+      for(const name of asArray(item.characterAliases).filter(Boolean)){
+        const escaped=str(name).replace(/[^a-zA-Z0-9가-힣_]/g,ch=>'\\'+ch);
+        const pattern=new RegExp('\\['+escaped+'\\]','g');
+        let match;
+        while((match=pattern.exec(contentWindow))){
+          if(!latest||match.index>latest.index)latest={item,index:match.index,matched:item.sourceId};
+        }
       }
     }
     if(!latest)return '';
@@ -276,7 +276,7 @@
       surprised:['surprised','wide_eyes','open_mouth','shock'],
       sad:['sad','tears','frown','downcast_eyes']
     };
-    const candidates=cached.tagAssets.filter(x=>x.characterName===latest.matched);
+    const candidates=cached.tagAssets.filter(x=>x.sourceId===latest.matched);
     let winning=null,score=0;
     for(const item of candidates){
       const tags=new Set(asArray(item.tags));
@@ -414,7 +414,7 @@
       for(const item of asArray(pack?.externalAssets)){
         const mapped=assets.find(a=>a.path===item.path);
         if(mapped)externalTagAssets.push({name:mapped.name,tags:asArray(item.tags).slice(0,60),
-          characterName:clip(pack.name,100),sourceId:bot.chaId});
+          characterName:clip(pack.name,100),characterAliases:[clip(pack.name,100),...asArray(pack.speakerAliases)].filter(Boolean),sourceId:bot.chaId});
       }
     }
     const extra= {
@@ -441,6 +441,17 @@
     }catch(e){console.warn('[CharacterMixer] pack loading failed',e);packLibrary=[];}
   }
   async function savePacks(){await risuai.pluginStorage.setItem(PACK_STORE,packLibrary);}
+  async function saveSpeakerAliases(){
+    try{
+      const pack=externalTarget();
+      const aliases=[...new Set(str(speakerAliasInput).split(',').map(x=>x.trim()).filter(Boolean))].slice(0,12);
+      const old=packLibrary;
+      packLibrary=packLibrary.map(p=>p.id===pack.id?{...p,speakerAliases:aliases}:p);
+      try{await savePacks();}catch(e){packLibrary=old;throw e;}
+      externalNotice='채팅 이름 태그 '+aliases.length+'개 저장 · 실제 채팅에 적용된 팩은 다시 불러와야 반영돼';
+    }catch(e){externalError=str(e?.message||e);}
+    await render();
+  }
   async function exportPackJson(){
     try{
       const pack=packLibrary.find(p=>'pack:'+p.id===sourceId);
@@ -801,7 +812,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.6.0-beta.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.6.0-beta.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -818,6 +829,10 @@
         '<button type="button" id="cm-export">선택한 저장 팩 JSON 내보내기</button>'+
         '<p class="muted">팩은 위 목록에서 [PACK]으로 표시돼. 저장 시 이미지 데이터를 RisuBard 에셋 저장소에 별도 복제하고 검증해. 복제 실패 시 팩은 갱신하지 않아.</p>'+
 
+        '<section><h3>채팅 화자 이름 연결</h3>'+
+        '<p class="muted">자동 이미지 표시를 사용할 때 채팅의 [강세라], [핸콕] 같은 화자 이름을 인식하는 용도야. 쉼표로 구분해.</p>'+
+        '<input id="cm-speaker-alias" type="text" value="'+esc(sourceId.startsWith('pack:')?(packLibrary.find(p=>'pack:'+p.id===sourceId)?.speakerAliases||[]).join(', '):'')+'" placeholder="예: 핸콕, 보아 핸콕"/>'+
+        '<button id="cm-speaker-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>화자 이름 저장</button></section>'+
         '<section><h3>외부 이미지 검색 · Gelbooru</h3>'+
         '<p class="muted">먼저 [PACK] 캐릭터를 선택해. 태그로 검색하고 직접 선택한 일반 등급 이미지만 독립 팩에 복제해. 자동 대량 수집은 하지 않아.</p>'+
         '<label>검색 태그 (예: boa_hancock_(one_piece))<input id="cm-booru-tags" type="text" value="'+esc(externalQuery)+'" placeholder="character_name_(series)"/></label>'+
@@ -914,6 +929,8 @@
       el('cm-extract').onclick=()=>void extractPack();
       el('cm-export').onclick=()=>void exportPackJson();
       const tagInput=el('cm-booru-tags'),keyInput=el('cm-booru-key'),userInput=el('cm-booru-user');
+      el('cm-speaker-alias').oninput=e=>{speakerAliasInput=str(e.target.value).slice(0,300);};
+      el('cm-speaker-save').onclick=()=>void saveSpeakerAliases();
       tagInput.oninput=e=>{externalQuery=str(e.target.value).slice(0,200);};
       keyInput.oninput=e=>{externalApiKey=str(e.target.value).slice(0,250);};
       userInput.oninput=e=>{externalUserId=str(e.target.value).slice(0,50);};
