@@ -777,6 +777,165 @@
         postURL:'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(String(row.id))
       })).filter(row=>row.image);
   }
+  function isRejected(postId){return rejectedPosts['gelbooru:'+str(postId)]===true;}
+  function isRelevantPost(item,signals,kind){
+    const tagSet=new Set(asArray(item.tags));
+    const scene=asArray(signals).filter(x=>kind==='original'||x.weight===3);
+    return scene.some(x=>x.tags.some(t=>tagSet.has(t)));
+  }
+  async function persistAssetToPack(pack,item,ctx=null){
+    if(!pack||!item||isRejected(item.id))return false;
+    if(asArray(pack.externalAssets).some(x=>str(x.postId)===str(item.id)))return false;
+    const fetchResult=await risuai.nativeFetch(item.image,{method:'GET'});
+    if(!fetchResult?.ok)throw Error('이미지 다운로드 실패 '+str(fetchResult?.status));
+    const type=str(fetchResult.headers?.get?.('content-type')).toLowerCase();
+    if(type&&!type.startsWith('image/'))throw Error('이미지 형식 아님');
+    const length=Number(fetchResult.headers?.get?.('content-length')||0);
+    if(length>12*1024*1024)throw Error('12MB 초과');
+    const bytes=new Uint8Array(await fetchResult.arrayBuffer());
+    if(!bytes.length||bytes.length>12*1024*1024)throw Error('이미지 크기 제한');
+    const path=await risuai.saveAsset(bytes);
+    if(!safePath(path)||!str(path).startsWith('assets/'))throw Error('에셋 저장 실패');
+    const verified=bytesOf(await risuai.readImage(path));
+    if(!verified||verified.length!==bytes.length)throw Error('복제 검증 실패');
+    for(let i=0;i<bytes.length;i++)if(verified[i]!==bytes[i])throw Error('복제 내용 불일치');
+    // Re-fetch the newest pack, because other UI operations might have run.
+    const fresh=packLibrary.find(x=>x.id===pack.id);
+    if(!fresh||isRejected(item.id)||asArray(fresh.externalAssets).some(x=>str(x.postId)===str(item.id)))return false;
+    const existing=asArray(fresh.snapshot?.additionalAssets);
+    const name='gelbooru_'+item.id;
+    if(existing.some(x=>x[0]===name))return false;
+    const ext=item.image.match(/\.(png|jpe?g|webp|gif)(?:$|\?)/i)?.[1]?.replace('jpeg','jpg')||'png';
+    const asset={name,path,ext,postId:str(item.id),tags:item.tags,
+      provider:'gelbooru',sourceURL:item.postURL,artistSource:item.source||'',autoAdded:true};
+    const updated={...fresh,updatedAt:Date.now(),
+      externalAssets:[...asArray(fresh.externalAssets),asset],
+      snapshot:{...fresh.snapshot,additionalAssets:[...existing,[name,path,ext]]}};
+    updated.assetCount=updated.snapshot.additionalAssets.length;
+    const db=await risuai.getDatabase();
+    const oldModules=asArray(db?.modules);
+    const archiveId=archivedModuleId(pack.id);
+    const nextModules=oldModules.map(mod=>{
+      if(mod?.id===archiveId){
+        return {...mod,assets:[...asArray(mod.assets),[name,path,ext]]};
+      }
+      const meta=metadataOf(mod);
+      if(!ctx||!meta?.autoImages||meta.targetChatId!==ctx.chat.id
+        ||!asArray(meta.sourceIds).includes('pack:'+pack.id))return mod;
+      const tagItem={name,tags:item.tags,characterName:fresh.name,
+        characterAliases:[fresh.name,...asArray(fresh.speakerAliases)],
+        sourceId:'pack:'+pack.id,characterKind:fresh.characterKind};
+      return {...mod,assets:[...asArray(mod.assets),[name,path,ext]],
+        description:MARK+JSON.stringify({...meta,externalTagAssets:[...asArray(meta.externalTagAssets),tagItem]})};
+    });
+    if(!nextModules.some(m=>m?.id===archiveId)){
+      nextModules.push({id:archiveId,name:'Character Mixer Archive · '+clip(fresh.name,70),
+        description:ARCHIVE_MARK+JSON.stringify({packId:fresh.id,version:3}),
+        namespace:'character-mixer-archive',lorebook:[],
+        assets:updated.snapshot.additionalAssets.map(x=>[x[0],x[1],x[2]])});
+    }
+    const before=packLibrary;
+    await risuai.setDatabaseLite({modules:nextModules});
+    packLibrary=before.map(p=>p.id===fresh.id?updated:p);
+    try{await savePacks();}
+    catch(error){
+      packLibrary=before;
+      try{await risuai.setDatabaseLite({modules:oldModules});}catch(e){console.error('[CharacterMixer] automatic asset rollback failed',e);}
+      throw error;
+    }
+    invalidateDisplayCache();
+    return true;
+  }
+  async function dislikeAsset(packId,postId){
+    const key='gelbooru:'+str(postId);
+    if(rejectedPosts[key])return;
+    const previous={...rejectedPosts};
+    rejectedPosts={...rejectedPosts,[key]:true};
+    try{await saveAutoPrefs();}
+    catch(e){rejectedPosts=previous;throw e;}
+    const before=packLibrary;
+    const fresh=before.find(p=>p.id===packId);
+    const removed=asArray(fresh?.externalAssets).filter(x=>str(x.postId)===str(postId));
+    if(fresh&&removed.length){
+      const removedNames=new Set(removed.map(x=>x.name));
+      const next={...fresh,externalAssets:asArray(fresh.externalAssets).filter(x=>!removedNames.has(x.name)),
+        snapshot:{...fresh.snapshot,additionalAssets:asArray(fresh.snapshot.additionalAssets).filter(x=>!removedNames.has(x[0]))}};
+      next.assetCount=next.snapshot.additionalAssets.length;
+      const db=await risuai.getDatabase();
+      const oldModules=asArray(db.modules);
+      const changed=oldModules.map(mod=>{
+        const meta=metadataOf(mod);
+        if(mod?.id!==archivedModuleId(packId)&&!asArray(meta?.sourceIds).includes('pack:'+packId))return mod;
+        const nextMod={...mod,assets:asArray(mod.assets).filter(x=>!removedNames.has(x[0]))};
+        if(meta)nextMod.description=MARK+JSON.stringify({...meta,
+          externalTagAssets:asArray(meta.externalTagAssets).filter(x=>!removedNames.has(x.name))});
+        return nextMod;
+      });
+      await risuai.setDatabaseLite({modules:changed});
+      packLibrary=before.map(p=>p.id===packId?next:p);
+      try{await savePacks();}
+      catch(error){
+        packLibrary=before;
+        try{await risuai.setDatabaseLite({modules:oldModules});}catch(e){console.error('[CharacterMixer] dislike rollback failed',e);}
+        throw error;
+      }
+    }
+    invalidateDisplayCache();
+    externalNotice='싫어요 반영: #'+str(postId)+' · 라이브러리와 채팅 이미지 선택에서 제외, 다시 자동 수집하지 않아.';
+    await render();
+  }
+  async function discoverForScene(content,ctx){
+    if(!autoCollectEnabled||autoCollectBusy||destroyed||ctx.libraryOnly)return;
+    const active=installedInChat(ctx).map(m=>({mod:m,meta:metadataOf(m)}))
+      .filter(x=>x.meta?.autoImages);
+    if(!active.length)return;
+    const window=content.slice(-1600);
+    const signals=sceneTagSignals(window);
+    if(!signals.length)return;
+    const now=Date.now();
+    for(const entry of active){
+      for(const id of asArray(entry.meta.sourceIds).filter(x=>str(x).startsWith('pack:'))){
+        const pack=packLibrary.find(p=>'pack:'+p.id===id);
+        if(!pack||!['original','fanwork'].includes(pack.characterKind))continue;
+        const aliases=[pack.name,...asArray(pack.speakerAliases)];
+        // Avoid cross-character contamination: explicit speaker match.
+        if(!aliases.some(name=>name&&window.includes('['+name+']')))continue;
+        const tagSignals=pack.characterKind==='original'?signals:signals.filter(x=>x.weight===3);
+        if(!tagSignals.length)continue;
+        const keys=tagSignals.map(x=>x.tags[0]).slice(0,2);
+        const eventKey=ctx.chat.id+'|'+pack.id+'|'+keys.join('|');
+        if(now-(lastDiscovery.get(eventKey)||0)<5*60*1000)continue;
+        // Auto discovery at most once per speaker/mood during this window.
+        lastDiscovery.set(eventKey,now);
+        const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
+        if(existing.some(x=>isRelevantPost(x,tagSignals,pack.characterKind)))continue;
+        const base=pack.characterKind==='original'?'1girl '+keys.join(' '):
+          (asArray(pack.identityEvidence?.externalCandidates)[0]?.tag||
+            str(pack.name).toLowerCase().replace(/\s+/g,'_'))+' '+keys[0];
+        const tags=base.split(/\s+/).slice(0,6).filter(Boolean);
+        if(!tags.length)continue;
+        autoCollectBusy=true;
+        try{
+          const params=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
+            limit:'12',pid:'0',tags:[...tags,'rating:general'].join(' ')});
+          if(externalApiKey&&externalUserId){
+            params.set('api_key',externalApiKey.trim());params.set('user_id',externalUserId.trim());
+          }
+          const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
+          if(!response?.ok)throw Error('검색 API '+str(response?.status));
+          const rows=parseBooruPosts(await response.json());
+          const candidate=rows.find(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
+            &&isRelevantPost(x,tagSignals,pack.characterKind));
+          if(candidate&&await persistAssetToPack(pack,candidate,ctx))
+            autoCollectStatus=pack.name+' · 에셋 #'+candidate.id+' 자동 저장';
+          else autoCollectStatus=pack.name+' · 새로운 적합 이미지 없음';
+        }catch(e){autoCollectStatus='자동 검색 실패: '+clip(e?.message||e,150);}
+        finally{autoCollectBusy=false;}
+        return; // One search and at most one image per display event.
+      }
+    }
+  }
+
   async function searchExternal(){
     if(externalBusy)return;
     externalBusy=true;externalError='';externalNotice='';
