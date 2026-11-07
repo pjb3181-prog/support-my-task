@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.4-beta.1
+//@version 0.7.4-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -282,7 +282,8 @@
   function pickTaggedAsset(content,cached,excludedNames=new Set()){
     if(!cached?.tagAssets?.length||/\{\{\s*(?:img|image|asset|emotion)\s*(?:::|=)/i.test(content))return '';
     if(content.length>40000||content.length<40)return '';
-    const window=content.slice(-14000);
+    const window=sanitizeSceneText(content).slice(-14000);
+    if(!window)return '';
     let latest=null;
     for(const item of cached.tagAssets){
       for(const name of asArray(item.characterAliases).filter(Boolean)){
@@ -398,7 +399,7 @@
       if(!cached.hasActive)return content;
       const rewritten=hasAssetTag?rewriteAssetTokens(content,cached.lookup,cached.target):content;
       const omitted=new Set(Object.keys(rejectedPosts).filter(k=>rejectedPosts[k]).map(k=>'gelbooru_'+k.slice(9)));
-      const safe=rewritten.replace(/\{\{img::(gelbooru_\d+)\}\}/g,(token,name)=>omitted.has(name)?'':token);
+      const safe=rewritten.replace(/\{\{img::(gelbooru_(?:db_)?\d+)\}\}/g,(token,name)=>omitted.has(name)?'':token);
       const decision=currentDisplayDecision(ctx,safe);
       if(!decision)return safe;
       // Preserve images already written explicitly in the chat; never append
@@ -977,7 +978,7 @@
     if(existing.some(x=>x[0]===name))return false;
     const ext=item.image.match(/\.(png|jpe?g|webp|gif)(?:$|\?)/i)?.[1]?.replace('jpeg','jpg')||'png';
     const asset={name,path,ext,postId:str(item.id),tags:item.tags,
-      provider:'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source||'',autoAdded:true};
+      provider:item.provider||'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source||'',autoAdded:true};
     const updated={...fresh,updatedAt:Date.now(),
       externalAssets:[...asArray(fresh.externalAssets),asset],
       snapshot:{...fresh.snapshot,additionalAssets:[...existing,[name,path,ext]]}};
@@ -1140,8 +1141,9 @@
       const raw=str(msg.data);
       if(raw.length<40)return;
       const active=installedInChat(ctx).length?ctx:await bootstrapCurrentChat(ctx);
-      outputLastResult='장면 분석: '+clip(raw.slice(0,80).replace(/\s+/g,' '),80);
-      await discoverForScene(raw,active);
+      const cleanScene=sanitizeSceneText(raw);
+      outputLastResult=cleanScene?'장면 분석: '+clip(cleanScene.slice(0,80).replace(/\s+/g,' '),80):'내부 Thoughts 구간 제외 · 분석 가능한 장면 없음';
+      if(cleanScene)await discoverForScene(raw,active);
     }catch(e){outputLastResult='자동 처리 실패: '+clip(e?.message||e,160);console.warn('[CharacterMixer] output event',e);}
   }
 
@@ -1209,20 +1211,10 @@
       externalResults=[];
       const tokens=str(externalQuery).trim().split(/\s+/).filter(Boolean).slice(0,8);
       if(!tokens.length)throw Error('캐릭터 태그를 입력해. 예: boa_hancock_(one_piece)');
-      const tags=[...tokens.filter(x=>!x.startsWith('rating:')),'rating:general'].join(' ');
-      const params=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
-        limit:'18',pid:String(externalPage),tags});
-      if(externalApiKey.trim()&&externalUserId.trim()){
-        params.set('api_key',externalApiKey.trim());params.set('user_id',externalUserId.trim());
-      }
       if(typeof risuai.nativeFetch!=='function')throw Error('이 버전에서는 nativeFetch API를 사용할 수 없어');
-      const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
-      if(!response?.ok)throw Error('Gelbooru API 응답 '+(response?.status||'없음')+
-        ' · API 키/사용자 ID와 요청 제한을 확인해.');
-      const data=await response.json();
-      externalResults=parseBooruPosts(data);
+      externalResults=await searchBooruWithFallback(tokens,18,externalPage);
       externalSelected.clear();
-      externalNotice=externalResults.length+'개 일반 등급 이미지 검색 완료. 저장할 이미지를 직접 골라줘.';
+      externalNotice=externalResults.length+'개 일반 등급 이미지 검색 완료 · '+externalProviderStatus;
     }catch(e){externalError=str(e?.message||e);}
     finally{externalBusy=false;await render();}
   }
@@ -1268,7 +1260,7 @@
         let name=item.name,i=2;while(already.has(name)){name=item.name+'_'+i;i++;}
         already.add(name);
         return {name,path:item.path,ext:item.ext,tags:item.tags,postId:item.id,
-          provider:'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source};
+          provider:item.provider||'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source};
       });
       const newRecord={...pack,updatedAt:Date.now(),binaryCopied:true,
         snapshot:{...pack.snapshot,additionalAssets:[
@@ -1415,7 +1407,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.4-beta.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.4-beta.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1449,7 +1441,8 @@
         '<section><h3>채팅 이미지 자동 수집 · 싫어요</h3>'+ 
         '<p class="muted">실제 생성 이벤트 연결: '+(outputListenerAvailable?'정상 등록':'미등록 · 플러그인의 replacer 권한이나 앱 버전 확인')+' / 수신 '+outputEventCount+'회</p>'+ 
         '<p class="muted">최근 자동 처리: '+esc(outputLastResult)+'</p>'+
-        '<p class="muted">외부 검색 결과: '+esc(autoCollectStatus||'검색 실행 기록 없음')+'</p>'+
+        '<p class="muted">외부 검색 결과: '+esc(autoCollectStatus||'검색 실행 기록 없음')+'</p>'+ 
+        '<p class="muted">검색 제공처: '+esc(externalProviderStatus||'아직 확인 안 됨')+'</p>'+
         '<button id="cm-diagnose" type="button">현재 채팅 자동 연결 및 최근 답변 테스트</button>'+
         '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
         '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<br/><small>한번에 최대 1장 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
@@ -1466,7 +1459,7 @@
           '</div>':'<p class="muted">저장된 [PACK]을 선택하면 이미지별 싫어요를 누를 수 있어.</p>')+
         '<p class="muted">싫어요 이미지는 팩과 연결된 채팅 모듈에서 제외하고, 같은 Gelbooru 게시물을 다시 가져오지 않아. 원본 바이너리 파일은 안전을 위해 즉시 삭제하지 않아.</p></section>'+
         '<section><h3>외부 이미지 검색 · Gelbooru</h3>'+
-        '<p class="muted">수동 검색도 가능해. 채팅 자동 수집은 위에서 켜고 끌 수 있어.</p>'+
+        '<p class="muted">Gelbooru에서 인증 오류가 나면 Danbooru 공개 검색을 시도해. 두 사이트 모두 실패하면 여기에서 오류를 확인할 수 있어.</p>'+
         '<label>'+(characterKindChoice==='original'?'장면 태그 검색 · 캐릭터 이름 불필요':'캐릭터 태그 검색')+'<input id="cm-booru-tags" type="text" value="'+esc(externalQuery)+'" placeholder="'+(characterKindChoice==='original'?'예: 1girl sitting indoors smile':'예: boa_hancock_(one_piece)')+'"/></label>'+
         (characterKindChoice==='original'?'<p class="muted">오리지널은 원작 캐릭터와 같은 얼굴일 필요가 없어. 대신 의상·행동·감정·장소가 맞는 이미지를 직접 골라 저장해. 이미지에 원래 그려진 캐릭터의 태그는 채팅 선택에 사용하지 않아.</p>':'')+
         '<div class="grid"><label>Gelbooru user_id (필요한 경우)<input id="cm-booru-user" type="text" value="'+esc(externalUserId)+'" autocomplete="off"/></label>'+
