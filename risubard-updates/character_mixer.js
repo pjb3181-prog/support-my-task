@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.1
+//@version 0.7.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -17,6 +17,9 @@
   let externalBusy=false,externalError='',externalNotice='',speakerAliasInput='';
   let characterKindChoice='unknown',characterWorkInput='';
   const AUTO_PREF_KEY='character_mixer_auto_assets_v1';
+  const DISPLAY_KEY='character_mixer_display_history_v1';
+  const DISPLAY_MIN_GAP=3, DISPLAY_RECENT_WINDOW=5, DISPLAY_REPEAT_TURN_WINDOW=15;
+  let displayHistory={};
   let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
   let rejectedPosts={},lastDiscovery=new Map(),discoveryRun=new Set();
   let latestShown=null,reviewFirst=false;
@@ -272,7 +275,7 @@
       if(regex.test(text))hits.push({tags,weight});
     return hits;
   }
-  function pickTaggedAsset(content,cached){
+  function pickTaggedAsset(content,cached,excludedNames=new Set()){
     if(!cached?.tagAssets?.length||/\{\{\s*(?:img|image|asset|emotion)\s*(?:::|=)/i.test(content))return '';
     if(content.length>40000||content.length<40)return '';
     const window=content.slice(-14000);
@@ -312,6 +315,7 @@
     if(!effective.length)return '';
     let winner=null,best=0;
     for(const item of candidates){
+      if(excludedNames.has(item.name))continue;
       const tags=new Set(asArray(item.tags));
       let score=0;
       for(const signal of effective){
@@ -319,22 +323,61 @@
       }
       if(score>best){best=score;winner=item;}
     }
-    // A single strongly relevant expression, or two independent scene
-    // features, is enough. Reject incidental backdrop-only matches.
-    const min=kind==='original'?2:3;
+    // A strong expression, or posture plus environment, is required.
+    const min=3;
     return winner&&best>=min?'{{img::'+winner.name+'}}':'';
+  }
+  function contentFingerprint(value){
+    // Keep only a compact hash; do not retain chat text in plugin storage.
+    let h=2166136261;
+    const strValue=str(value);
+    for(let i=0;i<strValue.length;i++){h^=strValue.charCodeAt(i);h=Math.imul(h,16777619)>>>0;}
+    return h.toString(36);
+  }
+  function currentDisplayDecision(ctx,content){
+    const turns=asArray(ctx.chat?.message).filter(x=>['char','assistant'].includes(str(x?.role)));
+    const last=turns.at(-1);
+    const raw=str(last?.data).trim();
+    // Never inject a new image into previously rendered messages or user text.
+    if(raw.length<40||!content.includes(raw.slice(0,Math.min(90,raw.length))))return null;
+    const turn=turns.length-1;
+    const key=str(ctx.chat.id)+'|'+ctx.ci+'|'+ctx.ti;
+    const signature=str(turn)+'|'+str(raw.length)+'|'+contentFingerprint(raw);
+    const previous=displayHistory[key]||{lastShownTurn:-100,recent:[]};
+    const row=turn<previous.lastShownTurn?{lastShownTurn:-100,recent:[]}:previous;
+    return {key,signature,turn,row,
+      sameMessage:row.messageKey===signature,
+      canShow:turn-row.lastShownTurn>=DISPLAY_MIN_GAP};
+  }
+  function recordDisplayedImage(decision,assetName){
+    const recent=asArray(decision.row.recent).filter(x=>{
+      const name=typeof x==='string'?x:x?.name;
+      const turn=typeof x==='string'?decision.turn:Number(x?.turn);
+      return name!==assetName&&Number.isFinite(turn)&&decision.turn-turn<DISPLAY_REPEAT_TURN_WINDOW;
+    }).slice(-(DISPLAY_RECENT_WINDOW-1));
+    displayHistory[decision.key]={lastShownTurn:decision.turn,messageKey:decision.signature,
+      lastAsset:assetName,recent:[...recent,{name:assetName,turn:decision.turn}]};
+    void saveDisplayHistory().catch(e=>console.warn('[CharacterMixer] display history save failed',e));
+  }
+  function rememberFeedback(assetName){
+    // A disliked image must never reappear from a saved display decision.
+    for(const [key,row] of Object.entries(displayHistory)){
+      if(row?.lastAsset===assetName)delete displayHistory[key];
+      else if(asArray(row?.recent).some(x=>(typeof x==='string'?x:x?.name)===assetName)){
+        displayHistory[key]={...row,recent:row.recent.filter(x=>(typeof x==='string'?x:x?.name)!==assetName)};
+      }
+    }
+    void saveDisplayHistory().catch(e=>console.warn('[CharacterMixer] feedback history save failed',e));
   }
   async function displayAssetCompatibility(content){
     if(destroyed||typeof content!=='string')return content;
     const hasAssetTag=/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content);
     if(!hasAssetTag&&!/\[[^\]\n]{1,80}\]/.test(content)&&!autoCollectEnabled)return content;
     try{
-      const ci=await risuai.getCurrentCharacterIndex();
-      const ti=await risuai.getCurrentChatIndex();
+      const ctx=await context();
       const now=Date.now();
       let cached=displayCache;
-      if(!cached||cached.ci!==ci||cached.ti!==ti||now-cached.at>ALIAS_CACHE_MS){
-        const ctx=await context();
+      if(!cached||cached.ci!==ctx.ci||cached.ti!==ctx.ti||now-cached.at>ALIAS_CACHE_MS){
         const aliases=activeAliases(ctx);
         const tagAssets=[];
         for(const mod of aliases.active){
@@ -352,21 +395,43 @@
       const rewritten=hasAssetTag?rewriteAssetTokens(content,cached.lookup,cached.target):content;
       const omitted=new Set(Object.keys(rejectedPosts).filter(k=>rejectedPosts[k]).map(k=>'gelbooru_'+k.slice(9)));
       const safe=rewritten.replace(/\{\{img::(gelbooru_\d+)\}\}/g,(token,name)=>omitted.has(name)?'':token);
-      const selected=pickTaggedAsset(safe,{...cached,tagAssets:cached.tagAssets.filter(x=>!omitted.has(x.name))});
+      const decision=currentDisplayDecision(ctx,safe);
+      if(!decision)return safe;
+      // Preserve images already written explicitly in the chat; never append
+      // a second automatic image on top of a pre-existing image tag.
+      if(hasAssetTag)return safe;
+      // Stable repeated renders of the same assistant reply must not add extra
+      // images, advance the cooldown or launch duplicate external searches.
+      const previousName=decision.sameMessage?str(decision.row.lastAsset):'';
+      if(previousName&&!omitted.has(previousName)
+        &&cached.tagAssets.some(x=>x.name===previousName)){
+        return safe+'\n\n{{img::'+previousName+'}}';
+      }
+      if(!decision.canShow)return safe;
+      const recent=new Set(asArray(decision.row.recent).filter(x=>{
+        const turn=typeof x==='string'?decision.turn:Number(x?.turn);
+        return Number.isFinite(turn)&&decision.turn-turn<DISPLAY_REPEAT_TURN_WINDOW;
+      }).map(x=>typeof x==='string'?x:x.name));
+      const selected=pickTaggedAsset(safe,
+        {...cached,tagAssets:cached.tagAssets.filter(x=>!omitted.has(x.name))},recent);
       if(selected){
         const assetName=selected.match(/^\{\{img::([^}]+)\}\}$/)?.[1];
         const row=cached.tagAssets.find(x=>x.name===assetName);
-        if(row){
+        if(row&&assetName){
+          recordDisplayedImage(decision,assetName);
           const pack=packLibrary.find(p=>'pack:'+p.id===row.sourceId);
           const external=asArray(pack?.externalAssets).find(x=>x.name===assetName);
-          if(pack&&external&&!isRejected(external.postId))latestShown={packId:pack.id,postId:str(external.postId),assetName,chatIndex:ti,characterIndex:ci};
+          if(pack&&external&&!isRejected(external.postId))
+            latestShown={packId:pack.id,postId:str(external.postId),assetName,
+              chatIndex:ctx.ti,characterIndex:ctx.ci};
         }
+        return safe+'\n\n'+selected;
       }
-      if(autoCollectEnabled&&!selected&&!destroyed){
-        // This happens outside the critical display path; network errors stay local.
-        void discoverForScene(safe,await context()).catch(e=>console.warn('[CharacterMixer] discovery',e));
+      if(autoCollectEnabled&&!destroyed){
+        // A normal reply is returned immediately; remote fetch is optional.
+        void discoverForScene(safe,ctx).catch(e=>console.warn('[CharacterMixer] discovery',e));
       }
-      return selected?safe+'\n\n'+selected:safe;
+      return safe;
     }catch(error){
       console.log('[CharacterMixer] asset preview fallback:',error?.message||error);
       return content;
@@ -503,6 +568,16 @@
     }catch(e){autoCollectStatus='자동 에셋 설정 읽기 실패: '+str(e?.message||e);}
   }
   async function saveAutoPrefs(){await risuai.pluginStorage.setItem(AUTO_PREF_KEY,{enabled:autoCollectEnabled,rejected:rejectedPosts});}
+  async function loadDisplayHistory(){
+    try{const data=await risuai.pluginStorage.getItem(DISPLAY_KEY);
+      displayHistory=data&&typeof data==='object'&&!Array.isArray(data)?data:{};
+    }catch(e){displayHistory={};console.warn('[CharacterMixer] display history unavailable',e);}
+  }
+  async function saveDisplayHistory(){
+    const entries=Object.entries(displayHistory).slice(-200);
+    displayHistory=Object.fromEntries(entries);
+    await risuai.pluginStorage.setItem(DISPLAY_KEY,displayHistory);
+  }
   // Classify from source provenance, not a name-only lookup. A name such as
   // "가영" can describe either an OC or a character from Inuyasha.
   function inferCharacterIdentity(bot,lores=[]){
@@ -801,7 +876,7 @@
     return effective.reduce((score,signal)=>score+(asArray(signal.tags).some(tag=>tags.has(tag))?signal.weight:0),0);
   }
   function isRelevantPost(item,signals,kind){
-    return assetSceneScore(item,signals,kind)>=(kind==='original'?2:3);
+    return assetSceneScore(item,signals,kind)>=3;
   }
   function isUsablePackAsset(asset,pack,signals){
     if(!asset||!pack||isRejected(asset.postId))return false;
@@ -906,6 +981,7 @@
       }
     }
     invalidateDisplayCache();
+    for(const asset of removed)rememberFeedback(asset.name);
     externalNotice='싫어요 반영: #'+str(postId)+' · 라이브러리와 채팅 이미지 선택에서 제외, 다시 자동 수집하지 않아.';
     await render();
   }
@@ -1182,7 +1258,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1217,6 +1293,7 @@
         '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
         '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<br/><small>한번에 최대 1장 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
         '<p class="muted">채팅에 명시적으로 연결되고 자동 이미지 표시가 켜진 팩에만 적용돼. 현재 설정: '+(autoCollectEnabled?'자동 수집 ON':'자동 수집 OFF')+'</p>'+
+        '<p class="muted">표시 기준: 최신 AI 답변에 최대 1장 / 최소 3개 답변 간격 / 최근 5회 표시 중복 회피 (15개 답변 경과 시 재사용 가능). 적합한 이미지가 없으면 표시하지 않아. 수집은 표시와 별도이며 기존 에셋 우선.</p>'+
         '<p class="muted">'+esc(autoCollectStatus||'아직 자동 수집 기록 없음')+'</p>'+
         (sourceId.startsWith('pack:')?
           '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4><div class="grid">'+
@@ -1374,6 +1451,7 @@
     }
     await loadPacks();
     await loadAutoPrefs();
+    await loadDisplayHistory();
     try{
       const ctx=await context(true);
       const active=installedInChat(ctx);
@@ -1388,6 +1466,7 @@
   }
   await loadPacks();
   await loadAutoPrefs();
+  await loadDisplayHistory();
   async function openFeedback(){reviewFirst=true;await open();}
   // Register the settings entry first. An optional display hook failure must
   // never make the entire Character Mixer disappear from the UI.
