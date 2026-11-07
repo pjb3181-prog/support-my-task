@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.0-beta.4
+//@version 0.7.0-beta.5
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -326,7 +326,7 @@
   async function displayAssetCompatibility(content){
     if(destroyed||typeof content!=='string')return content;
     const hasAssetTag=/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content);
-    if(!hasAssetTag&&!/\[[^\]\n]{1,80}\]/.test(content))return content;
+    if(!hasAssetTag&&!/\[[^\]\n]{1,80}\]/.test(content)&&!autoCollectEnabled)return content;
     try{
       const ci=await risuai.getCurrentCharacterIndex();
       const ti=await risuai.getCurrentChatIndex();
@@ -910,7 +910,9 @@
         if(!pack||!['original','fanwork'].includes(pack.characterKind))continue;
         const aliases=[pack.name,...asArray(pack.speakerAliases)];
         // Avoid cross-character contamination: explicit speaker match.
-        if(!aliases.some(name=>name&&window.includes('['+name+']')))continue;
+        const named=aliases.some(name=>name&&window.includes('['+name+']'));
+        const onlyOC=pack.characterKind==='original'&&active.flatMap(x=>asArray(x.meta?.sourceIds)).filter(id=>str(id).startsWith('pack:')).length===1;
+        if(!named&&!onlyOC)continue;
         const tagSignals=pack.characterKind==='original'?signals:signals.filter(x=>x.weight===3);
         if(!tagSignals.length)continue;
         const keys=tagSignals.map(x=>x.tags[0]).slice(0,2);
@@ -1148,7 +1150,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.0-beta.4</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.0-beta.5</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
