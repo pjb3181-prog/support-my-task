@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.1
+//@version 0.7.2-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -17,6 +17,9 @@
   let externalBusy=false,externalError='',externalNotice='',speakerAliasInput='';
   let characterKindChoice='unknown',characterWorkInput='';
   const AUTO_PREF_KEY='character_mixer_auto_assets_v1';
+  const DISPLAY_KEY='character_mixer_display_history_v1';
+  const DISPLAY_MIN_GAP=3, DISPLAY_RECENT_WINDOW=5;
+  let displayHistory={};
   let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
   let rejectedPosts={},lastDiscovery=new Map(),discoveryRun=new Set();
   let latestShown=null,reviewFirst=false;
@@ -272,7 +275,7 @@
       if(regex.test(text))hits.push({tags,weight});
     return hits;
   }
-  function pickTaggedAsset(content,cached){
+  function pickTaggedAsset(content,cached,excludedNames=new Set()){
     if(!cached?.tagAssets?.length||/\{\{\s*(?:img|image|asset|emotion)\s*(?:::|=)/i.test(content))return '';
     if(content.length>40000||content.length<40)return '';
     const window=content.slice(-14000);
@@ -312,6 +315,7 @@
     if(!effective.length)return '';
     let winner=null,best=0;
     for(const item of candidates){
+      if(excludedNames.has(item.name))continue;
       const tags=new Set(asArray(item.tags));
       let score=0;
       for(const signal of effective){
@@ -503,6 +507,15 @@
     }catch(e){autoCollectStatus='자동 에셋 설정 읽기 실패: '+str(e?.message||e);}
   }
   async function saveAutoPrefs(){await risuai.pluginStorage.setItem(AUTO_PREF_KEY,{enabled:autoCollectEnabled,rejected:rejectedPosts});}
+  async function loadDisplayHistory(){
+    try{const data=await risuai.pluginStorage.getItem(DISPLAY_KEY);
+      displayHistory=data&&typeof data==='object'&&!Array.isArray(data)?data:{};
+    }catch(e){displayHistory={};console.warn('[CharacterMixer] display history unavailable',e);}
+  }
+  async function saveDisplayHistory(){
+    const entries=Object.entries(displayHistory).slice(-200);
+    await risuai.pluginStorage.setItem(DISPLAY_KEY,Object.fromEntries(entries));
+  }
   // Classify from source provenance, not a name-only lookup. A name such as
   // "가영" can describe either an OC or a character from Inuyasha.
   function inferCharacterIdentity(bot,lores=[]){
@@ -1182,7 +1195,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.2-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1374,6 +1387,7 @@
     }
     await loadPacks();
     await loadAutoPrefs();
+    await loadDisplayHistory();
     try{
       const ctx=await context(true);
       const active=installedInChat(ctx);
@@ -1388,6 +1402,7 @@
   }
   await loadPacks();
   await loadAutoPrefs();
+  await loadDisplayHistory();
   async function openFeedback(){reviewFirst=true;await open();}
   // Register the settings entry first. An optional display hook failure must
   // never make the entire Character Mixer disappear from the UI.
