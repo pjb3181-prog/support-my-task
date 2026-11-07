@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.3-beta.2
+//@version 0.7.3-beta.3
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -1343,7 +1343,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.3-beta.2</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.3-beta.3</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1569,8 +1569,15 @@
   if(typeof risuai.addRisuChatListener==='function'){
     outputListener=async arg=>onCommittedChatOutput(arg);
     try{
-      await risuai.addRisuChatListener('output',outputListener);
-      outputListenerAvailable=true;
+      const allowed=typeof risuai.requestPluginPermission==='function'
+        ?await risuai.requestPluginPermission('replacer'):true;
+      if(!allowed){
+        outputListenerAvailable=false;
+        outputLastResult='생성 완료 이벤트 권한(replacer)이 허용되지 않았어. 플러그인 권한을 확인해.';
+      }else{
+        await risuai.addRisuChatListener('output',outputListener);
+        outputListenerAvailable=true;
+      }
     }catch(e){outputListenerAvailable=false;outputLastResult='출력 이벤트 등록 실패: '+clip(e?.message||e,140);}
   }else outputLastResult='현재 RisuBard에 생성 완료 이벤트 API가 없어';
   let displayHandler=typeof risuai.addRisuScriptHandler==='function'
