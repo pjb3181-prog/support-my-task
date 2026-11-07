@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.2-beta.4
+//@version 0.7.2-beta.5
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -327,6 +327,13 @@
     const min=3;
     return winner&&best>=min?'{{img::'+winner.name+'}}':'';
   }
+  function contentFingerprint(value){
+    // Keep only a compact hash; do not retain chat text in plugin storage.
+    let h=2166136261;
+    const strValue=str(value);
+    for(let i=0;i<strValue.length;i++){h^=strValue.charCodeAt(i);h=Math.imul(h,16777619)>>>0;}
+    return h.toString(36);
+  }
   function currentDisplayDecision(ctx,content){
     const turns=asArray(ctx.chat?.message).filter(x=>['char','assistant'].includes(str(x?.role)));
     const last=turns.at(-1);
@@ -335,7 +342,7 @@
     if(raw.length<40||!content.includes(raw.slice(0,Math.min(90,raw.length))))return null;
     const turn=turns.length-1;
     const key=str(ctx.chat.id)+'|'+ctx.ci+'|'+ctx.ti;
-    const signature=str(turn)+'|'+str(raw.length)+'|'+raw.slice(0,90)+'|'+raw.slice(-60);
+    const signature=str(turn)+'|'+str(raw.length)+'|'+contentFingerprint(raw);
     const previous=displayHistory[key]||{lastShownTurn:-100,recent:[]};
     const row=turn<previous.lastShownTurn?{lastShownTurn:-100,recent:[]}:previous;
     return {key,signature,turn,row,
@@ -565,7 +572,8 @@
   }
   async function saveDisplayHistory(){
     const entries=Object.entries(displayHistory).slice(-200);
-    await risuai.pluginStorage.setItem(DISPLAY_KEY,Object.fromEntries(entries));
+    displayHistory=Object.fromEntries(entries);
+    await risuai.pluginStorage.setItem(DISPLAY_KEY,displayHistory);
   }
   // Classify from source provenance, not a name-only lookup. A name such as
   // "가영" can describe either an OC or a character from Inuyasha.
@@ -1247,7 +1255,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.2-beta.4</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.2-beta.5</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
