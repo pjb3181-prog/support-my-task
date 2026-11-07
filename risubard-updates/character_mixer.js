@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.3
+//@version 0.7.4-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Independent character packs, user-selected Gelbooru tag assets and opt-in scene image matching.
 (async () => {
@@ -21,6 +21,7 @@
   const DISPLAY_MIN_GAP=3, DISPLAY_RECENT_WINDOW=5, DISPLAY_REPEAT_TURN_WINDOW=15;
   let displayHistory={};
   let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
+  let externalProviderStatus='',authFailureCount=0;
   let rejectedPosts={},lastDiscovery=new Map(),discoveryRun=new Set();
   let latestShown=null,reviewFirst=false;
   let outputListenerAvailable=false,outputEventCount=0,outputLastResult='아직 생성 완료 이벤트를 받지 못함';
@@ -847,14 +848,18 @@
     if(!pack)throw Error('먼저 저장된 [PACK] 캐릭터를 선택해.');
     return pack;
   }
-  function gelbooruMediaURL(value){
+  function safeBooruMediaURL(value){
     try{
       const u=new URL(str(value));
-      if(u.protocol!=='https:'||!/(^|\.)gelbooru\.com$/i.test(u.hostname))return '';
-      if(!/\.(?:png|jpg|jpeg|gif|webp)(?:$|\?)/i.test(u.pathname+u.search))return '';
+      if(u.protocol!=='https:')return '';
+      const allowed=/(^|\.)gelbooru\.com$/i.test(u.hostname)||
+        /(^|\.)donmai\.us$/i.test(u.hostname);
+      if(!allowed||!/\.(?:png|jpe?g|gif|webp)(?:$|\?)/i.test(u.pathname+u.search))return '';
       return u.href;
     }catch(_){return '';}
   }
+  // Retain older renderer and settings references.
+  function gelbooruMediaURL(value){return safeBooruMediaURL(value);}
   function booruTags(row){
     const raw=Array.isArray(row?.tags)?row.tags:typeof row?.tags==='string'?row.tags.split(/\s+/):[];
     return [...new Set(raw.map(x=>str(x).toLowerCase()).filter(Boolean))].slice(0,200);
@@ -864,12 +869,74 @@
     return list.filter(x=>x&&Number.isFinite(Number(x.id)))
       .filter(x=>['general','safe','s','g'].includes(str(x.rating).toLowerCase()))
       .map(row=>({
-        id:String(row.id),tags:booruTags(row),rating:row.rating,
-        thumbnail:gelbooruMediaURL(row.preview_url||row.sample_url||row.file_url),
-        image:gelbooruMediaURL(row.file_url||row.sample_url),
+        id:String(row.id),provider:'gelbooru',tags:booruTags(row),rating:row.rating,
+        thumbnail:safeBooruMediaURL(row.preview_url||row.sample_url||row.file_url),
+        image:safeBooruMediaURL(row.file_url||row.sample_url),
         source:clip(row.source||'',500),
         postURL:'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(String(row.id))
       })).filter(row=>row.image);
+  }
+  function parseDanbooruPosts(data){
+    if(!Array.isArray(data))return [];
+    return data.filter(x=>x&&Number.isSafeInteger(Number(x.id)))
+      .filter(x=>['g','general'].includes(str(x.rating).toLowerCase()))
+      .map(row=>({
+        // Provider-qualified IDs keep existing Gelbooru post IDs unique.
+        id:'db_'+String(row.id),provider:'danbooru',
+        tags:booruTags({tags:str(row.tag_string||row.tag_string_general||'')}),
+        rating:row.rating,
+        thumbnail:safeBooruMediaURL(row.preview_file_url||row.large_file_url||row.file_url),
+        image:safeBooruMediaURL(row.file_url||row.large_file_url),
+        source:clip(row.source||'',500),
+        postURL:'https://danbooru.donmai.us/posts/'+encodeURIComponent(String(row.id))
+      })).filter(x=>x.image);
+  }
+  function sanitizeSceneText(value){
+    let text=str(value);
+    // Do not treat a model's internal reasoning as fictional scene content.
+    text=text.replace(/<\s*(?:thoughts?|thinking|analysis)\b[^>]*>[\s\S]*?<\s*\/\s*(?:thoughts?|thinking|analysis)\s*>/gi,' ');
+    text=text.replace(/<\|im_start\|>\s*(?:analysis|thinking)[\s\S]*?<\|im_end\|>/gi,' ');
+    text=text.replace(/<\|channel\s*=\s*analysis\|>[\s\S]*?<\|channel\s*=\s*final\|>/gi,' ');
+    if(/<\s*(?:thoughts?|thinking|analysis)\b[^>]*>/i.test(text)){
+      // An unclosed thought block cannot be reliably separated: skip the scene.
+      return '';
+    }
+    return text.trim();
+  }
+  async function searchBooruWithFallback(baseTags,limit=12,page=0){
+    const userTags=asArray(baseTags).map(x=>str(x).trim()).filter(x=>x&&!x.startsWith('rating:'));
+    const gelParams=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
+      limit:String(limit),pid:String(page),tags:[...userTags,'rating:general'].join(' ')});
+    if(externalApiKey.trim()&&externalUserId.trim()){
+      gelParams.set('api_key',externalApiKey.trim());
+      gelParams.set('user_id',externalUserId.trim());
+    }
+    let gelFailure='';
+    try{
+      const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+gelParams.toString(),{method:'GET'});
+      if(!response?.ok)throw Error('HTTP '+str(response?.status||'unknown'));
+      const posts=parseBooruPosts(await response.json());
+      externalProviderStatus='Gelbooru API 정상 ('+posts.length+'건)';
+      return posts;
+    }catch(e){
+      gelFailure=clip(e?.message||e,100);
+    }
+    // Danbooru public search: one descriptive tag + rating:g to stay within
+    // common unauthenticated tag-count restrictions; verify all tags locally.
+    const distinctive=userTags.find(x=>x!=='1girl'&&x!=='1boy')||userTags[0]||'smile';
+    const danParams=new URLSearchParams({limit:String(Math.min(30,Math.max(12,limit))),page:String(page+1),
+      tags:distinctive+' rating:g'});
+    try{
+      const response=await risuai.nativeFetch('https://danbooru.donmai.us/posts.json?'+danParams.toString(),{method:'GET'});
+      if(!response?.ok)throw Error('HTTP '+str(response?.status||'unknown'));
+      const posts=parseDanbooruPosts(await response.json());
+      externalProviderStatus='Gelbooru 실패 ('+gelFailure+') → Danbooru 정상 ('+posts.length+'건)';
+      return posts;
+    }catch(e){
+      const second=clip(e?.message||e,100);
+      externalProviderStatus='Gelbooru '+gelFailure+' / Danbooru '+second;
+      throw Error('이미지 검색 서버 접근 실패: '+externalProviderStatus);
+    }
   }
   function isRejected(postId){return rejectedPosts['gelbooru:'+str(postId)]===true;}
   function assetSceneScore(item,signals,kind){
@@ -1088,7 +1155,8 @@
     const last=asArray(ctx.chat?.message).filter(m=>['char','assistant'].includes(str(m?.role))).at(-1);
     const raw=str(last?.data).trim();
     if(!raw||(!content.includes(raw.slice(0,Math.min(100,raw.length)))&&content!==raw))return;
-    const window=content.slice(-1600);
+    const window=sanitizeSceneText(content).slice(-3000);
+    if(window.length<30){autoCollectStatus='장면 텍스트 없음 · Thoughts/내부 분석을 제외했어';return;}
     const signals=sceneTagSignals(window);
     if(!signals.length)return;
     const now=Date.now();
@@ -1119,14 +1187,7 @@
         if(!tags.length)continue;
         autoCollectBusy=true;
         try{
-          const params=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
-            limit:'12',pid:'0',tags:[...tags,'rating:general'].join(' ')});
-          if(externalApiKey&&externalUserId){
-            params.set('api_key',externalApiKey.trim());params.set('user_id',externalUserId.trim());
-          }
-          const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+params.toString(),{method:'GET'});
-          if(!response?.ok)throw Error('검색 API '+str(response?.status));
-          const rows=parseBooruPosts(await response.json());
+          const rows=await searchBooruWithFallback(tags,12,0);
           const candidate=rows.find(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
             &&isRelevantPost(x,tagSignals,pack.characterKind));
           if(candidate&&await persistAssetToPack(pack,candidate,ctx)){
@@ -1354,7 +1415,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.3</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.4-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
