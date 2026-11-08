@@ -1878,9 +1878,14 @@
     // Inserting into a chapter whose thought blocks were removed from tag
     // analysis could otherwise corrupt offsets; refuse that scenario.
     if(sanitizeSceneText(body)!==body.trim())return false;
-    const selected=beatOverride||chooseIllustrationBeat(body,targetPack);
+    let selected=beatOverride||chooseIllustrationBeat(body,targetPack);
     const asset=asArray(targetPack?.externalAssets).find(a=>a.name===assetName);
     if(!assetMatchesLocalBeat(asset,targetPack,selected))return false;
+    // Anchor the selected passage in the untouched stored message. This
+    // avoids corrupted splice offsets when trimmed scene text differs.
+    const actualStart=selected?body.indexOf(selected.text):-1;
+    if(actualStart<0)return false;
+    selected={...selected,end:actualStart+selected.text.length};
     const inserted=insertImageAtBeat(body,assetName,selected);
     if(!inserted)return false;
     const nextMessage={...previous,data:inserted};
@@ -1916,8 +1921,8 @@
       for(const source of asArray(meta?.sourceIds).filter(id=>str(id).startsWith('pack:'))){
         const pack=packLibrary.find(x=>'pack:'+x.id===source);
         if(!pack||!['original','fanwork'].includes(pack.characterKind))continue;
-        const beat=chooseIllustrationBeat(text,pack);
-        if(!beat)continue;
+        const beats=rankIllustrationBeats(text,pack).slice(0,3);
+        if(!beats.length)continue;
         const previousFingerprints=new Set();
         for(const used of asArray(pack.externalAssets).filter(asset=>prior.has(asset.name))){
           if(used.fingerprint){previousFingerprints.add(used.fingerprint);continue;}
@@ -1927,20 +1932,22 @@
             if(old?.length)previousFingerprints.add(imageFingerprint(old));
           }catch(error){console.warn('[CharacterMixer] prior image fingerprint unavailable');}
         }
-        const candidates=asArray(pack.externalAssets).filter(asset=>
-          !prior.has(asset.name)&&assetMatchesLocalBeat(asset,pack,beat)&&
-          asArray(mod.assets).some(row=>Array.isArray(row)&&row[0]===asset.name));
-        const seen=new Set();
-        for(const asset of candidates){
-          if(!safePath(asset.path))continue;
-          try{
-            const bytes=bytesOf(await risuai.readImage(asset.path));
-            if(!bytes?.length)continue;
-            const fp=imageFingerprint(bytes);
-            if(seen.has(fp)||previousFingerprints.has(fp))continue;
-            seen.add(fp);
-            if(await appendAssetToCommittedReply(current,sourceText,asset.name,pack))return true;
-          }catch(error){console.warn('[CharacterMixer] saved scene asset unavailable',error);}
+        for(const beat of beats){
+          const candidates=asArray(pack.externalAssets).filter(asset=>
+            !prior.has(asset.name)&&assetMatchesLocalBeat(asset,pack,beat)&&
+            asArray(mod.assets).some(row=>Array.isArray(row)&&row[0]===asset.name));
+          const seen=new Set();
+          for(const asset of candidates){
+            if(!safePath(asset.path))continue;
+            try{
+              const bytes=bytesOf(await risuai.readImage(asset.path));
+              if(!bytes?.length)continue;
+              const fp=imageFingerprint(bytes);
+              if(seen.has(fp)||previousFingerprints.has(fp))continue;
+              seen.add(fp);
+              if(await appendAssetToCommittedReply(current,sourceText,asset.name,pack,beat))return true;
+            }catch(error){console.warn('[CharacterMixer] saved scene asset unavailable',error);}
+          }
         }
       }
     }
