@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.10
+//@version 0.8.0-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -19,7 +19,51 @@
   const AUTO_PREF_KEY='character_mixer_auto_assets_v1';
   const DISPLAY_KEY='character_mixer_display_history_v1';
   const AUTH_KEY='character_mixer_gelbooru_auth_v1';
-  const DISPLAY_MIN_GAP=3, DISPLAY_RECENT_WINDOW=5, DISPLAY_REPEAT_TURN_WINDOW=15;
+  const DENSITY_STORE='character_mixer_density_v1';
+  const DENSITY_PRESETS={
+    low:{maxAssetsPerReply:1,minReplyGap:4,recentDuplicateWindow:6,reuseAfterReplies:15,autoCollectMaxPerRun:1,searchCandidatePool:4,minimumLocalAssets:1},
+    normal:{maxAssetsPerReply:1,minReplyGap:3,recentDuplicateWindow:5,reuseAfterReplies:12,autoCollectMaxPerRun:1,searchCandidatePool:5,minimumLocalAssets:2},
+    high:{maxAssetsPerReply:2,minReplyGap:1,recentDuplicateWindow:3,reuseAfterReplies:6,autoCollectMaxPerRun:2,searchCandidatePool:8,minimumLocalAssets:3},
+    aggressive:{maxAssetsPerReply:3,minReplyGap:0,recentDuplicateWindow:1,reuseAfterReplies:3,autoCollectMaxPerRun:3,searchCandidatePool:12,minimumLocalAssets:4}
+  };
+  const DENSITY_DEFAULT={displayPreset:'high',...DENSITY_PRESETS.high,skipIfEnoughAssets:true,assetUsageHint:''};
+  let densitySettings={...DENSITY_DEFAULT};
+  const bounded=(v,lo,hi,fallback)=>Number.isFinite(Number(v))?Math.min(hi,Math.max(lo,Math.round(Number(v)))):fallback;
+  function normalizeDensity(input){
+    const raw=input&&typeof input==='object'?input:{};
+    const preset=['low','normal','high','aggressive','custom'].includes(raw.displayPreset)?raw.displayPreset:'high';
+    const merged={...DENSITY_DEFAULT,...raw,...(preset==='custom'?{}:DENSITY_PRESETS[preset]),displayPreset:preset};
+    for(const [key,lo,hi] of [['maxAssetsPerReply',0,5],['minReplyGap',0,10],
+      ['recentDuplicateWindow',0,20],['reuseAfterReplies',0,50],['autoCollectMaxPerRun',1,5],
+      ['searchCandidatePool',3,20],['minimumLocalAssets',0,20]]){
+      merged[key]=bounded(merged[key],lo,hi,DENSITY_DEFAULT[key]);
+    }
+    merged.skipIfEnoughAssets=merged.skipIfEnoughAssets!==false;
+    merged.assetUsageHint=String(merged.assetUsageHint||'').slice(0,500);
+    return merged;
+  }
+  async function loadDensitySettings(){
+    try{densitySettings=normalizeDensity(await risuai.pluginStorage.getItem(DENSITY_STORE));}
+    catch(error){densitySettings={...DENSITY_DEFAULT};console.warn('[CharacterMixer] density settings load failed',error);}
+  }
+  async function saveDensitySettings(){
+    densitySettings=normalizeDensity(densitySettings);
+    await risuai.pluginStorage.setItem(DENSITY_STORE,densitySettings);
+  }
+  // Optional, bounded natural-language shortcuts; no prompt injections or LLM calls.
+  function parseAssetHint(hint){
+    const t=String(hint||'').slice(0,500);
+    const result={};
+    const max=t.match(/(?:답변당|한\s*답변(?:에|당)?)\s*(?:최대\s*)?(\d)\s*장/);
+    const collect=t.match(/(?:수집|저장|검색(?:당|마다))\s*(?:최대\s*)?(\d)\s*장/);
+    const gap=t.match(/(?:간격|띄우기)\s*(\d{1,2})\s*(?:턴|답변|회)/);
+    if(max)result.maxAssetsPerReply=bounded(max[1],0,5,2);
+    if(collect)result.autoCollectMaxPerRun=bounded(collect[1],1,5,2);
+    if(gap)result.minReplyGap=bounded(gap[1],0,10,1);
+    if(/적극적|넉넉히|많이\s*보여|자주\s*보여/.test(t))Object.assign(result,{...DENSITY_PRESETS.high,...result});
+    if(/아주\s*적게|최소한만|이미지\s*줄여/.test(t))Object.assign(result,{...DENSITY_PRESETS.low,...result});
+    return result;
+  }
   let displayHistory={};
   let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
   let externalProviderStatus='',authFailureCount=0,authStatus='Gelbooru 인증 정보 미등록';
@@ -1572,7 +1616,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.10</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.0-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1780,6 +1824,7 @@
     }
     await loadPacks();
     await loadAutoPrefs();
+    await loadDensitySettings();
     await loadGelbooruAuth();
     await loadDisplayHistory();
     try{
@@ -1796,6 +1841,7 @@
   }
   await loadPacks();
   await loadAutoPrefs();
+  await loadDensitySettings();
   await loadGelbooruAuth();
   await loadDisplayHistory();
   async function openFeedback(){reviewFirst=true;await open();}
