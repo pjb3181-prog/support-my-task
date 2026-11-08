@@ -31,5 +31,5 @@ test('display hook recognizes legacy image as explicit and does not auto-append'
  assert.match(src,/\/<img\\s\*=\/i\.test\(content\)/);
  assert.match(src,/const legacyRewritten=hasAssetTag\?rewriteLegacyImageTokens/);
  assert.match(src,/if\(hasAssetTag\)return safe/);
- assert.match(src,/\/\/\@version 0\.10\.1/);
+ assert.match(src,/\/\/\@version 0\.10\.2/);
 });

@@ -41,7 +41,7 @@ test('local context matches phone on bed instead of earlier arcade',()=>{
  assert.equal(context.assetMatchesLocalBeat({tags:['video_games']},pack,{...bed,packPresent:true,plan:{signals:[{tags:['cellphone'],weight:3},{tags:['on_bed'],weight:3}]}}),false);
 });
 test('scene-only fallback rejects a random character portrait',()=>{
- const beat={packPresent:false,plan:{signals:[{tags:['on_bed'],weight:3},{tags:['indoors'],weight:2}]}};
+ const beat={text:'침대에 누웠다.',context:'침대에 누웠다.',packPresent:false,plan:{signals:[{tags:['on_bed'],weight:3},{tags:['indoors'],weight:2}]}};
  assert.equal(context.assetMatchesLocalBeat({tags:['1girl','on_bed','indoors']},pack,beat),false);
  assert.equal(context.assetMatchesLocalBeat({tags:['no_humans','on_bed','indoors']},pack,beat),true);
 });
@@ -53,9 +53,9 @@ test('insertion preserves original text and inserts native macro once',()=>{
  assert.equal((next.match(/gelbooru_777/g)||[]).length,1);
 });
 test('committed messages use contextual chosen beat rather than end append',()=>{
- assert.match(src,/const selected=chooseIllustrationBeat\(body,targetPack\)/);
+ assert.match(src,/let selected=beatOverride\|\|chooseIllustrationBeat\(body,targetPack\)/);
  assert.match(src,/const inserted=insertImageAtBeat\(body,assetName,selected\)/);
- assert.match(src,/const beat=chooseIllustrationBeat\(window,pack\)/);
- assert.match(src,/const beat=chooseIllustrationBeat\(text,pack\)/);
- assert.match(src,/const base=!beat.packPresent\?'no_humans '/);
+ assert.match(src,/const beats=rankIllustrationBeats\(window,pack\)/);
+ assert.match(src,/const beats=rankIllustrationBeats\(text,pack\)/);
+ assert.match(src,/const actor=beat.packPresent\?/);
 });

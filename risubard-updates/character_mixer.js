@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.10.1
+//@version 0.10.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -538,7 +538,7 @@
     const tags=[...new Set(signals.filter(x=>x.weight>=2).flatMap(x=>x.tags.slice(0,1)))];
     return {signals,searchTags:tags.slice(0,3)};
   }
-  function chooseIllustrationBeat(text,pack){
+  function rankIllustrationBeats(text,pack){
     const beats=sceneBeats(text);
     const options=[];
     for(const beat of beats){
@@ -556,7 +556,20 @@
         (subject.length?4:0)+(active?7:0)+(memory&&!active?-3:0);
       options.push({...beat,packPresent:active,plan:local,score});
     }
-    return options.sort((a,b)=>b.score-a.score||a.index-b.index)[0]||null;
+    return options.sort((a,b)=>b.score-a.score||a.index-b.index);
+  }
+  function chooseIllustrationBeat(text,pack){
+    return rankIllustrationBeats(text,pack)[0]||null;
+  }
+  // Treat scene-only world packs differently from an identified individual.
+  // Gender is included only if expressly present in the selected passage.
+  function sceneActorTags(beat){
+    const text=str(beat?.context||beat?.text);
+    if(/(?:여자|여성|그녀|소녀|여학생|woman|female|girl)/i.test(text)&&
+       !/(?:남자|남성|그|소년|male|man|boy)/i.test(text))return ['1girl','solo'];
+    if(/(?:남자|남성|그는|소년|남학생|male|man|boy)/i.test(text)&&
+       !/(?:여자|여성|그녀|소녀|woman|female|girl)/i.test(text))return ['1boy','solo'];
+    return ['no_humans'];
   }
   function assetMatchesLocalBeat(asset,pack,beat){
     if(!beat||!safeAutoIllustrationPost(asset,pack))return false;
@@ -567,14 +580,20 @@
     if(pack?.characterKind==='fanwork'){
       if(!beat.packPresent||!verifiedPackIdentity(asset,pack))return false;
     }else if(!beat.packPresent){
-      // Scene-only pictures cannot feature an unrelated character.
-      // Avoid giving the reader a random portrait as the narrator.
-      if(!tags.has('no_humans')&&!tags.has('scenery')&&!tags.has('still_life'))return false;
+      const actors=sceneActorTags(beat);
+      if(actors[0]==='no_humans'){
+        if(!['no_humans','scenery','still_life'].some(t=>tags.has(t)))return false;
+      }else if(!tags.has(actors[0])||['2girls','3girls','2boys','3boys','multiple_girls','multiple_boys'].some(t=>tags.has(t))){
+        return false;
+      }
     }
-    const strong=beat.plan.signals.filter(x=>x.weight>=2);
-    const matches=strong.filter(x=>x.tags.some(t=>tags.has(t)));
-    const hasObjectOrAction=matches.some(x=>!['smile','happy','laughing','grin','night','day','indoors','outdoors'].includes(x.tags[0]));
-    return hasObjectOrAction&&matches.length>=Math.min(2,strong.length);
+    // A concrete primary action/object is enough for a first pass. Do not
+    // require two unrelated tags from Danbooru/Gelbooru inventories: many
+    // posts label 'cellphone' without also labelling 'bedroom'.
+    const core=sceneTagSignals(beat.text).filter(x=>x.weight>=2);
+    const matches=core.filter(x=>x.tags.some(t=>tags.has(t)));
+    const distinct=matches.filter(x=>!['smile','happy','laughing','grin','night','day','indoors','outdoors','blush'].includes(x.tags[0]));
+    return distinct.length>=1;
   }
   // Place the macro beside the selected passage. Use the ORIGINAL message
   // block positions; no story words are rewritten.
@@ -1836,7 +1855,7 @@
   // downloaded, deduplicated, and linked to the active chat's asset module.
   // This works independently of whether the display hook happened to render
   // an older message last. Never rewrite the user's prose or other turns.
-  async function appendAssetToCommittedReply(ctx,sourceText,assetName,pack=null){
+  async function appendAssetToCommittedReply(ctx,sourceText,assetName,pack=null,beatOverride=null){
     if(!/^gelbooru_(?:db_)?[0-9]+$/.test(str(assetName)))return false;
     const current=await context();
     if(current.ci!==ctx.ci||current.ti!==ctx.ti||current.chat.id!==ctx.chat.id)return false;
@@ -1859,9 +1878,14 @@
     // Inserting into a chapter whose thought blocks were removed from tag
     // analysis could otherwise corrupt offsets; refuse that scenario.
     if(sanitizeSceneText(body)!==body.trim())return false;
-    const selected=chooseIllustrationBeat(body,targetPack);
+    let selected=beatOverride||chooseIllustrationBeat(body,targetPack);
     const asset=asArray(targetPack?.externalAssets).find(a=>a.name===assetName);
     if(!assetMatchesLocalBeat(asset,targetPack,selected))return false;
+    // Anchor the selected passage in the untouched stored message. This
+    // avoids corrupted splice offsets when trimmed scene text differs.
+    const actualStart=selected?body.indexOf(selected.text):-1;
+    if(actualStart<0)return false;
+    selected={...selected,end:actualStart+selected.text.length};
     const inserted=insertImageAtBeat(body,assetName,selected);
     if(!inserted)return false;
     const nextMessage={...previous,data:inserted};
@@ -1897,8 +1921,8 @@
       for(const source of asArray(meta?.sourceIds).filter(id=>str(id).startsWith('pack:'))){
         const pack=packLibrary.find(x=>'pack:'+x.id===source);
         if(!pack||!['original','fanwork'].includes(pack.characterKind))continue;
-        const beat=chooseIllustrationBeat(text,pack);
-        if(!beat)continue;
+        const beats=rankIllustrationBeats(text,pack).slice(0,3);
+        if(!beats.length)continue;
         const previousFingerprints=new Set();
         for(const used of asArray(pack.externalAssets).filter(asset=>prior.has(asset.name))){
           if(used.fingerprint){previousFingerprints.add(used.fingerprint);continue;}
@@ -1908,20 +1932,22 @@
             if(old?.length)previousFingerprints.add(imageFingerprint(old));
           }catch(error){console.warn('[CharacterMixer] prior image fingerprint unavailable');}
         }
-        const candidates=asArray(pack.externalAssets).filter(asset=>
-          !prior.has(asset.name)&&assetMatchesLocalBeat(asset,pack,beat)&&
-          asArray(mod.assets).some(row=>Array.isArray(row)&&row[0]===asset.name));
-        const seen=new Set();
-        for(const asset of candidates){
-          if(!safePath(asset.path))continue;
-          try{
-            const bytes=bytesOf(await risuai.readImage(asset.path));
-            if(!bytes?.length)continue;
-            const fp=imageFingerprint(bytes);
-            if(seen.has(fp)||previousFingerprints.has(fp))continue;
-            seen.add(fp);
-            if(await appendAssetToCommittedReply(current,sourceText,asset.name,pack))return true;
-          }catch(error){console.warn('[CharacterMixer] saved scene asset unavailable',error);}
+        for(const beat of beats){
+          const candidates=asArray(pack.externalAssets).filter(asset=>
+            !prior.has(asset.name)&&assetMatchesLocalBeat(asset,pack,beat)&&
+            asArray(mod.assets).some(row=>Array.isArray(row)&&row[0]===asset.name));
+          const seen=new Set();
+          for(const asset of candidates){
+            if(!safePath(asset.path))continue;
+            try{
+              const bytes=bytesOf(await risuai.readImage(asset.path));
+              if(!bytes?.length)continue;
+              const fp=imageFingerprint(bytes);
+              if(seen.has(fp)||previousFingerprints.has(fp))continue;
+              seen.add(fp);
+              if(await appendAssetToCommittedReply(current,sourceText,asset.name,pack,beat))return true;
+            }catch(error){console.warn('[CharacterMixer] saved scene asset unavailable',error);}
+          }
         }
       }
     }
@@ -1992,74 +2018,85 @@
         const singlePack=active.flatMap(x=>asArray(x.meta?.sourceIds)).filter(x=>str(x).startsWith('pack:')).length===1;
         const onlyOC=pack.characterKind==='original'&&active.flatMap(x=>asArray(x.meta?.sourceIds)).filter(id=>str(id).startsWith('pack:')).length===1;
         if(!named&&!onlyOC&&!singlePack){skipped('현재 장면의 캐릭터 연결 불확실');continue;}
-        const beat=chooseIllustrationBeat(window,pack);
-        if(!beat){skipped('이번 답변에서 이미지 삽입에 적합한 구간 없음');continue;}
-        const tagSignals=pack.characterKind==='original'?signals:signals.filter(x=>x.weight===3);
-        if(!tagSignals.length){skipped('2차창작 이미지와 일치하는 감정 태그 없음');continue;}
-        const focus=sceneSubjectTags(beat.text);
-        const keys=beat.plan.searchTags.length?beat.plan.searchTags.slice(0,2):
-          (focus.length?[focus[0]]:tagSignals.map(x=>x.tags[0]).slice(0,2));
-        const eventKey=ctx.chat.id+'|'+pack.id+'|'+keys.join('|');
-        if(!manual&&now-(lastDiscovery.get(eventKey)||0)<5*60*1000){skipped('동일 장면 최근 검색됨 (5분 제한)');continue;}
-        // A failed search is not a completed discovery. Record cooldown only
-        // after a successful API response; otherwise users were blocked for 5m.
+        const beats=rankIllustrationBeats(window,pack).slice(0,3);
+        if(!beats.length){skipped('태그로 설명할 수 있는 행동 구간 없음');continue;}
         const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
-        // Reuse-first: an existing suitably tagged asset means no network call.
-        const localMatches=await countDistinctMatchingAssets(pack,beat);
-        if(densitySettings.skipIfEnoughAssets&&localMatches>=densitySettings.minimumLocalAssets&&
-          (densitySettings.minimumLocalAssets>0||localMatches>0)){
-          skipped('기존 장면 에셋 '+localMatches+'장 확보 · 설정된 충분 기준 만족');continue;
-        }
-        const verifiedTags=asArray(pack.identityEvidence?.externalCandidates)
-          .map(x=>str(x?.tag).toLowerCase());
-        const verifiedWork=str(pack.originalWork).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
-        const verifiedTag=verifiedTags.find(tag=>verifiedWork&&tag.includes(verifiedWork));
-        if(pack.characterKind==='fanwork'&&beat.packPresent&&!verifiedTag){
-          skipped('2차창작 캐릭터 태그 미확인 · 원작명과 검색 태그 연결 필요');continue;
-        }
-        const base=!beat.packPresent?'no_humans '+keys[0]:
-          pack.characterKind==='original'?'1girl '+keys[0]:
-            verifiedTag+' '+keys[0];
-        const tags=base.split(/\s+/).slice(0,6).filter(Boolean);
-        if(!tags.length){skipped('검색 태그 생성 실패');continue;}
+        const work=str(pack.originalWork).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
+        const verifiedTag=asArray(pack.identityEvidence?.externalCandidates)
+          .map(x=>str(x?.tag).toLowerCase()).find(tag=>work&&tag.includes(work));
+        const saved=[],failures=[],attempts=[];
+        let matchedBeat=null,cooldownBlocked=0,localMatches=0;
         autoCollectBusy=true;
         try{
-          const rows=await searchBooruWithFallback(tags,densitySettings.searchCandidatePool,0,beat.context);
-          // Set cooldown only when retrieval produced viable candidates.
-          // Empty results should not suppress the next user-triggered attempt.
-          const available=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id)));
-          const identityMatches=available.filter(x=>beat.packPresent?verifiedPackIdentity(x,pack):true);
-          const sceneMatches=identityMatches.filter(x=>assetMatchesLocalBeat(x,pack,beat));
-          const candidates=sceneMatches
-            .slice(0,densitySettings.searchCandidatePool);
-          if(candidates.length&&!manual)lastDiscovery.set(eventKey,Date.now());
-          const saved=[],failures=[];
-          for(const candidate of candidates){
+          for(const beat of beats){
             if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
-            try{
-              if(await persistAssetToPack(pack,candidate,ctx))saved.push(candidate);
-            }catch(e){failures.push(clip(e?.message||e,120));}
+            if(pack.characterKind==='fanwork'&&beat.packPresent&&!verifiedTag){
+              attempts.push('캐릭터 정체성 태그 미확인');continue;
+            }
+            const core=beat.plan.searchTags.filter(Boolean);
+            if(!core.length)continue;
+            const actor=beat.packPresent?
+              (pack.characterKind==='fanwork'?verifiedTag:(sceneActorTags(beat)[0]==='no_humans'?'1girl':sceneActorTags(beat)[0])):
+              sceneActorTags(beat)[0];
+            // Try the named actor and local action, then a broader single
+            // action search. The latter still passes all identity/context
+            // checks before downloading; it is never blindly inserted.
+            const requests=[[actor,core[0]], [core[0]]];
+            const searchKeys=new Set();
+            for(const terms of requests){
+              if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
+              const tags=terms.filter(Boolean);
+              const queryKey=tags.join(' ');
+              if(!queryKey||searchKeys.has(queryKey))continue;
+              searchKeys.add(queryKey);
+              const eventKey=ctx.chat.id+'|'+pack.id+'|'+beat.index+'|'+queryKey;
+              if(!manual&&now-(lastDiscovery.get(eventKey)||0)<5*60*1000){
+                cooldownBlocked++;continue;
+              }
+              const distinct=await countDistinctMatchingAssets(pack,beat);
+              localMatches=Math.max(localMatches,distinct);
+              if(densitySettings.skipIfEnoughAssets&&distinct>=densitySettings.minimumLocalAssets&&
+                (densitySettings.minimumLocalAssets>0||distinct>0)){
+                attempts.push(queryKey+': 기존 적합 '+distinct+'장');continue;
+              }
+              const rows=await searchBooruWithFallback(tags,densitySettings.searchCandidatePool,0,beat.context);
+              const available=rows.filter(x=>!isRejected(x.id)&&
+                !asArray(packLibrary.find(p=>p.id===pack.id)?.externalAssets)
+                  .some(y=>str(y.postId)===str(x.id)));
+              const identity=available.filter(x=>
+                pack.characterKind==='fanwork'&&beat.packPresent?verifiedPackIdentity(x,pack):true);
+              const suitable=identity.filter(x=>assetMatchesLocalBeat(x,pack,beat));
+              attempts.push(queryKey+': 검색 '+rows.length+' / 신규 '+available.length+
+                ' / 정체성 '+identity.length+' / 장면 '+suitable.length);
+              for(const candidate of suitable){
+                if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
+                try{
+                  if(await persistAssetToPack(pack,candidate,ctx)){
+                    saved.push(candidate);matchedBeat=beat;
+                    if(!manual)lastDiscovery.set(eventKey,Date.now());
+                  }
+                }catch(e){failures.push(clip(e?.message||e,100));}
+              }
+            }
           }
           if(saved.length){
             const inserted=densitySettings.maxAssetsPerReply>0&&
-              await appendAssetToCommittedReply(ctx,raw,'gelbooru_'+saved[0].id,pack)
-              .catch(e=>{console.warn('[CharacterMixer] inline asset insertion:',e);return false;});
-            autoCollectStatus=pack.name+' · 신규 고유 이미지 '+saved.length+'장 저장 ('+
-              saved.map(x=>'#'+x.id).join(', ')+') · 채팅 삽입 '+(inserted?'완료':'미완료 (현재 답변 또는 기존 이미지 보호)');
+              await appendAssetToCommittedReply(ctx,raw,'gelbooru_'+saved[0].id,pack,matchedBeat)
+                .catch(e=>{console.warn('[CharacterMixer] contextual insertion',e);return false;});
+            autoCollectStatus=pack.name+' · 고유 이미지 '+saved.length+'장 저장 ('+
+              saved.map(x=>'#'+x.id).join(', ')+') · 채팅 삽입 '+(inserted?'완료':'미완료')+
+              ' · 시도 '+attempts.length+'회';
           }else{
-            autoCollectStatus=failures.length?'검색은 성공했지만 이미지 다운로드 실패: '+failures[0]:
-              pack.name+' · 검색 '+rows.length+'건 / 신규 '+available.length+
-              '건 / 캐릭터 확인 '+identityMatches.length+'건 / 장면 일치 '+sceneMatches.length+
-              '건 / 저장 후보 '+candidates.length+'건 (기존 적합 '+localMatches+'장)';
+            autoCollectStatus=pack.name+' · 신규 이미지 없음 · '+attempts.slice(-6).join(' | ')+
+              (cooldownBlocked?' / 최근 검색 제한 '+cooldownBlocked+'회':'')+
+              (failures.length?' / 다운로드 실패 '+failures[0]:'')+
+              ' (기존 적합 '+localMatches+'장)';
           }
           outputLastResult=autoCollectStatus;
         }catch(e){
-          // Never mask the original failure with a retry throttle.
-          lastDiscovery.delete(eventKey);
           autoCollectStatus='자동 검색 실패: '+clip(e?.message||e,200);
           outputLastResult=autoCollectStatus;
-        }
-        finally{autoCollectBusy=false;}
+        }finally{autoCollectBusy=false;}
         return; // One bounded search per scene; save at most configured number.
       }
     }

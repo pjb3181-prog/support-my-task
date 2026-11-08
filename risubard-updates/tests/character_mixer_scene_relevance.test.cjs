@@ -19,17 +19,17 @@ test('fanwork identity must match a verified character tag',()=>{
  assert.equal(f.verifiedPackIdentity({tags:['lillie_(pokemon)','smile']},pack),true);
  assert.equal(f.verifiedPackIdentity({tags:['smile']},{characterKind:'fanwork',originalWork:'pokemon'}),false);
 });
-test('v0.10.1 keeps existing binary and storage logic',()=>{
- assert.match(src,/\/\/\@version 0\.10\.1/);
+test('v0.10.2 keeps existing binary and storage logic',()=>{
+ assert.match(src,/\/\/\@version 0\.10\.2/);
  assert.match(src,/const PACK_STORE='character_mixer_library_v1'/);
  assert.match(src,/async function inlineAssetForDisplay/);
  assert.match(src,/async function persistAssetToPack/);
 });
 test('the scene-specific source tag is preferred during search',()=>{
  const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
- assert.match(source,/const focus=sceneSubjectTags\(beat.text\)/);
- assert.match(source,/const keys=beat.plan.searchTags.length/);
- assert.match(source,/const localMatches=await countDistinctMatchingAssets\(pack,beat\)/);
+ assert.match(source,/const beats=rankIllustrationBeats\(window,pack\)/);
+ assert.match(source,/const core=beat.plan.searchTags.filter\(Boolean\)/);
+ assert.match(source,/const distinct=await countDistinctMatchingAssets\(pack,beat\)/);
  assert.match(source,/assetMatchesLocalBeat\(asset,pack,beat\)/);
  assert.doesNotMatch(source,/const localMatches=existing.filter\(x=>isUsablePackAsset\(x,pack,tagSignals\)\)\.length/);
 });
@@ -41,10 +41,10 @@ test('display and auto search both recognize games and cookies',()=>{
 
 test('search diagnostics identify character and scene rejection separately',()=>{
  const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
- assert.match(source,/const identityMatches=available.filter\(x=>beat.packPresent\?verifiedPackIdentity\(x,pack\):true\)/);
- assert.match(source,/const sceneMatches=identityMatches.filter\(x=>assetMatchesLocalBeat\(x,pack,beat\)\)/);
- assert.match(source,/캐릭터 확인 /);
- assert.match(source,/장면 일치 /);
+ assert.match(source,/const identity=available.filter/);
+ assert.match(source,/const suitable=identity.filter\(x=>assetMatchesLocalBeat\(x,pack,beat\)\)/);
+ assert.match(source,/정체성 /);
+ assert.match(source,/장면 /);
 });
 test('subject match can select image without irrelevant emotion tags',()=>{
  const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
@@ -63,7 +63,7 @@ test('arcade is recognized as a specific scene rather than generic smiling',()=>
 });
 test('fanwork search uses a corroborated series tag',()=>{
  const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
- assert.match(source,/verifiedTag=verifiedTags.find/);
- assert.match(source,/2차창작 캐릭터 태그 미확인/);
+ assert.match(source,/const verifiedTag=asArray\(pack.identityEvidence\?\.externalCandidates\)/);
+ assert.match(source,/캐릭터 정체성 태그 미확인/);
  assert.doesNotMatch(source,/externalCandidates\)\[0\]\?\.tag/);
 });
