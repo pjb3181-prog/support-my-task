@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.8.0-beta.1
+//@version 0.8.0-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -386,6 +386,18 @@
     const min=3;
     return winner&&best>=min?'{{img::'+winner.name+'}}':'';
   }
+  function pickTaggedAssets(content,cached,excludedNames=new Set(),limit=1){
+    const found=[],excluded=new Set(excludedNames);
+    for(let i=0;i<bounded(limit,0,5,1);i++){
+      const token=pickTaggedAsset(content,cached,excluded);
+      if(!token)break;
+      const name=token.match(/^\\{\\{img::([^}]+)\\}\\}$/)?.[1];
+      if(!name||excluded.has(name))break;
+      excluded.add(name);
+      found.push(name);
+    }
+    return found;
+  }
   function contentFingerprint(value){
     // Keep only a compact hash; do not retain chat text in plugin storage.
     let h=2166136261;
@@ -406,25 +418,33 @@
     const row=turn<previous.lastShownTurn?{lastShownTurn:-100,recent:[]}:previous;
     return {key,signature,turn,row,
       sameMessage:row.messageKey===signature,
-      canShow:turn-row.lastShownTurn>=DISPLAY_MIN_GAP};
+      canShow:turn-row.lastShownTurn>=densitySettings.minReplyGap};
   }
-  function recordDisplayedImage(decision,assetName){
-    const recent=asArray(decision.row.recent).filter(x=>{
+  function recordDisplayedImages(decision,assetNames){
+    const names=[...new Set(asArray(assetNames).filter(Boolean))];
+    if(!names.length)return;
+    const old=asArray(decision.row.recent).filter(x=>{
       const name=typeof x==='string'?x:x?.name;
       const turn=typeof x==='string'?decision.turn:Number(x?.turn);
-      return name!==assetName&&Number.isFinite(turn)&&decision.turn-turn<DISPLAY_REPEAT_TURN_WINDOW;
-    }).slice(-(DISPLAY_RECENT_WINDOW-1));
-    displayHistory[decision.key]={lastShownTurn:decision.turn,messageKey:decision.signature,
-      lastAsset:assetName,recent:[...recent,{name:assetName,turn:decision.turn}]};
+      return !names.includes(name)&&Number.isFinite(turn)&&
+        decision.turn-turn<densitySettings.reuseAfterReplies;
+    });
+    const additions=names.map(name=>({name,turn:decision.turn}));
+    const recent=[...old,...additions].slice(-Math.max(1,densitySettings.recentDuplicateWindow,5));
+    displayHistory[decision.key]={lastShownTurn:decision.turn,
+      messageKey:decision.signature,lastAsset:names.at(-1),lastAssets:names,recent};
     void saveDisplayHistory().catch(e=>console.warn('[CharacterMixer] display history save failed',e));
   }
+  function recordDisplayedImage(decision,assetName){recordDisplayedImages(decision,[assetName]);}
   function rememberFeedback(assetName){
-    // A disliked image must never reappear from a saved display decision.
     for(const [key,row] of Object.entries(displayHistory)){
-      if(row?.lastAsset===assetName)delete displayHistory[key];
-      else if(asArray(row?.recent).some(x=>(typeof x==='string'?x:x?.name)===assetName)){
-        displayHistory[key]={...row,recent:row.recent.filter(x=>(typeof x==='string'?x:x?.name)!==assetName)};
-      }
+      if(!row||typeof row!=='object')continue;
+      const shown=asArray(row.lastAssets).length?row.lastAssets:[row.lastAsset].filter(Boolean);
+      const remaining=shown.filter(x=>x!==assetName);
+      const recent=asArray(row.recent).filter(x=>(typeof x==='string'?x:x?.name)!==assetName);
+      // Preserve the existing message key to avoid inserting a replacement
+      // in the middle of a completed, already-read reply.
+      displayHistory[key]={...row,lastAssets:remaining,lastAsset:remaining.at(-1)||'',recent};
     }
     void saveDisplayHistory().catch(e=>console.warn('[CharacterMixer] feedback history save failed',e));
   }
@@ -461,30 +481,32 @@
       if(hasAssetTag)return safe;
       // Stable repeated renders of the same assistant reply must not add extra
       // images, advance the cooldown or launch duplicate external searches.
-      const previousName=decision.sameMessage?str(decision.row.lastAsset):'';
-      if(previousName&&!omitted.has(previousName)
-        &&cached.tagAssets.some(x=>x.name===previousName)){
-        return safe+'\n\n{{img::'+previousName+'}}';
-      }
-      if(!decision.canShow)return safe;
-      const recent=new Set(asArray(decision.row.recent).filter(x=>{
-        const turn=typeof x==='string'?decision.turn:Number(x?.turn);
-        return Number.isFinite(turn)&&decision.turn-turn<DISPLAY_REPEAT_TURN_WINDOW;
-      }).map(x=>typeof x==='string'?x:x.name));
-      const selected=pickTaggedAsset(safe,
-        {...cached,tagAssets:cached.tagAssets.filter(x=>!omitted.has(x.name))},recent);
-      if(selected){
-        const assetName=selected.match(/^\{\{img::([^}]+)\}\}$/)?.[1];
-        const row=cached.tagAssets.find(x=>x.name===assetName);
-        if(row&&assetName){
-          recordDisplayedImage(decision,assetName);
-          const pack=packLibrary.find(p=>'pack:'+p.id===row.sourceId);
+      const previous=decision.sameMessage?
+        (asArray(decision.row.lastAssets).length?decision.row.lastAssets:
+          [decision.row.lastAsset].filter(Boolean)):[];
+      const usablePrevious=previous.filter(name=>!omitted.has(name)&&cached.tagAssets.some(x=>x.name===name));
+      if(decision.sameMessage)return usablePrevious.length?
+        safe+'\\n\\n'+usablePrevious.map(name=>'{{img::'+name+'}}').join('\\n\\n'):safe;
+      if(!decision.canShow||densitySettings.maxAssetsPerReply===0)return safe;
+      const recent=new Set(asArray(decision.row.recent).slice(-densitySettings.recentDuplicateWindow)
+        .filter(x=>{
+          const turn=typeof x==='string'?decision.turn:Number(x?.turn);
+          return Number.isFinite(turn)&&decision.turn-turn<densitySettings.reuseAfterReplies;
+        }).map(x=>typeof x==='string'?x:x.name));
+      const selected=pickTaggedAssets(safe,
+        {...cached,tagAssets:cached.tagAssets.filter(x=>!omitted.has(x.name))},
+        recent,densitySettings.maxAssetsPerReply);
+      if(selected.length){
+        recordDisplayedImages(decision,selected);
+        for(const assetName of selected){
+          const row=cached.tagAssets.find(x=>x.name===assetName);
+          const pack=packLibrary.find(p=>'pack:'+p.id===row?.sourceId);
           const external=asArray(pack?.externalAssets).find(x=>x.name===assetName);
           if(pack&&external&&!isRejected(external.postId))
             latestShown={packId:pack.id,postId:str(external.postId),assetName,
               chatIndex:ctx.ti,characterIndex:ctx.ci};
         }
-        return safe+'\n\n'+selected;
+        return safe+'\\n\\n'+selected.map(name=>'{{img::'+name+'}}').join('\\n\\n');
       }
       if(autoCollectEnabled&&!destroyed){
         // A normal reply is returned immediately; remote fetch is optional.
@@ -1616,7 +1638,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.0-beta.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.0-beta.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
