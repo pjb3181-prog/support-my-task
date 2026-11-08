@@ -36,7 +36,7 @@ test('auto-collected images do not rely on native parser cache',()=>{
 });
 test('new byte-identical posts are ignored before saving',()=>{
  const a=src.indexOf('  async function persistAssetToPack('),b=src.indexOf('  async function dislikeAsset(',a),body=src.slice(a,b);
- assert.ok(body.indexOf('for(const existingAsset of asArray(pack.externalAssets))')>0);
+ assert.ok(body.indexOf('for(const existingAsset of asArray(latest.externalAssets))')>0);
  assert.ok(body.indexOf('if(same)return false')>0);
  assert.ok(body.indexOf('if(same)return false')<body.indexOf('risuai.saveAsset('));
 });
