@@ -27,9 +27,10 @@ test('crossover and unrelated multi-character artwork are excluded',()=>{
  assert.equal(utils.safeAutoIllustrationPost({tags:['crossover','smile']},pack),false);
  assert.equal(utils.safeAutoIllustrationPost({tags:['2girls','indoors']},pack),false);
 });
-test('all automatic insertion routes check actual presence',()=>{
- assert.match(src,/!activeCharacterInScene\(text,pack\)/);
- assert.match(src,/if\(!activeCharacterInScene\(window,pack\)\)/);
- assert.match(src,/if\(!activeCharacterInScene\(window,packLibrary\.find/);
+test('all automatic insertion routes use their local scene instead of final-only actor checks',()=>{
+ assert.match(src,/const beat=chooseIllustrationBeat\(text,pack\)/);
+ assert.match(src,/const beat=chooseIllustrationBeat\(window,pack\)/);
+ assert.match(src,/const selected=chooseIllustrationBeat\(body,targetPack\)/);
+ assert.match(src,/assetMatchesLocalBeat\(asset,pack,beat\)/);
  assert.match(src,/pack&&!safeAutoIllustrationPost\(item,pack\)/);
 });
