@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.2-beta.1
+//@version 0.9.2-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -939,6 +939,27 @@
     // The plugin API is not guaranteed to return binary for every URI.
     return null;
   }
+  // Preview RisuBard's verified saved bytes rather than linking to a
+  // Gelbooru thumbnail that Firefox may block because of hotlink protection.
+  async function localImagePreview(path,ext){
+    try{
+      if(typeof btoa!=='function')return '';
+      const bytes=bytesOf(await risuai.readImage(path));
+      if(!bytes||bytes.length<12||bytes.length>4*1024*1024)return '';
+      const magic=imageMagic(bytes);
+      if(!magic)return '';
+      const mime=magic==='jpg'?'image/jpeg':'image/'+magic;
+      let data='';
+      const step=0x6000;
+      for(let i=0;i<bytes.length;i+=step){
+        data+=String.fromCharCode(...bytes.subarray(i,i+step));
+      }
+      return 'data:'+mime+';base64,'+btoa(data);
+    }catch(e){
+      console.warn('[CharacterMixer] local preview failed:',clip(e?.message||e,95));
+      return '';
+    }
+  }
   function archivedModuleId(id){return 'character-mixer-pack-archive-'+str(id).replace(/[^a-zA-Z0-9_-]/g,'');}
   async function independentlySaveAsset(path){
     if(typeof risuai.readImage!=='function'||typeof risuai.saveAsset!=='function')
@@ -1752,6 +1773,11 @@
         '개 / 에셋 '+asArray(m.assets).length+'개</small></span>'+
         '<button type="button" data-cm-remove="'+esc(m.id)+'">이 채팅에서 해제</button></div>').join('')
         :'<p class="muted">현재 채팅에 편입된 캐릭터가 없어.</p>';
+      const previewItems=sourceId.startsWith('pack:')?
+        asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.externalAssets).slice(-12):[];
+      const previews=new Map(await Promise.all(previewItems.map(async item=>
+        [str(item.postId),await localImagePreview(item.path,item.ext)])));
+      const previewReady=[...previews.values()].filter(Boolean).length;
       const aliases=activeAliases(ctx);
       const names=[...aliases.lookup.map.entries()].filter(([a,b])=>a!==str(b).toLocaleLowerCase()).slice(0,20);
       const diagnostic='<section><h3>Asset aliases (A chat)</h3>'+
@@ -1782,7 +1808,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.2-beta.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.2-beta.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1847,9 +1873,13 @@
         '<p class="muted">표시량과 검색·저장량은 위 설정을 따름. 적합한 이미지가 없으면 강제로 삽입하지 않으며 기존 에셋을 우선 사용해.</p>'+
         '<p class="muted">'+esc(autoCollectStatus||'아직 자동 수집 기록 없음')+'</p>'+
         (sourceId.startsWith('pack:')?
-          '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4><div class="grid">'+
+          '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4>'+
+          '<p class="muted">로컬 이미지 미리보기 '+previewReady+'/'+previewItems.length+
+          '장 준비됨 (최근 최대 12장) · 실제 RisuBard 저장 파일을 사용</p><div class="grid">'+
           asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.externalAssets).slice(-60).reverse().map(item=>
-            '<div class="item"><span>'+(gelbooruMediaURL(item.previewURL)?'<img loading="lazy" referrerpolicy="no-referrer" src="'+esc(gelbooruMediaURL(item.previewURL))+'" alt="원본 #'+esc(item.postId)+'" style="display:block;width:120px;height:120px;object-fit:contain"/>':'')+
+            '<div class="item"><span>'+(previews.get(str(item.postId))?'<img loading="lazy" src="'+
+              previews.get(str(item.postId))+'" alt="원본 #'+esc(item.postId)+
+              '" style="display:block;width:120px;height:120px;object-fit:contain"/>':'<small>로컬 미리보기 준비되지 않음</small>')+
             '<small>#'+esc(item.postId)+' · '+esc(asArray(item.tags).slice(0,8).join(', '))+'</small>'+
             '<a target="_blank" rel="noopener noreferrer" href="'+esc(item.sourceURL||'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(str(item.postId)))+'">원본 보기</a></span>'+
             '<button type="button" data-cm-dislike="'+esc(item.postId)+'" data-cm-dislike-pack="'+esc(sourceId.slice(5))+'">👎 싫어요 · 영구 제외</button></div>').join('')+
