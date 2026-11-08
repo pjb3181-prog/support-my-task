@@ -19,6 +19,9 @@ function fixture(messageData='She wins the arcade game and smiles.'){
  'const installedInChat=()=>[{assets:[["gelbooru_123","assets/img.png","png"]]}];',
  'const risuai={setChatToIndex:api.setChatToIndex};',
  'const invalidateDisplayCache=()=>{};',
+ 'const recordDisplayedImages=()=>{};',
+ 'const contentFingerprint=()=>"test";',
+ 'const displayHistory={};',
  src.slice(a,b),'appendAssetToCommittedReply'
  ].join('\n');
  const fn=vm.runInNewContext(code,{chat,api});
@@ -55,4 +58,12 @@ test('latest library is used to reject duplicate downloaded bytes',()=>{
 test('native mixer assets render inline even when parser asset cache lags',()=>{
  assert.match(src,/if\(\/\\\{\\\{img::gelbooru_/);
  assert.match(src,/const image=await inlineAssetForDisplay\(name\)/);
+});
+
+test('committed events reuse matching saved assets when search finds nothing new',()=>{
+ assert.match(src,/async function appendMatchingSavedAsset\(ctx,sourceText\)/);
+ assert.match(src,/await appendMatchingSavedAsset\(active,raw\)/);
+ assert.match(src,/await appendMatchingSavedAsset\(source,str\(last.data\)\)/);
+ assert.match(src,/prior.has\(asset.name\)/);
+ assert.match(src,/recordDisplayedImages\(\{key,turn,signature:/);
 });
