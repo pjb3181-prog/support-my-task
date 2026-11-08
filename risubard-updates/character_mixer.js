@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.8.1
+//@version 0.8.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -1060,13 +1060,28 @@
     if(/^error|^bad gateway|^upstream|^proxy error/i.test(raw))return '서버/프록시 오류 텍스트';
     return '알 수 없는 비JSON 응답';
   }
+  function classifyProxyError(body){
+    let obj=null;
+    try{obj=JSON.parse(str(body));}catch(_){return '';}
+    if(!obj||typeof obj!=='object'||Array.isArray(obj)||typeof obj.error!=='string')return '';
+    // Restrict diagnostics to known error categories. A raw server error may
+    // contain a full URL and the user's Gelbooru API key: never echo it.
+    const msg=obj.error.toLowerCase();
+    if(/invalid signature|authentication|unauthorized/.test(msg))return 'RisuBard 중계 인증/서명 오류';
+    if(/timeout|timed out|etimedout|abort/.test(msg))return '중계 서버 연결 시간 초과';
+    if(/getaddrinfo|enotfound|eai_again|dns/.test(msg))return '중계 서버 DNS 조회 실패';
+    if(/certificate|tls|ssl|cert_|unable to verify/.test(msg))return '중계 서버 TLS/인증서 오류';
+    if(/econnreset|econnrefused|ehostunreach|socket|fetch failed|network/.test(msg))return 'RisuBard 중계 서버 외부 연결 실패';
+    if(/internal server error|proxy request failed/.test(msg))return 'RisuBard 중계 서버 내부 오류';
+    return 'JSON error 응답 (상세 메시지 비공개)';
+  }
   async function describeBooruFailure(response){
     const status=Number(response?.status)||0;
     const type=str(response?.headers?.get?.('content-type')||'').toLowerCase();
     let category='응답 내용 확인 불가';
     try{
       const body=await response.text();
-      category=inspectResponseBody(body);
+      category=classifyProxyError(body)||inspectResponseBody(body);
     }catch(_){}
     // Do not expose body text or URLs: Gelbooru query URLs contain API keys.
     const safeType=type.split(';')[0].replace(/[^a-z0-9.\\/+_-]/g,'').slice(0,40)||'미표시';
@@ -1669,7 +1684,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
