@@ -560,6 +560,9 @@
   }
   function assetMatchesLocalBeat(asset,pack,beat){
     if(!beat||!safeAutoIllustrationPost(asset,pack))return false;
+    // Legacy saved assets were all General; newly stored adult assets carry
+    // their actual rating so lowering the setting also stops their reuse.
+    if(!allowsRating(asset?.rating||'general',sceneRatingMode(beat.context||beat.text)))return false;
     const tags=new Set(asArray(asset?.tags).map(x=>str(x).toLowerCase()));
     if(pack?.characterKind==='fanwork'){
       if(!beat.packPresent||!verifiedPackIdentity(asset,pack))return false;
@@ -1673,7 +1676,7 @@
     const name='gelbooru_'+item.id;
     if(existing.some(x=>x[0]===name))return false;
     const ext=download.ext;
-    const asset={name,path,ext,postId:str(item.id),tags:item.tags,fingerprint,
+    const asset={name,path,ext,postId:str(item.id),tags:item.tags,rating:canonicalRating(item.rating),fingerprint,
       provider:item.provider||'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source||'',autoAdded:true};
     const updated={...fresh,updatedAt:Date.now(),
       externalAssets:[...asArray(fresh.externalAssets),asset],
@@ -2082,7 +2085,8 @@
     externalBusy=true;externalError='';externalNotice='';
     try{
       const pack=externalTarget();
-      const chosen=externalResults.filter(x=>externalSelected.has(x.id)&&!isRejected(x.id));
+      const chosen=externalResults.filter(x=>externalSelected.has(x.id)&&!isRejected(x.id)&&
+        allowsRating(x.rating,sceneRatingMode('manual')));
       if(!chosen.length)throw Error('가져올 이미지를 선택해.');
       if(chosen.length>12)throw Error('한 번에 12개까지만 저장할 수 있어.');
       if(typeof risuai.nativeFetch!=='function'||typeof risuai.saveAsset!=='function')
@@ -2112,7 +2116,7 @@
       const newAssets=imported.map(item=>{
         let name=item.name,i=2;while(already.has(name)){name=item.name+'_'+i;i++;}
         already.add(name);
-        return {name,path:item.path,ext:item.ext,tags:item.tags,postId:item.id,
+        return {name,path:item.path,ext:item.ext,tags:item.tags,rating:canonicalRating(item.rating),postId:item.id,
           provider:item.provider||'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source};
       });
       const newRecord={...pack,updatedAt:Date.now(),binaryCopied:true,
