@@ -391,7 +391,7 @@
     for(let i=0;i<bounded(limit,0,5,1);i++){
       const token=pickTaggedAsset(content,cached,excluded);
       if(!token)break;
-      const name=token.match(/^\\{\\{img::([^}]+)\\}\\}$/)?.[1];
+      const name=token.match(/^\{\{img::([^}]+)\}\}$/)?.[1];
       if(!name||excluded.has(name))break;
       excluded.add(name);
       found.push(name);
@@ -486,7 +486,7 @@
           [decision.row.lastAsset].filter(Boolean)):[];
       const usablePrevious=previous.filter(name=>!omitted.has(name)&&cached.tagAssets.some(x=>x.name===name));
       if(decision.sameMessage)return usablePrevious.length?
-        safe+'\\n\\n'+usablePrevious.map(name=>'{{img::'+name+'}}').join('\\n\\n'):safe;
+        safe+'\n\n'+usablePrevious.map(name=>'{{img::'+name+'}}').join('\n\n'):safe;
       if(!decision.canShow||densitySettings.maxAssetsPerReply===0)return safe;
       const recent=new Set(asArray(decision.row.recent).slice(-densitySettings.recentDuplicateWindow)
         .filter(x=>{
@@ -506,7 +506,7 @@
             latestShown={packId:pack.id,postId:str(external.postId),assetName,
               chatIndex:ctx.ti,characterIndex:ctx.ci};
         }
-        return safe+'\\n\\n'+selected.map(name=>'{{img::'+name+'}}').join('\\n\\n');
+        return safe+'\n\n'+selected.map(name=>'{{img::'+name+'}}').join('\n\n');
       }
       if(autoCollectEnabled&&!destroyed){
         // A normal reply is returned immediately; remote fetch is optional.
