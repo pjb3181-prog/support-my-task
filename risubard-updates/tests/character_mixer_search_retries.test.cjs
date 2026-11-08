@@ -7,7 +7,7 @@ const f=vm.runInNewContext(
  'const str=x=>String(x??"");const asArray=x=>Array.isArray(x)?x:[];'+
  'const sanitizeSceneText=x=>String(x??"");'+
  'const sceneTagSignals=x=>[ [/게임|arcade/i,/video_games/], [/침대|누웠|bed/i,/on_bed/],'+
- ' [/휴대폰|핸드폰|phone/i,/cellphone/], [/웃었|미소/i,/smile/] ].filter(p=>p[0].test(x)).map(p=>({tags:[p[1].source.slice(1,-1)],weight:3}));'+
+ ' [/휴대폰|핸드폰|phone/i,/cellphone/], [/웃었|미소/i,/smile/] ].filter(p=>p[0].test(x)).map(p=>({tags:[p[1].source],weight:3}));'+
  'const sceneSubjectTags=x=>/게임|arcade/i.test(x)?["video_games"]:[];'+
  'const activeCharacterInScene=(x,pack)=>/릴리는/.test(x);'+
  'const safeAutoIllustrationPost=()=>true;const allowsRating=()=>true;const sceneRatingMode=()=>"general";const verifiedPackIdentity=()=>true;'+helpers+
