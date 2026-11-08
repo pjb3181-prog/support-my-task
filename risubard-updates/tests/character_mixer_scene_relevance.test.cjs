@@ -25,3 +25,16 @@ test('v0.9.4 keeps existing binary and storage logic',()=>{
  assert.match(src,/async function inlineAssetForDisplay/);
  assert.match(src,/async function persistAssetToPack/);
 });
+test('the scene-specific source tag is preferred during search',()=>{
+ const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
+ assert.match(source,/const focus=sceneSubjectTags\(window\)/);
+ assert.match(source,/const keys=focus.length\?\[focus\[0\]\]/);
+ assert.match(source,/const localMatches=await countDistinctMatchingAssets\(pack,tagSignals,window\)/);
+ assert.match(source,/isUsablePackAsset\(asset,pack,signals,scene\)/);
+ assert.doesNotMatch(source,/const localMatches=existing.filter\(x=>isUsablePackAsset\(x,pack,tagSignals\)\)\.length/);
+});
+test('display and auto search both recognize games and cookies',()=>{
+ const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
+ assert.match(source,/\[\['cookie','cookies','chocolate_chip_cookie'\]/);
+ assert.match(source,/\[\['video_games','playing_video_games','game_controller'\]/);
+});
