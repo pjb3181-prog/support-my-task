@@ -6,7 +6,7 @@ test('message selection tolerates display formatting while rejecting other messa
  const a=src.indexOf('  function contentFingerprint('),b=src.indexOf('  function recordDisplayedImages(',a);
  assert.ok(a>=0&&b>a);
  const deps='const str=x=>String(x??"");const asArray=x=>Array.isArray(x)?x:[];'+
- 'const sanitizeSceneText=s=>s.replace(/<Thoughts>[\\\\s\\\\S]*?<\\\\/Thoughts>/g,"").trim();'+
+ 'const sanitizeSceneText=s=>s.slice(s.indexOf("</Thoughts>")+11).trim();'+
  'const densitySettings={minReplyGap:1};let displayHistory={};';
  const f=vm.runInNewContext(deps+src.slice(a,b)+'({currentDisplayDecision})');
  const raw='<Thoughts>thinking</Thoughts> [가영] 가영은 서점에 앉아 책을 읽으며 밝게 웃었다. 창밖에는 비가 내리고 있었다.';
@@ -18,10 +18,11 @@ test('message selection tolerates display formatting while rejecting other messa
 test('same reply selection persists across cache/module refresh',()=>{
  const a=src.indexOf('  async function displayAssetCompatibility('),b=src.indexOf('  function makeProfile(',a);
  const part=src.slice(a,b);
- assert.match(part,/const usablePrevious=previous\\.filter\\(name=>!omitted\\.has\\(name\\)\\)/);
- assert.doesNotMatch(part,/previous\\.filter\\(name=>!omitted\\.has\\(name\\)&&cached\\.tagAssets\\.some/);
- assert.match(part,/if\\(decision\\.sameMessage\\)/);
- assert.match(part,/usablePrevious\\.map\\(name=>'\\{\\{img::'/);
+ assert.ok(part.includes('const usablePrevious=previous.filter(name=>!omitted.has(name))'));
+ assert.ok(!part.includes('&&cached.tagAssets.some(x=>x.name===name)'));
+ assert.ok(part.includes('if(decision.sameMessage)'));
+ assert.ok(part.includes("usablePrevious.map(name=>'{{img::'"));
+
 });
 test('local saved bytes are used for pack preview, never remote hotlinks',()=>{
  const a=src.indexOf('  async function localImagePreview('),b=src.indexOf('  function archivedModuleId(',a);
@@ -37,6 +38,6 @@ test('local saved bytes are used for pack preview, never remote hotlinks',()=>{
  });
 });
 test('preview is included in settings HTML and diagnostics show loaded count',()=>{
- assert.match(src,/previewReady\\+'\\/\\+'\\+previewItems\\.length/);
- assert.match(src,/previews\\.get\\(str\\(item\\.postId\\)\\)/);
+ assert.ok(src.includes("previewReady+'/'+previewItems.length"));
+ assert.ok(src.includes('previews.get(str(item.postId))'));
 });
