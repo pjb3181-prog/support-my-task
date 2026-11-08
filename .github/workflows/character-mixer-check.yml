@@ -1,11 +1,12 @@
 name: Character Mixer regression check
 on:
   push:
-    branches: [feature/character-mixer-20261103, main]
+    branches: [feature/character-mixer-20261103, feature/character-mixer-local-python-bridge, main]
     paths:
       - 'risubard-updates/character_mixer.js'
       - 'risubard-updates/tests/character_mixer.test.cjs'
       - 'risubard-updates/tests/character_mixer_asset_compat.test.cjs'
+      - 'risubard-updates/bridge/**'
       - '.github/workflows/character-mixer-check.yml'
   pull_request:
     branches: [main]
@@ -13,6 +14,7 @@ on:
       - 'risubard-updates/character_mixer.js'
       - 'risubard-updates/tests/character_mixer.test.cjs'
       - 'risubard-updates/tests/character_mixer_asset_compat.test.cjs'
+      - 'risubard-updates/bridge/**'
       - '.github/workflows/character-mixer-check.yml'
   workflow_dispatch:
 jobs:
@@ -25,7 +27,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install bridge dependency
+        run: python -m pip install requests
       - name: Check plugin JavaScript syntax
         run: node --check risubard-updates/character_mixer.js
       - name: Test isolated Character Mixer against mocked host
-        run: node --test risubard-updates/tests/character_mixer.test.cjs risubard-updates/tests/character_mixer_asset_compat.test.cjs
+        run: node --test risubard-updates/tests/character_mixer.test.cjs risubard-updates/tests/character_mixer_asset_compat.test.cjs risubard-updates/tests/character_mixer_local_bridge.test.cjs
+
+      - name: Check Python bridge syntax
+        run: python -m py_compile risubard-updates/bridge/character_mixer_bridge.py
+      - name: Test local bridge without internet
+        run: python -m unittest discover -s risubard-updates/bridge -p 'test_*.py' -v
+
+      - name: Package one-time Windows bridge installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: character-mixer-python-bridge
+          path: |
+            risubard-updates/bridge/character_mixer_bridge.py
+            risubard-updates/bridge/start_character_mixer_bridge.cmd
+          if-no-files-found: error
