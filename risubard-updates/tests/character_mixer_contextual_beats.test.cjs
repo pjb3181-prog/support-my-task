@@ -57,5 +57,5 @@ test('committed messages use contextual chosen beat rather than end append',()=>
  assert.match(src,/const inserted=insertImageAtBeat\(body,assetName,selected\)/);
  assert.match(src,/const beats=rankIllustrationBeats\(window,pack\)/);
  assert.match(src,/const beat=chooseIllustrationBeat\(text,pack\)/);
- assert.match(src,/const base=!beat.packPresent\?'no_humans '/);
+ assert.match(src,/const actor=beat.packPresent\?/);
 });
