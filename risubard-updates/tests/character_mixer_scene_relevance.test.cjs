@@ -56,3 +56,14 @@ test('subject match can select image without irrelevant emotion tags',()=>{
  assert.equal(fn({tags:['game_controller']},signals,'original',null,'그녀가 격투 게임을 했다.'),true);
  assert.equal(fn({tags:['smile']},signals,'original',null,'그녀가 격투 게임을 했다.'),false);
 });
+
+test('arcade is recognized as a specific scene rather than generic smiling',()=>{
+ assert.equal(f.sceneSubjectMatched('게임 센터에서 놀았다.',['smile']),false);
+ assert.equal(f.sceneSubjectMatched('게임 센터에서 놀았다.',['arcade']),true);
+});
+test('fanwork search uses a corroborated series tag',()=>{
+ const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
+ assert.match(source,/verifiedTag=verifiedTags.find/);
+ assert.match(source,/2차창작 캐릭터 태그 미확인/);
+ assert.doesNotMatch(source,/externalCandidates\)\[0\]\?\.tag/);
+});
