@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.4
+//@version 0.9.5
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -383,6 +383,8 @@
       [['bedroom','indoors'],/(?:침실|원룸|자취방|침대 옆|bedroom)/i,3],
       [['kitchen','cooking'],/(?:부엌|주방|요리하|조리대|kitchen|cooking)/i,3],
       [['eating','food'],/(?:밥을 먹|식사를 하|음식을 먹|먹기 시작|식탁|eating|having.lunch)/i,3],
+      [['cookie','cookies','chocolate_chip_cookie'],/(?:쿠키|cookie|chocolate.chip.cookie)/i,3],
+      [['video_games','playing_video_games','game_controller'],/(?:격투\\s*게임|비디오\\s*게임|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\\s*game|game\\s*controller)/i,3],
       [['entrance','door'],/(?:현관|문을 열|문 앞|entrance)/i,2],
       [['indoors'],/(?:실내|방 안|방에서|가게 안|inside|indoors)/i,1],
       [['outdoors'],/(?:실외|거리|길거리|공원|바깥|outside|outdoors)/i,1],
@@ -396,29 +398,31 @@
   }
   // Strong scene subjects outrank generic expressions. A smile is not
   // sufficient evidence for an image in a video-game or cooking scene.
-  function sceneSubjectMatched(text,tags){
+  const sceneSubjects=[
+    {re:/(?:격투\\s*게임|비디오\\s*게임|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\\s*game|playing\\s*games|game\\s*controller)/i,
+      tags:['video_games','video_game','playing_video_games','game_controller','controller','arcade','arcade_cabinet','fighting_game','gaming']},
+    {re:/(?:쿠키|초콜릿|초코릿|과자|cookie|chocolate)/i,
+      tags:['cookie','cookies','chocolate','chocolate_chip_cookie','sweets','confectionery']},
+    {re:/(?:요리하|조리하|음식을\\s*만들|cooking|baking)/i,
+      tags:['cooking','baking','kitchen','food_preparation']},
+    {re:/(?:운전하|운전석|차를\\s*몰|driving|steering\\s*wheel)/i,
+      tags:['driving','steering_wheel','car_interior','driver']},
+    {re:/(?:수영하|수영장|swimming|swimming\\s*pool)/i,
+      tags:['swimming','pool','swimming_pool']},
+    {re:/(?:기타를\\s*치|피아노를\\s*치|연주하|playing\\s*(?:guitar|piano)|musical\\s*instrument)/i,
+      tags:['guitar','piano','musical_instrument','playing_instrument']}
+  ];
+  function sceneSubjectTags(text){
     const lower=str(text).toLowerCase();
+    const subjects=sceneSubjects.filter(x=>x.re.test(lower))
+      .map(x=>({...x,index:lower.search(x.re)})).sort((a,b)=>b.index-a.index);
+    return subjects[0]?.tags||[];
+  }
+  function sceneSubjectMatched(text,tags){
+    const expected=sceneSubjectTags(text);
+    if(!expected.length)return true;
     const set=new Set(asArray(tags).map(x=>str(x).toLowerCase()));
-    const subjects=[
-      {re:/(?:격투\s*게임|비디오\s*게임|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\s*game|playing\s*games|game\s*controller)/i,
-        tags:['video_games','video_game','playing_video_games','game_controller','controller','arcade','arcade_cabinet','fighting_game','gaming']},
-      {re:/(?:쿠키|초콜릿|초코릿|과자|cookie|chocolate)/i,
-        tags:['cookie','cookies','chocolate','chocolate_chip_cookie','sweets','confectionery']},
-      {re:/(?:요리하|조리하|음식을\s*만들|cooking|baking)/i,
-        tags:['cooking','baking','kitchen','food_preparation']},
-      {re:/(?:운전하|운전석|차를\s*몰|driving|steering\s*wheel)/i,
-        tags:['driving','steering_wheel','car_interior','driver']},
-      {re:/(?:수영하|수영장|swimming|swimming\s*pool)/i,
-        tags:['swimming','pool','swimming_pool']},
-      {re:/(?:기타를\s*치|피아노를\s*치|연주하|playing\s*(?:guitar|piano)|musical\s*instrument)/i,
-        tags:['guitar','piano','musical_instrument','playing_instrument']}
-    ];
-    const active=subjects.map(subject=>({...subject,index:lower.search(subject.re)}))
-      .filter(subject=>subject.index>=0).sort((a,b)=>b.index-a.index);
-    if(!active.length)return true;
-    // The latest specific subject is the one being illustrated; generic
-    // emotion tags cannot substitute for its visual evidence.
-    return active[0].tags.some(tag=>set.has(tag));
+    return expected.some(tag=>set.has(tag));
   }
   function verifiedPackIdentity(item,pack){
     if(pack?.characterKind!=='fanwork')return true;
@@ -466,9 +470,9 @@
     }
     const signals=sceneTagSignals(excerpt);
     if(!signals.length)return '';
-    // A fanwork pack uses only the leading emotion signal, preserving v0.6.0
-    // behavior. OC packs may match clothing, action, and setting as well.
-    const effective=kind==='original'?signals:signals.filter(x=>x.weight===3).slice(0,1);
+    // For fanwork, require verified character identity first, then consider
+    // all concrete scene signals. The first smile must not hide a later cookie.
+    const effective=kind==='original'?signals:signals.filter(x=>x.weight===3);
     if(!effective.length)return '';
     let winner=null,best=0;
     for(const item of candidates){
@@ -1351,7 +1355,7 @@
   function assetSceneScore(item,signals,kind){
     if(kind!=='original'&&kind!=='fanwork')return 0;
     const tags=new Set(asArray(item?.tags));
-    const effective=kind==='original'?asArray(signals):asArray(signals).filter(x=>x.weight===3).slice(0,1);
+    const effective=kind==='original'?asArray(signals):asArray(signals).filter(x=>x.weight===3);
     return effective.reduce((score,signal)=>score+(asArray(signal.tags).some(tag=>tags.has(tag))?signal.weight:0),0);
   }
   function isRelevantPost(item,signals,kind,pack=null,scene=''){
@@ -1359,10 +1363,10 @@
     if(scene&&!sceneSubjectMatched(scene,item?.tags))return false;
     return assetSceneScore(item,signals,kind)>=3;
   }
-  function isUsablePackAsset(asset,pack,signals){
+  function isUsablePackAsset(asset,pack,signals,scene=''){
     if(!asset||!pack||isRejected(asset.postId))return false;
     if(!asArray(pack.snapshot?.additionalAssets).some(a=>Array.isArray(a)&&a[0]===asset.name))return false;
-    return isRelevantPost(asset,signals,pack.characterKind,pack);
+    return isRelevantPost(asset,signals,pack.characterKind,pack,scene);
   }
   function imageMagic(bytes){
     if(!bytes||bytes.length<12)return '';
@@ -1635,6 +1639,18 @@
     }catch(e){outputLastResult='자동 처리 실패: '+clip(e?.message||e,160);console.warn('[CharacterMixer] output event',e);}
   }
 
+  async function countDistinctMatchingAssets(pack,signals,scene){
+    const seen=new Set();
+    for(const asset of asArray(pack.externalAssets)){
+      if(!isUsablePackAsset(asset,pack,signals,scene))continue;
+      if(!safePath(asset.path))continue;
+      try{
+        const data=bytesOf(await risuai.readImage(asset.path));
+        if(data?.length)seen.add(imageFingerprint(data));
+      }catch(error){console.warn('[CharacterMixer] local asset check unavailable');}
+    }
+    return seen.size;
+  }
   async function discoverForScene(content,ctx,options={}){
     const manual=options.manual===true;
     const skipped=reason=>{autoCollectStatus='검색 생략: '+reason;outputLastResult=autoCollectStatus;};
@@ -1667,14 +1683,15 @@
         if(!named&&!onlyOC&&!singlePack){skipped('현재 장면의 캐릭터 연결 불확실');continue;}
         const tagSignals=pack.characterKind==='original'?signals:signals.filter(x=>x.weight===3);
         if(!tagSignals.length){skipped('2차창작 이미지와 일치하는 감정 태그 없음');continue;}
-        const keys=tagSignals.map(x=>x.tags[0]).slice(0,2);
+        const focus=sceneSubjectTags(window);
+        const keys=focus.length?[focus[0]]:tagSignals.map(x=>x.tags[0]).slice(0,2);
         const eventKey=ctx.chat.id+'|'+pack.id+'|'+keys.join('|');
         if(!manual&&now-(lastDiscovery.get(eventKey)||0)<5*60*1000){skipped('동일 장면 최근 검색됨 (5분 제한)');continue;}
         // A failed search is not a completed discovery. Record cooldown only
         // after a successful API response; otherwise users were blocked for 5m.
         const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
         // Reuse-first: an existing suitably tagged asset means no network call.
-        const localMatches=existing.filter(x=>isUsablePackAsset(x,pack,tagSignals)).length;
+        const localMatches=await countDistinctMatchingAssets(pack,tagSignals,window);
         if(densitySettings.skipIfEnoughAssets&&localMatches>=densitySettings.minimumLocalAssets&&
           (densitySettings.minimumLocalAssets>0||localMatches>0)){
           skipped('기존 장면 에셋 '+localMatches+'장 확보 · 설정된 충분 기준 만족');continue;
@@ -1687,9 +1704,11 @@
         autoCollectBusy=true;
         try{
           const rows=await searchBooruWithFallback(tags,densitySettings.searchCandidatePool,0);
-          if(!manual)lastDiscovery.set(eventKey,Date.now());
+          // Set cooldown only when retrieval produced viable candidates.
+          // Empty results should not suppress the next user-triggered attempt.
           const candidates=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
             &&isRelevantPost(x,tagSignals,pack.characterKind,pack,window)).slice(0,densitySettings.searchCandidatePool);
+          if(candidates.length&&!manual)lastDiscovery.set(eventKey,Date.now());
           const saved=[],failures=[];
           for(const candidate of candidates){
             if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
@@ -1702,7 +1721,7 @@
               saved.map(x=>'#'+x.id).join(', ')+')';
           }else{
             autoCollectStatus=failures.length?'검색은 성공했지만 이미지 다운로드 실패: '+failures[0]:
-              pack.name+' · 조건에 맞는 신규 이미지 없음';
+              pack.name+' · 조건에 맞는 신규 이미지 없음 (기존 '+localMatches+'장, 장면 태그 및 캐릭터 태그 확인 필요)';
           }
           outputLastResult=autoCollectStatus;
         }catch(e){
@@ -1926,7 +1945,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.4</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.5</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
