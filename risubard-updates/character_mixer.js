@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.8
+//@version 0.9.9
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -443,6 +443,34 @@
     {re:/(?:기타를\s*치|피아노를\s*치|연주하|playing\s*(?:guitar|piano)|musical\s*instrument)/i,
       tags:['guitar','piano','musical_instrument','playing_instrument']}
   ];
+
+  function finalSceneBeat(text){
+    const tail=sanitizeSceneText(text).slice(-1100);
+    return tail.split(/\n\s*\n/).filter(Boolean).slice(-5).join('\n\n').slice(-850);
+  }
+  function activeCharacterInScene(text,pack){
+    if(!pack)return false;
+    const scene=finalSceneBeat(text);
+    const aliases=[pack.name,pack.snapshot?.name,...asArray(pack.speakerAliases)].map(x=>str(x).trim()).filter(x=>x.length>=2);
+    for(const name of aliases){
+      const escaped=name.replace(/[^a-zA-Z0-9가-힣_]/g,ch=>'\\'+ch);
+      const re=new RegExp('(?:^|[.\\n!?]\\s*)'+escaped+'(?:가|는|이|도|은|와|랑)?\\s+([^\\n.!?]{0,105})','gi');
+      let hit;
+      while((hit=re.exec(scene))){
+        const clause=hit[1]||'';
+        if(/(?:떠올|기억|회상|사진|메시지|답장|문자|알림|생각|했을까|했을지|그랬을까|꿈|상상)/i.test(clause))continue;
+        if(/(?:웃었|웃는|웃으며|말했|대답했|외쳤|손을 들었|손을 흔들|걸어왔|다가왔|앉았|일어섰|바라봤|쳐다봤|건넸|안았|잡았|들어왔|나타났|smiled|laughed|said|walked|waved)/i.test(clause))return true;
+      }
+    }
+    return false;
+  }
+  function safeAutoIllustrationPost(item,pack){
+    const tags=asArray(item?.tags).map(x=>str(x).toLowerCase());
+    if(tags.some(t=>['crossover','2girls','3girls','2boys','3boys','multiple_boys','multiple_girls','comic','4koma'].includes(t)))return false;
+    if(pack?.characterKind==='original'&&tags.some(t=>/_\([a-z0-9_+.-]{2,}\)$/.test(t)))return false;
+    return true;
+  }
+
   function sceneSubjectTags(text){
     const lower=str(text).toLowerCase();
     const subjects=sceneSubjects.filter(x=>x.re.test(lower))
@@ -469,7 +497,7 @@
   function pickTaggedAsset(content,cached,excludedNames=new Set()){
     if(!cached?.tagAssets?.length||/\{\{\s*(?:img|image|asset|emotion)\s*(?:::|=)/i.test(content))return '';
     if(content.length>40000||content.length<40)return '';
-    const window=sanitizeSceneText(content).slice(-14000);
+    const window=finalSceneBeat(content);
     if(!window)return '';
     let latest=null;
     for(const item of cached.tagAssets){
@@ -491,6 +519,7 @@
       selectedSource=candidates[0];
     }
     const candidates=cached.tagAssets.filter(x=>x.sourceId===selectedSource);
+    if(!activeCharacterInScene(window,packLibrary.find(p=>'pack:'+p.id===selectedSource)))return '';
     if(!candidates.length)return '';
     const kind=candidates[0].characterKind;
     if(kind!=='original'&&kind!=='fanwork')return '';
@@ -510,6 +539,7 @@
       if(excludedNames.has(item.name))continue;
       if(!sceneSubjectMatched(excerpt,item.tags))continue;
       const pack=packLibrary.find(p=>'pack:'+p.id===item.sourceId);
+      if(!safeAutoIllustrationPost(item,pack))continue;
       if(kind==='fanwork'&&!verifiedPackIdentity(item,pack))continue;
       const tags=new Set(asArray(item.tags));
       let score=0;
@@ -1413,6 +1443,7 @@
     return effective.reduce((score,signal)=>score+(asArray(signal.tags).some(tag=>tags.has(tag))?signal.weight:0),0);
   }
   function isRelevantPost(item,signals,kind,pack=null,scene=''){
+    if(pack&&!safeAutoIllustrationPost(item,pack))return false;
     if(pack&&kind==='fanwork'&&!verifiedPackIdentity(item,pack))return false;
     if(scene&&!sceneSubjectMatched(scene,item?.tags))return false;
     // The concrete scene subject is sufficient when verified. A character
@@ -1719,7 +1750,7 @@
     if(densitySettings.maxAssetsPerReply===0)return false;
     const current=await context();
     if(current.chat.id!==ctx.chat.id||current.ci!==ctx.ci||current.ti!==ctx.ti)return false;
-    const text=sanitizeSceneText(sourceText).slice(-3000);
+    const text=finalSceneBeat(sourceText);
     const signals=sceneTagSignals(text);
     if(!signals.length)return false;
     const turns=asArray(current.chat.message).filter(m=>['char','assistant'].includes(str(m?.role)));
@@ -1735,7 +1766,7 @@
       const meta=metadataOf(mod);
       for(const source of asArray(meta?.sourceIds).filter(id=>str(id).startsWith('pack:'))){
         const pack=packLibrary.find(x=>'pack:'+x.id===source);
-        if(!pack||!['original','fanwork'].includes(pack.characterKind))continue;
+        if(!pack||!['original','fanwork'].includes(pack.characterKind)||!activeCharacterInScene(text,pack))continue;
         const previousFingerprints=new Set();
         for(const used of asArray(pack.externalAssets).filter(asset=>prior.has(asset.name))){
           if(used.fingerprint){previousFingerprints.add(used.fingerprint);continue;}
@@ -1814,7 +1845,7 @@
     const raw=str(last?.data).trim();
     if(!raw){skipped('최신 AI 답변이 없음');return;}
     if(!manual&&!content.includes(raw.slice(0,Math.min(100,raw.length)))&&content!==raw){skipped('현재 화면의 최신 답변과 불일치');return;}
-    const window=sanitizeSceneText(content).slice(-3000);
+    const window=finalSceneBeat(content);
     if(window.length<30){autoCollectStatus='장면 텍스트 없음 · Thoughts/내부 분석을 제외했어';return;}
     const signals=sceneTagSignals(window);
     if(!signals.length){skipped('분석 가능한 장면·행동·표정 태그 없음');return;}
@@ -1829,6 +1860,7 @@
         const singlePack=active.flatMap(x=>asArray(x.meta?.sourceIds)).filter(x=>str(x).startsWith('pack:')).length===1;
         const onlyOC=pack.characterKind==='original'&&active.flatMap(x=>asArray(x.meta?.sourceIds)).filter(id=>str(id).startsWith('pack:')).length===1;
         if(!named&&!onlyOC&&!singlePack){skipped('현재 장면의 캐릭터 연결 불확실');continue;}
+        if(!activeCharacterInScene(window,pack)){skipped('최종 장면에 캐릭터 직접 등장 없음 · 회상/메시지 사진 방지');continue;}
         const tagSignals=pack.characterKind==='original'?signals:signals.filter(x=>x.weight===3);
         if(!tagSignals.length){skipped('2차창작 이미지와 일치하는 감정 태그 없음');continue;}
         const focus=sceneSubjectTags(window);
