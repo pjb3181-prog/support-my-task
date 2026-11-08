@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.2
+//@version 0.9.3-beta.3
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -520,6 +520,7 @@
   }
   async function displayAssetCompatibility(content){
     if(destroyed||typeof content!=='string')return content;
+    displayHookCalls++;
     const hasAssetTag=/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content);
     if(!hasAssetTag&&!/\[[^\]\n]{1,80}\]/.test(content)&&!autoCollectEnabled)return content;
     try{
@@ -540,12 +541,12 @@
           hasActive:aliases.active.length>0,target:ctx.target,tagAssets};
         displayCache=cached;
       }
-      if(!cached.hasActive)return content;
+      if(!cached.hasActive){displayHookLast='이미지 표시 대상 모듈 미연결';return content;}
       const rewritten=hasAssetTag?rewriteAssetTokens(content,cached.lookup,cached.target):content;
       const omitted=new Set(Object.keys(rejectedPosts).filter(k=>rejectedPosts[k]).map(k=>'gelbooru_'+k.slice(9)));
       const safe=rewritten.replace(/\{\{img::(gelbooru_(?:db_)?\d+)\}\}/g,(token,name)=>omitted.has(name)?'':token);
       const decision=currentDisplayDecision(ctx,safe);
-      if(!decision)return safe;
+      if(!decision){displayHookLast='최신 AI 답변 판정 불일치';return safe;}
       // Preserve images already written explicitly in the chat; never append
       // a second automatic image on top of a pre-existing image tag.
       if(hasAssetTag)return safe;
@@ -559,8 +560,9 @@
       // briefly drawing the image and then clearing it.
       const usablePrevious=previous.filter(name=>!omitted.has(name));
       if(decision.sameMessage){
-        return usablePrevious.length?
-          safe+'\n\n'+usablePrevious.map(name=>'{{img::'+name+'}}').join('\n\n'):safe;
+        const shown=await renderSelectedImages(usablePrevious);
+        displayHookLast=shown.length?'동일 답변 에셋 '+shown.length+'장 재표시':'기존 답변 표시 가능 이미지 없음';
+        return shown.length?safe+'\n\n'+shown.map(x=>x.html).join('\n\n'):safe;
       }
       if(!decision.canShow||densitySettings.maxAssetsPerReply===0)return safe;
       const recent=new Set((densitySettings.recentDuplicateWindow===0?[]:
@@ -573,8 +575,11 @@
         {...cached,tagAssets:cached.tagAssets.filter(x=>!omitted.has(x.name))},
         recent,densitySettings.maxAssetsPerReply);
       if(selected.length){
-        recordDisplayedImages(decision,selected);
-        for(const assetName of selected){
+        const shown=await renderSelectedImages(selected);
+        if(!shown.length){displayHookLast='후보 있음 · 저장 이미지 렌더링 실패';return safe;}
+        recordDisplayedImages(decision,shown.map(x=>x.name));
+        displayHookLast='에셋 '+shown.length+'장 채팅에 표시 (중복 파일 제외)';
+        for(const assetName of shown.map(x=>x.name)){
           const row=cached.tagAssets.find(x=>x.name===assetName);
           const pack=packLibrary.find(p=>'pack:'+p.id===row?.sourceId);
           const external=asArray(pack?.externalAssets).find(x=>x.name===assetName);
@@ -582,8 +587,9 @@
             latestShown={packId:pack.id,postId:str(external.postId),assetName,
               chatIndex:ctx.ti,characterIndex:ctx.ci};
         }
-        return safe+'\n\n'+selected.map(name=>'{{img::'+name+'}}').join('\n\n');
+        return safe+'\n\n'+shown.map(x=>x.html).join('\n\n');
       }
+      displayHookLast='장면과 일치하는 에셋 없음 · 자동 수집 대기';
       if(autoCollectEnabled&&!destroyed){
         // A normal reply is returned immediately; remote fetch is optional.
         void discoverForScene(safe,ctx).catch(e=>console.warn('[CharacterMixer] discovery',e));
@@ -964,6 +970,50 @@
       return '';
     }
   }
+  // Local preview and display use identical verified bytes. Do not rely on
+  // the host parser's module-asset cache being refreshed after setDatabaseLite.
+  let displayHookRegistered=false,displayHookCalls=0,displayHookLast='아직 표시 훅 호출 없음';
+  function imageFingerprint(bytes){
+    if(!bytes||!bytes.length)return '';
+    let a=2166136261,b=0x9e3779b9;
+    for(let i=0;i<bytes.length;i++){
+      const n=bytes[i];
+      a=Math.imul(a^n,16777619)>>>0;
+      b=(Math.imul((b+n)>>>0,2246822519)>>>0);
+    }
+    return bytes.length.toString(36)+':'+a.toString(36)+':'+b.toString(36);
+  }
+  function packAssetPath(name){
+    for(const pack of packLibrary){
+      const item=asArray(pack.externalAssets).find(x=>x.name===name&&!isRejected(x.postId));
+      if(item&&safePath(item.path))return item.path;
+    }
+    return '';
+  }
+  async function inlineAssetForDisplay(name){
+    const path=packAssetPath(name);
+    if(!path)return null;
+    // Settings preview succeeds using these bytes, so direct HTML avoids
+    // the cached native {{img::...}} lookup that silently removes new images.
+    const data=await localImagePreview(path);
+    if(!data)return null;
+    const bytes=bytesOf(await risuai.readImage(path));
+    if(!bytes)return null;
+    return {name,html:'<img src="'+data+'" alt="Character Mixer '+str(name).replace(/[^a-zA-Z0-9_-]/g,'')+
+      '" loading="lazy" style="max-width:100%;max-height:65vh;object-fit:contain;display:block;margin:0.6em auto"/>',
+      fingerprint:imageFingerprint(bytes),path};
+  }
+  async function renderSelectedImages(names){
+    const results=[],seen=new Set();
+    for(const name of asArray(names).filter(Boolean)){
+      try{
+        const image=await inlineAssetForDisplay(name);
+        if(!image||seen.has(image.fingerprint))continue;
+        seen.add(image.fingerprint);results.push(image);
+      }catch(e){console.warn('[CharacterMixer] image render failed',clip(e?.message||e,90));}
+    }
+    return results;
+  }
   function archivedModuleId(id){return 'character-mixer-pack-archive-'+str(id).replace(/[^a-zA-Z0-9_-]/g,'');}
   async function independentlySaveAsset(path){
     if(typeof risuai.readImage!=='function'||typeof risuai.saveAsset!=='function')
@@ -1336,6 +1386,19 @@
     if(asArray(pack.externalAssets).some(x=>str(x.postId)===str(item.id)))return false;
     const download=await fetchImageBinary(item);
     const {bytes}=download;
+    // Distinct post IDs can reference byte-identical pictures.
+    // Preserve previous assets; reject only future duplicated downloads.
+    for(const existingAsset of asArray(pack.externalAssets)){
+      if(!safePath(existingAsset.path))continue;
+      try{
+        const old=bytesOf(await risuai.readImage(existingAsset.path));
+        if(old&&old.length===bytes.length){
+          let same=true;
+          for(let i=0;i<bytes.length;i++)if(old[i]!==bytes[i]){same=false;break;}
+          if(same)return false;
+        }
+      }catch(e){console.warn('[CharacterMixer] duplicate comparison unavailable');}
+    }
     // The plugin iframe transfers the argument buffer (zero-copy).
     // Preserve the original byte array for readback verification.
     const path=await risuai.saveAsset(new Uint8Array(bytes));
@@ -1782,6 +1845,8 @@
       const previews=new Map(await Promise.all(previewItems.map(async item=>
         [str(item.postId),await localImagePreview(item.path,item.ext)])));
       const previewReady=[...previews.values()].filter(Boolean).length;
+      const uniqueLocalImages=new Set([...previews.values()].filter(Boolean)).size;
+      const repeatedLocalImages=previewReady-uniqueLocalImages;
       const aliases=activeAliases(ctx);
       const names=[...aliases.lookup.map.entries()].filter(([a,b])=>a!==str(b).toLocaleLowerCase()).slice(0,20);
       const diagnostic='<section><h3>Asset aliases (A chat)</h3>'+
@@ -1812,7 +1877,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.2</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.3-beta.3</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1870,6 +1935,8 @@
         '<p class="muted">최근 자동 처리: '+esc(outputLastResult)+'</p>'+
         '<p class="muted">외부 검색 결과: '+esc(autoCollectStatus||'검색 실행 기록 없음')+'</p>'+ 
         '<p class="muted">검색 제공처: '+esc(externalProviderStatus||'아직 확인 안 됨')+'</p>'+
+        '<p class="muted">채팅 이미지 표시 훅: '+(displayHookRegistered?'등록됨':'미등록 · 표시 플러그인 권한 확인')+
+          ' / 호출 '+displayHookCalls+'회 · '+esc(displayHookLast)+'</p>'+
         '<button id="cm-diagnose" type="button">현재 채팅 자동 연결 및 최근 답변 테스트</button>'+
         '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
         '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<small>설정한 장수 이내 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
@@ -1879,7 +1946,8 @@
         (sourceId.startsWith('pack:')?
           '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4>'+
           '<p class="muted">로컬 이미지 미리보기 '+previewReady+'/'+previewItems.length+
-          '장 준비됨 (최근 최대 12장) · 실제 RisuBard 저장 파일을 사용</p><div class="grid">'+
+          '장 준비됨 (최근 최대 12장) · 실제 RisuBard 저장 파일을 사용'+
+          (repeatedLocalImages?' · 중복 이미지 '+repeatedLocalImages+'장 감지 (기존 저장분 보존)':'')+'</p><div class="grid">'+
           asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.externalAssets).slice(-60).reverse().map(item=>
             '<div class="item"><span>'+(previews.get(str(item.postId))?'<img loading="lazy" src="'+
               previews.get(str(item.postId))+'" alt="원본 #'+esc(item.postId)+
@@ -2137,6 +2205,7 @@
     try{
       // RisuBard API v3 uses 'display', not 'editdisplay'.
       await risuai.addRisuScriptHandler('display',displayHandler);
+      displayHookRegistered=true;
     }catch(error){
       console.warn('[CharacterMixer] display compatibility unavailable; UI remains accessible:',error);
       displayHandler=null;
