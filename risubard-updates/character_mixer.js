@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.8.0-beta.4
+//@version 0.8.0-beta.5
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -488,7 +488,8 @@
       if(decision.sameMessage)return usablePrevious.length?
         safe+'\n\n'+usablePrevious.map(name=>'{{img::'+name+'}}').join('\n\n'):safe;
       if(!decision.canShow||densitySettings.maxAssetsPerReply===0)return safe;
-      const recent=new Set(asArray(decision.row.recent).slice(-densitySettings.recentDuplicateWindow)
+      const recent=new Set((densitySettings.recentDuplicateWindow===0?[]:
+        asArray(decision.row.recent).slice(-densitySettings.recentDuplicateWindow))
         .filter(x=>{
           const turn=typeof x==='string'?decision.turn:Number(x?.turn);
           return Number.isFinite(turn)&&decision.turn-turn<densitySettings.reuseAfterReplies;
@@ -1648,7 +1649,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.0-beta.4</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.0-beta.5</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1843,7 +1844,7 @@
       el('cm-auth-save').onclick=()=>void saveGelbooruAuth().then(()=>render()).catch(e=>{authStatus='저장 실패: '+clip(e?.message||e,100);void render();});
       el('cm-density-preset').onchange=e=>{
         const preset=str(e.target.value);
-        densitySettings=normalizeDensity({displayPreset:preset,...(preset==='custom'?densitySettings:{})});
+        densitySettings=normalizeDensity({...densitySettings,displayPreset:preset});
         void render();
       };
       for(const node of document.querySelectorAll('[data-cm-density]')){
