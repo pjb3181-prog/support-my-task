@@ -41,3 +41,12 @@ jobs:
         run: python -m py_compile risubard-updates/bridge/character_mixer_bridge.py
       - name: Test local bridge without internet
         run: python -m unittest discover -s risubard-updates/bridge -p 'test_*.py' -v
+
+      - name: Package one-time Windows bridge installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: character-mixer-python-bridge
+          path: |
+            risubard-updates/bridge/character_mixer_bridge.py
+            risubard-updates/bridge/start_character_mixer_bridge.cmd
+          if-no-files-found: error
