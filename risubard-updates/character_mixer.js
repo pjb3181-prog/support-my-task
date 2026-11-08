@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.0-beta.1
+//@version 0.9.0-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -1243,6 +1243,15 @@
     const urls=imageCandidateUrls(item);
     if(!urls.length)throw Error('허용된 이미지 URL이 없음');
     const failures=[];
+    if(localBridgeActive){
+      for(const url of urls){
+        try{return await fetchViaLocalBridge(url,limit);}
+        catch(e){failures.push('로컬 브리지: '+clip(e?.message||e,100));}
+      }
+      // A running bridge returning an image-not-found error is not a reason
+      // to hammer the same external sites through the broken proxy.
+      throw Error('브리지 이미지 다운로드 실패 · '+failures.join(' / ').slice(0,290));
+    }
     for(const url of urls){
       try{
         const response=await risuai.nativeFetch(url,{
@@ -1271,6 +1280,12 @@
         try{host=new URL(url).hostname;}catch(_){}
         failures.push(host+': '+clip(e?.message||e,105));
       }
+    }
+    // If remote search worked but the image CDN is blocked, try the local
+    // Python downloader for the same approved URLs.
+    for(const url of urls){
+      try{return await fetchViaLocalBridge(url,limit);}
+      catch(e){failures.push('Python bridge: '+clip(e?.message||e,95));}
     }
     throw Error('이미지 다운로드 실패 · '+failures.join(' / ').slice(0,330));
   }
@@ -1751,7 +1766,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.0-beta.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.0-beta.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
