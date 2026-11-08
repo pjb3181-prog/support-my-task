@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.8.0
+//@version 0.8.1-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -1086,8 +1086,10 @@
     }
     let gelFailure='';
     try{
+      // Avoid custom Accept headers: older authenticated requests worked
+      // without them, and custom headers can change the CORS/proxy route.
       const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+gelParams.toString(),
-        {method:'GET',headers:{'Accept':'application/json,text/json;q=0.9,*/*;q=0.2'}});
+        {method:'GET'});
       if(!response?.ok)throw Error('HTTP '+str(response?.status||'unknown'));
       const posts=parseBooruPosts(await readBooruJson(response,'Gelbooru'));
       externalProviderStatus='Gelbooru API 정상 ('+posts.length+'건)';
@@ -1102,7 +1104,7 @@
       tags:distinctive+' rating:g'});
     try{
       const response=await risuai.nativeFetch('https://danbooru.donmai.us/posts.json?'+danParams.toString(),
-        {method:'GET',headers:{'Accept':'application/json,text/json;q=0.9,*/*;q=0.2'}});
+        {method:'GET'});
       if(!response?.ok)throw Error('HTTP '+str(response?.status||'unknown'));
       const posts=parseDanbooruPosts(await readBooruJson(response,'Danbooru'));
       externalProviderStatus='Gelbooru 실패 ('+gelFailure+') → Danbooru 정상 ('+posts.length+'건)';
@@ -1406,8 +1408,8 @@
         const keys=tagSignals.map(x=>x.tags[0]).slice(0,2);
         const eventKey=ctx.chat.id+'|'+pack.id+'|'+keys.join('|');
         if(!manual&&now-(lastDiscovery.get(eventKey)||0)<5*60*1000){skipped('동일 장면 최근 검색됨 (5분 제한)');continue;}
-        // Do not throttle manual diagnostics; record automatic attempts only.
-        if(!manual)lastDiscovery.set(eventKey,now);
+        // A failed search is not a completed discovery. Record cooldown only
+        // after a successful API response; otherwise users were blocked for 5m.
         const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
         // Reuse-first: an existing suitably tagged asset means no network call.
         const localMatches=existing.filter(x=>isUsablePackAsset(x,pack,tagSignals)).length;
@@ -1423,6 +1425,7 @@
         autoCollectBusy=true;
         try{
           const rows=await searchBooruWithFallback(tags,densitySettings.searchCandidatePool,0);
+          if(!manual)lastDiscovery.set(eventKey,Date.now());
           const candidates=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
             &&isRelevantPost(x,tagSignals,pack.characterKind)).slice(0,densitySettings.searchCandidatePool);
           const saved=[],failures=[];
@@ -1440,7 +1443,12 @@
               pack.name+' · 조건에 맞는 신규 이미지 없음';
           }
           outputLastResult=autoCollectStatus;
-        }catch(e){autoCollectStatus='자동 검색 실패: '+clip(e?.message||e,150);}
+        }catch(e){
+          // Never mask the original failure with a retry throttle.
+          lastDiscovery.delete(eventKey);
+          autoCollectStatus='자동 검색 실패: '+clip(e?.message||e,200);
+          outputLastResult=autoCollectStatus;
+        }
         finally{autoCollectBusy=false;}
         return; // One bounded search per scene; save at most configured number.
       }
@@ -1649,7 +1657,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.0</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.1-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
