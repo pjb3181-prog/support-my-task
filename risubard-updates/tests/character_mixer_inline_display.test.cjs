@@ -30,7 +30,7 @@ test('chat display rejects duplicate bytes but does not delete saved assets',asy
 test('auto-collected images do not rely on native parser cache',()=>{
  const a=src.indexOf('  async function displayAssetCompatibility('),b=src.indexOf('  function makeProfile(',a),body=src.slice(a,b);
  assert.match(body,/await renderSelectedImages\(selected\)/);
- assert.match(body,/await renderSelectedImages\(usablePrevious\)/);
+ assert.match(body,/await renderSelectedImages\(contextual\)/);
  assert.match(body,/shown\.map\(x=>x\.html\)/);
  assert.ok(!body.includes("selected.map(name=>'{{img::'+name+'}}')"));
 });
