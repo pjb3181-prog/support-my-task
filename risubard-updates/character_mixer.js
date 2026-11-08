@@ -470,9 +470,9 @@
     }
     const signals=sceneTagSignals(excerpt);
     if(!signals.length)return '';
-    // A fanwork pack uses only the leading emotion signal, preserving v0.6.0
-    // behavior. OC packs may match clothing, action, and setting as well.
-    const effective=kind==='original'?signals:signals.filter(x=>x.weight===3).slice(0,1);
+    // For fanwork, require verified character identity first, then consider
+    // all concrete scene signals. The first smile must not hide a later cookie.
+    const effective=kind==='original'?signals:signals.filter(x=>x.weight===3);
     if(!effective.length)return '';
     let winner=null,best=0;
     for(const item of candidates){
@@ -1355,7 +1355,7 @@
   function assetSceneScore(item,signals,kind){
     if(kind!=='original'&&kind!=='fanwork')return 0;
     const tags=new Set(asArray(item?.tags));
-    const effective=kind==='original'?asArray(signals):asArray(signals).filter(x=>x.weight===3).slice(0,1);
+    const effective=kind==='original'?asArray(signals):asArray(signals).filter(x=>x.weight===3);
     return effective.reduce((score,signal)=>score+(asArray(signal.tags).some(tag=>tags.has(tag))?signal.weight:0),0);
   }
   function isRelevantPost(item,signals,kind,pack=null,scene=''){
