@@ -30,7 +30,7 @@ test('the scene-specific source tag is preferred during search',()=>{
  assert.match(source,/const focus=sceneSubjectTags\(beat.text\)/);
  assert.match(source,/const keys=beat.plan.searchTags.length/);
  assert.match(source,/const localMatches=await countDistinctMatchingAssets\(pack,beat\)/);
- assert.match(source,/isUsablePackAsset\(asset,pack,signals,scene\)/);
+ assert.match(source,/assetMatchesLocalBeat\(asset,pack,beat\)/);
  assert.doesNotMatch(source,/const localMatches=existing.filter\(x=>isUsablePackAsset\(x,pack,tagSignals\)\)\.length/);
 });
 test('display and auto search both recognize games and cookies',()=>{
