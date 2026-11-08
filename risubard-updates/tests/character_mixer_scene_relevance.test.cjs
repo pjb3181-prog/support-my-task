@@ -19,8 +19,8 @@ test('fanwork identity must match a verified character tag',()=>{
  assert.equal(f.verifiedPackIdentity({tags:['lillie_(pokemon)','smile']},pack),true);
  assert.equal(f.verifiedPackIdentity({tags:['smile']},{characterKind:'fanwork',originalWork:'pokemon'}),false);
 });
-test('v0.9.6 keeps existing binary and storage logic',()=>{
- assert.match(src,/\/\/\@version 0\.9\.6/);
+test('v0.9.7 keeps existing binary and storage logic',()=>{
+ assert.match(src,/\/\/\@version 0\.9\.7/);
  assert.match(src,/const PACK_STORE='character_mixer_library_v1'/);
  assert.match(src,/async function inlineAssetForDisplay/);
  assert.match(src,/async function persistAssetToPack/);
@@ -37,4 +37,22 @@ test('display and auto search both recognize games and cookies',()=>{
  const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
  assert.match(source,/\[\['cookie','cookies','chocolate_chip_cookie'\]/);
  assert.match(source,/\[\['video_games','playing_video_games','game_controller'\]/);
+});
+
+test('search diagnostics identify character and scene rejection separately',()=>{
+ const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
+ assert.match(source,/const identityMatches=available.filter\(x=>verifiedPackIdentity\(x,pack\)\)/);
+ assert.match(source,/const sceneMatches=identityMatches.filter\(x=>sceneSubjectMatched\(window,x.tags\)\)/);
+ assert.match(source,/캐릭터 확인 /);
+ assert.match(source,/장면 일치 /);
+});
+test('subject match can select image without irrelevant emotion tags',()=>{
+ const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
+ const start=source.indexOf('  function assetSceneScore('),end=source.indexOf('  function isUsablePackAsset(',start);
+ const fn=vm.runInNewContext('const str=x=>String(x??"");const asArray=x=>Array.isArray(x)?x:[];'+
+ source.slice(source.indexOf('  const sceneSubjects='),source.indexOf('  function verifiedPackIdentity('))+
+ 'const verifiedPackIdentity=()=>true;'+source.slice(start,end)+'isRelevantPost');
+ const signals=[{weight:3,tags:['smile']}];
+ assert.equal(fn({tags:['game_controller']},signals,'original',null,'그녀가 격투 게임을 했다.'),true);
+ assert.equal(fn({tags:['smile']},signals,'original',null,'그녀가 격투 게임을 했다.'),false);
 });
