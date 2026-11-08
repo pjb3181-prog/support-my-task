@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.3-beta.1
+//@version 0.9.3-beta.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -972,8 +972,6 @@
   }
   // Local preview and display use identical verified bytes. Do not rely on
   // the host parser's module-asset cache being refreshed after setDatabaseLite.
-  const INLINE_CACHE_MAX=10;
-  const inlineImageCache=new Map();
   let displayHookRegistered=false,displayHookCalls=0,displayHookLast='아직 표시 훅 호출 없음';
   function imageFingerprint(bytes){
     if(!bytes||!bytes.length)return '';
@@ -1388,6 +1386,19 @@
     if(asArray(pack.externalAssets).some(x=>str(x.postId)===str(item.id)))return false;
     const download=await fetchImageBinary(item);
     const {bytes}=download;
+    // Distinct post IDs can reference byte-identical pictures.
+    // Preserve previous assets; reject only future duplicated downloads.
+    for(const existingAsset of asArray(pack.externalAssets)){
+      if(!safePath(existingAsset.path))continue;
+      try{
+        const old=bytesOf(await risuai.readImage(existingAsset.path));
+        if(old&&old.length===bytes.length){
+          let same=true;
+          for(let i=0;i<bytes.length;i++)if(old[i]!==bytes[i]){same=false;break;}
+          if(same)return false;
+        }
+      }catch(e){console.warn('[CharacterMixer] duplicate comparison unavailable');}
+    }
     // The plugin iframe transfers the argument buffer (zero-copy).
     // Preserve the original byte array for readback verification.
     const path=await risuai.saveAsset(new Uint8Array(bytes));
@@ -1864,7 +1875,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.3-beta.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.3-beta.2</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1922,6 +1933,8 @@
         '<p class="muted">최근 자동 처리: '+esc(outputLastResult)+'</p>'+
         '<p class="muted">외부 검색 결과: '+esc(autoCollectStatus||'검색 실행 기록 없음')+'</p>'+ 
         '<p class="muted">검색 제공처: '+esc(externalProviderStatus||'아직 확인 안 됨')+'</p>'+
+        '<p class="muted">채팅 이미지 표시 훅: '+(displayHookRegistered?'등록됨':'미등록 · 표시 플러그인 권한 확인')+
+          ' / 호출 '+displayHookCalls+'회 · '+esc(displayHookLast)+'</p>'+
         '<button id="cm-diagnose" type="button">현재 채팅 자동 연결 및 최근 답변 테스트</button>'+
         '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
         '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<small>설정한 장수 이내 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
