@@ -50,7 +50,7 @@ test('no arbitrary localhost bridge path',async()=>{
  await assert.rejects(()=>bridge.localBridgeRequest('https://evil.example',{}),/not allowed/);
 });
 test('search failures try local bridge after both upstream routes',()=>{
- assert.match(source.slice(searchStart,searchEnd),/searchViaLocalBridge\(userTags,limit,page\)/);
+ assert.match(source.slice(searchStart,searchEnd),/searchViaLocalBridge\(userTags,limit,page,ratingMode\)/);
  assert.match(source.slice(searchStart,searchEnd),/localBridgeActive/);
 });
 test('image downloads prefer bridge when verified',()=>{

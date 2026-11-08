@@ -57,7 +57,7 @@ test('unknown assets cannot be injected',async()=>{
 test('latest library is used to reject duplicate downloaded bytes',()=>{
  assert.match(src,/const latest=packLibrary.find\(x=>x.id===pack.id\)/);
  assert.match(src,/imageFingerprint\(old\)===fingerprint/);
- assert.match(src,/const asset=\{name,path,ext,postId:str\(item.id\),tags:item.tags,fingerprint/);
+ assert.match(src,/const asset=\{name,path,ext,postId:str\(item.id\),tags:item.tags,rating:canonicalRating\(item.rating\),fingerprint/);
 });
 test('native mixer assets render inline even when parser asset cache lags',()=>{
  assert.match(src,/if\(\/\\\{\\\{img::gelbooru_/);

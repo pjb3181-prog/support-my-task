@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.10.0
+//@version 0.10.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -26,7 +26,7 @@
     high:{maxAssetsPerReply:2,minReplyGap:1,recentDuplicateWindow:3,reuseAfterReplies:6,autoCollectMaxPerRun:2,searchCandidatePool:8,minimumLocalAssets:3},
     aggressive:{maxAssetsPerReply:3,minReplyGap:0,recentDuplicateWindow:1,reuseAfterReplies:3,autoCollectMaxPerRun:3,searchCandidatePool:12,minimumLocalAssets:4}
   };
-  const DENSITY_DEFAULT={displayPreset:'high',...DENSITY_PRESETS.high,skipIfEnoughAssets:true,assetUsageHint:''};
+  const DENSITY_DEFAULT={displayPreset:'high',...DENSITY_PRESETS.high,skipIfEnoughAssets:true,assetUsageHint:'',ratingPolicy:'general'};
   let densitySettings={...DENSITY_DEFAULT};
   const bounded=(v,lo,hi,fallback)=>Number.isFinite(Number(v))?Math.min(hi,Math.max(lo,Math.round(Number(v)))):fallback;
   function normalizeDensity(input){
@@ -39,6 +39,7 @@
       merged[key]=bounded(merged[key],lo,hi,DENSITY_DEFAULT[key]);
     }
     merged.skipIfEnoughAssets=merged.skipIfEnoughAssets!==false;
+    merged.ratingPolicy=['general','scene_adult','all'].includes(raw.ratingPolicy)?raw.ratingPolicy:'general';
     merged.assetUsageHint=String(merged.assetUsageHint||'').slice(0,500);
     return merged;
   }
@@ -106,13 +107,39 @@
     }
   }
   async function testLocalBridge(){await pingLocalBridge();await render();}
-  async function searchViaLocalBridge(tags,limit,page){
+  // A missing/unknown rating is never accepted. Adult ratings are opt-in.
+  function canonicalRating(value){
+    const v=str(value).toLowerCase().trim();
+    if(['general','safe','g'].includes(v))return 'general';
+    if(['sensitive','s'].includes(v))return 'sensitive';
+    if(['questionable','q'].includes(v))return 'questionable';
+    if(['explicit','e'].includes(v))return 'explicit';
+    return '';
+  }
+  // A sexual scene alone is not proof of adulthood. Ambiguous school or
+  // underage cues are never used for explicit automatic search.
+  function sceneAdultEligible(scene){
+    const text=str(scene).toLowerCase();
+    if(/(?:미성년|미성숙|어린이|초등학생|중학생|고등학생|아동|미취학|underage|minor|child|middle.school|high.school|loli|shota)/i.test(text))return false;
+    return /(?:성관계|성교|섹스|성적\s*행위|삽입|교미|sex(?:ual)?|intercourse|making.love|masturbat|orgasm|fellatio|cunnilingus|nude|naked)/i.test(text);
+  }
+  function sceneRatingMode(scene){
+    const policy=densitySettings.ratingPolicy;
+    if(policy==='all')return scene!=='manual'&&/(?:미성년|어린이|초등학생|중학생|고등학생|아동|미취학|underage|minor|child|middle.school|high.school|loli|shota)/i.test(str(scene))?'general':'all';
+    if(policy==='scene_adult'&&(scene==='manual'||sceneAdultEligible(scene)))return 'all';
+    return 'general';
+  }
+  function allowsRating(rawRating,mode){
+    const normalized=canonicalRating(rawRating);
+    return !!normalized&&(mode==='all'||normalized==='general');
+  }
+  async function searchViaLocalBridge(tags,limit,page,ratingMode='general'){
     const response=await localBridgeRequest('search',{
-      tags:[...tags.filter(x=>!x.startsWith('rating:')),'rating:general'].join(' '),
+      tags:[...tags.filter(x=>!x.startsWith('rating:')),...(ratingMode==='general'?['rating:general']:[])].join(' '),
       limit,page,userId:externalUserId.trim(),apiKey:externalApiKey.trim()
     });
     const raw=await response.json();
-    const posts=parseBooruPosts(raw);
+    const posts=parseBooruPosts(raw,ratingMode);
     localBridgeActive=true;
     localBridgeStatus='Python 브리지 검색 성공 ('+posts.length+'건)';
     externalProviderStatus='로컬 Python 브리지 · Gelbooru ('+posts.length+'건)';
@@ -533,6 +560,9 @@
   }
   function assetMatchesLocalBeat(asset,pack,beat){
     if(!beat||!safeAutoIllustrationPost(asset,pack))return false;
+    // Legacy saved assets were all General; newly stored adult assets carry
+    // their actual rating so lowering the setting also stops their reuse.
+    if(!allowsRating(asset?.rating||'general',sceneRatingMode(beat.context||beat.text)))return false;
     const tags=new Set(asArray(asset?.tags).map(x=>str(x).toLowerCase()));
     if(pack?.characterKind==='fanwork'){
       if(!beat.packPresent||!verifiedPackIdentity(asset,pack))return false;
@@ -1378,10 +1408,10 @@
     const raw=Array.isArray(row?.tags)?row.tags:typeof row?.tags==='string'?row.tags.split(/\s+/):[];
     return [...new Set(raw.map(x=>str(x).toLowerCase()).filter(Boolean))].slice(0,200);
   }
-  function parseBooruPosts(data){
+  function parseBooruPosts(data,ratingMode='general'){
     const list=Array.isArray(data)?data:Array.isArray(data?.post)?data.post:[];
     return list.filter(x=>x&&Number.isFinite(Number(x.id)))
-      .filter(x=>['general','safe','s','g'].includes(str(x.rating).toLowerCase()))
+      .filter(x=>allowsRating(x.rating,ratingMode))
       .map(row=>({
         id:String(row.id),provider:'gelbooru',tags:booruTags(row),rating:row.rating,
         thumbnail:safeBooruMediaURL(row.preview_url||row.sample_url||row.file_url),
@@ -1391,10 +1421,10 @@
         postURL:'https://gelbooru.com/index.php?page=post&s=view&id='+encodeURIComponent(String(row.id))
       })).filter(row=>row.image);
   }
-  function parseDanbooruPosts(data){
+  function parseDanbooruPosts(data,ratingMode='general'){
     if(!Array.isArray(data))return [];
     return data.filter(x=>x&&Number.isSafeInteger(Number(x.id)))
-      .filter(x=>['g','general'].includes(str(x.rating).toLowerCase()))
+      .filter(x=>allowsRating(x.rating,ratingMode))
       .map(row=>({
         // Provider-qualified IDs keep existing Gelbooru post IDs unique.
         id:'db_'+String(row.id),provider:'danbooru',
@@ -1474,16 +1504,17 @@
         ') · Content-Type '+clip(type,45));
     }
   }
-  async function searchBooruWithFallback(baseTags,limit=12,page=0){
+  async function searchBooruWithFallback(baseTags,limit=12,page=0,scene=''){
+    const ratingMode=sceneRatingMode(scene);
     const userTags=asArray(baseTags).map(x=>str(x).trim()).filter(x=>x&&!x.startsWith('rating:'));
     // Prefer the Python route when previously verified; avoid the failing
     // RisuBard external /proxy2 entirely in this case.
     if(localBridgeActive){
-      try{return await searchViaLocalBridge(userTags,limit,page);}
+      try{return await searchViaLocalBridge(userTags,limit,page,ratingMode);}
       catch(e){localBridgeStatus='로컬 브리지 재연결 실패: '+clip(e?.message||e,120);localBridgeActive=false;}
     }
     const gelParams=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
-      limit:String(limit),pid:String(page),tags:[...userTags,'rating:general'].join(' ')});
+      limit:String(limit),pid:String(page),tags:[...userTags,...(ratingMode==='general'?['rating:general']:[])].join(' ')});
     if(externalApiKey.trim()&&externalUserId.trim()){
       gelParams.set('api_key',externalApiKey.trim());
       gelParams.set('user_id',externalUserId.trim());
@@ -1495,7 +1526,7 @@
       const response=await risuai.nativeFetch('https://gelbooru.com/index.php?'+gelParams.toString(),
         {method:'GET'});
       if(!response?.ok)throw Error(await describeBooruFailure(response));
-      const posts=parseBooruPosts(await readBooruJson(response,'Gelbooru'));
+      const posts=parseBooruPosts(await readBooruJson(response,'Gelbooru'),ratingMode);
       externalProviderStatus='Gelbooru API 정상 ('+posts.length+'건)';
       return posts;
     }catch(e){
@@ -1505,18 +1536,18 @@
     // common unauthenticated tag-count restrictions; verify all tags locally.
     const distinctive=userTags.find(x=>x!=='1girl'&&x!=='1boy')||userTags[0]||'smile';
     const danParams=new URLSearchParams({limit:String(Math.min(30,Math.max(12,limit))),page:String(page+1),
-      tags:distinctive+' rating:g'});
+      tags:distinctive+(ratingMode==='general'?' rating:g':'')});
     try{
       const response=await risuai.nativeFetch('https://danbooru.donmai.us/posts.json?'+danParams.toString(),
         {method:'GET'});
       if(!response?.ok)throw Error(await describeBooruFailure(response));
-      const posts=parseDanbooruPosts(await readBooruJson(response,'Danbooru'));
+      const posts=parseDanbooruPosts(await readBooruJson(response,'Danbooru'),ratingMode);
       externalProviderStatus='Gelbooru 실패 ('+gelFailure+') → Danbooru 정상 ('+posts.length+'건)';
       return posts;
     }catch(e){
       const second=clip(e?.message||e,100);
       externalProviderStatus='Gelbooru '+gelFailure+' / Danbooru '+second;
-      try{return await searchViaLocalBridge(userTags,limit,page);}
+      try{return await searchViaLocalBridge(userTags,limit,page,ratingMode);}
       catch(error){
         localBridgeActive=false;
         localBridgeStatus='로컬 브리지 검색 불가: '+clip(error?.message||error,120);
@@ -1645,7 +1676,7 @@
     const name='gelbooru_'+item.id;
     if(existing.some(x=>x[0]===name))return false;
     const ext=download.ext;
-    const asset={name,path,ext,postId:str(item.id),tags:item.tags,fingerprint,
+    const asset={name,path,ext,postId:str(item.id),tags:item.tags,rating:canonicalRating(item.rating),fingerprint,
       provider:item.provider||'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source||'',autoAdded:true};
     const updated={...fresh,updatedAt:Date.now(),
       externalAssets:[...asArray(fresh.externalAssets),asset],
@@ -1993,7 +2024,7 @@
         if(!tags.length){skipped('검색 태그 생성 실패');continue;}
         autoCollectBusy=true;
         try{
-          const rows=await searchBooruWithFallback(tags,densitySettings.searchCandidatePool,0);
+          const rows=await searchBooruWithFallback(tags,densitySettings.searchCandidatePool,0,beat.context);
           // Set cooldown only when retrieval produced viable candidates.
           // Empty results should not suppress the next user-triggered attempt.
           const available=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id)));
@@ -2043,7 +2074,7 @@
       const tokens=str(externalQuery).trim().split(/\s+/).filter(Boolean).slice(0,8);
       if(!tokens.length)throw Error('캐릭터 태그를 입력해. 예: boa_hancock_(one_piece)');
       if(typeof risuai.nativeFetch!=='function')throw Error('이 버전에서는 nativeFetch API를 사용할 수 없어');
-      externalResults=await searchBooruWithFallback(tokens,18,externalPage);
+      externalResults=await searchBooruWithFallback(tokens,18,externalPage,'manual');
       externalSelected.clear();
       externalNotice=externalResults.length+'개 일반 등급 이미지 검색 완료 · '+externalProviderStatus;
     }catch(e){externalError=str(e?.message||e);}
@@ -2054,7 +2085,8 @@
     externalBusy=true;externalError='';externalNotice='';
     try{
       const pack=externalTarget();
-      const chosen=externalResults.filter(x=>externalSelected.has(x.id)&&!isRejected(x.id));
+      const chosen=externalResults.filter(x=>externalSelected.has(x.id)&&!isRejected(x.id)&&
+        allowsRating(x.rating,sceneRatingMode('manual')));
       if(!chosen.length)throw Error('가져올 이미지를 선택해.');
       if(chosen.length>12)throw Error('한 번에 12개까지만 저장할 수 있어.');
       if(typeof risuai.nativeFetch!=='function'||typeof risuai.saveAsset!=='function')
@@ -2084,7 +2116,7 @@
       const newAssets=imported.map(item=>{
         let name=item.name,i=2;while(already.has(name)){name=item.name+'_'+i;i++;}
         already.add(name);
-        return {name,path:item.path,ext:item.ext,tags:item.tags,postId:item.id,
+        return {name,path:item.path,ext:item.ext,tags:item.tags,rating:canonicalRating(item.rating),postId:item.id,
           provider:item.provider||'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source};
       });
       const newRecord={...pack,updatedAt:Date.now(),binaryCopied:true,
@@ -2275,6 +2307,11 @@
         '<input id="cm-speaker-alias" type="text" value="'+esc(sourceId.startsWith('pack:')?(packLibrary.find(p=>'pack:'+p.id===sourceId)?.speakerAliases||[]).join(', '):'')+'" placeholder="예: 핸콕, 보아 핸콕"/>'+
         '<button id="cm-speaker-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>화자 이름 저장</button></section>'+
         '<section><h3>에셋 표시량·자동 수집량</h3>'+
+        '<label>이미지 검색 등급<select id="cm-rating-policy">'+
+        [['general','일반 등급만 (기본)'],['scene_adult','장면별 자동 선택 · 성인 장면은 NSFW 허용'],['all','모든 등급 허용 (직접 선택)']]
+          .map(x=>'<option value="'+x[0]+'" '+(densitySettings.ratingPolicy===x[0]?'selected':'')+'>'+x[1]+'</option>').join('')+
+        '</select></label>'+
+        '<p class="muted">성인 등급은 사용자가 선택했을 때만 사용함. 장면별 자동은 명확한 성인 장면에만 높은 등급을 허용하며, 미성년 관련 단서는 일반 등급으로 제한함. 등급 허용 여부와 이미지의 실제 장면 적합성은 별도로 검증함.</p>'+
         '<label>표시 강도 프리셋<select id="cm-density-preset">'+
         [['low','적게'],['normal','보통'],['high','많이 (기본)'],['aggressive','공격적'],['custom','직접 설정']]
           .map(x=>'<option value="'+x[0]+'" '+(densitySettings.displayPreset===x[0]?'selected':'')+'>'+x[1]+'</option>').join('')+
@@ -2305,7 +2342,7 @@
           ' / 호출 '+displayHookCalls+'회 · '+esc(displayHookLast)+'</p>'+
         '<button id="cm-diagnose" type="button">현재 채팅 자동 연결 및 최근 답변 테스트</button>'+
         '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
-        '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<small>설정한 장수 이내 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
+        '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<small>설정한 장수 이내 · 선택한 검색 등급 적용 · 중복 및 싫어요 이미지 제외</small></span></label>'+
         '<p class="muted">채팅에 명시적으로 연결되고 자동 이미지 표시가 켜진 팩에만 적용돼. 현재 설정: '+(autoCollectEnabled?'자동 수집 ON':'자동 수집 OFF')+'</p>'+
         '<p class="muted">표시량과 검색·저장량은 위 설정을 따름. 적합한 이미지가 없으면 강제로 삽입하지 않으며 기존 에셋을 우선 사용해.</p>'+
         '<p class="muted">'+esc(autoCollectStatus||'아직 자동 수집 기록 없음')+'</p>'+
@@ -2451,6 +2488,9 @@
       el('cm-auth-test').onclick=()=>void testGelbooruAuth();
       el('cm-auth-clear').onclick=()=>void clearGelbooruAuth();
       el('cm-auth-save').onclick=()=>void saveGelbooruAuth().then(()=>render()).catch(e=>{authStatus='저장 실패: '+clip(e?.message||e,100);void render();});
+      el('cm-rating-policy').onchange=e=>{
+        densitySettings={...densitySettings,ratingPolicy:str(e.target.value)};
+      };
       el('cm-density-preset').onchange=e=>{
         const preset=str(e.target.value);
         densitySettings=normalizeDensity({...densitySettings,displayPreset:preset});
