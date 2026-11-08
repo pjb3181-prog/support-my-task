@@ -16,6 +16,7 @@ const context=vm.runInNewContext(
  'const sceneSubjectTags=x=>/게임/.test(x)?["video_games"]:[];'+
  'const activeCharacterInScene=(x,pack)=>x.includes(pack.name+"는")||x.includes(pack.name+"가");'+
  'const safeAutoIllustrationPost=()=>true;'+
+ 'const allowsRating=()=>true;const sceneRatingMode=()=>"general";'+
  'const verifiedPackIdentity=()=>true;'+
  helpers+'({sceneBeats,chooseIllustrationBeat,insertImageAtBeat,assetMatchesLocalBeat})');
 const pack={name:'릴리',characterKind:'original'};
