@@ -125,7 +125,7 @@
   }
   function sceneRatingMode(scene){
     const policy=densitySettings.ratingPolicy;
-    if(policy==='all')return 'all';
+    if(policy==='all')return scene!=='manual'&&/(?:미성년|어린이|초등학생|중학생|고등학생|아동|미취학|underage|minor|child|middle.school|high.school|loli|shota)/i.test(str(scene))?'general':'all';
     if(policy==='scene_adult'&&(scene==='manual'||sceneAdultEligible(scene)))return 'all';
     return 'general';
   }
