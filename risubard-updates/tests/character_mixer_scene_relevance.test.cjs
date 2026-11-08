@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const src=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
-const a=src.indexOf('  function sceneSubjectMatched('),b=src.indexOf('  function pickTaggedAsset(',a);
+const a=src.indexOf('  const sceneSubjects='),b=src.indexOf('  function pickTaggedAsset(',a);
 assert.ok(a>0&&b>a,'scene matching helpers must be present');
 const f=vm.runInNewContext(
  'const str=x=>String(x??""); const asArray=x=>Array.isArray(x)?x:[];'+src.slice(a,b)+'({sceneSubjectMatched,verifiedPackIdentity})');
@@ -19,8 +19,8 @@ test('fanwork identity must match a verified character tag',()=>{
  assert.equal(f.verifiedPackIdentity({tags:['lillie_(pokemon)','smile']},pack),true);
  assert.equal(f.verifiedPackIdentity({tags:['smile']},{characterKind:'fanwork',originalWork:'pokemon'}),false);
 });
-test('v0.9.4 keeps existing binary and storage logic',()=>{
- assert.match(src,/\/\/\@version 0\.9\.4/);
+test('v0.9.5 keeps existing binary and storage logic',()=>{
+ assert.match(src,/\/\/\@version 0\.9\.5/);
  assert.match(src,/const PACK_STORE='character_mixer_library_v1'/);
  assert.match(src,/async function inlineAssetForDisplay/);
  assert.match(src,/async function persistAssetToPack/);
