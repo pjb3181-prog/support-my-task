@@ -757,6 +757,11 @@
         displayHookLast='저장된 외부 에셋 '+names.length+'장 직접 표시';
         return result;
       }
+      // Generated replies are modified only through the committed-output
+      // scene planner, which places assets next to a verified scene paragraph.
+      // This hook exists exclusively for native/legacy image compatibility.
+      displayHookLast='기존 이미지 처리 정상 · 자동 삽입은 장면별 생성 완료 처리';
+      return safe;
       const decision=currentDisplayDecision(ctx,safe);
       if(!decision){displayHookLast='최신 AI 답변 판정 불일치';return safe;}
       // Preserve images already written explicitly in the chat; never append
@@ -1818,6 +1823,10 @@
       asArray(mod.assets).some(x=>Array.isArray(x)&&x[0]===assetName));
     if(!linked)return false;
     const targetPack=pack||packLibrary.find(x=>asArray(x.externalAssets).some(a=>a.name===assetName));
+    // The source is identical to the committed chat before insertion.
+    // Inserting into a chapter whose thought blocks were removed from tag
+    // analysis could otherwise corrupt offsets; refuse that scenario.
+    if(sanitizeSceneText(body)!==body.trim())return false;
     const selected=chooseIllustrationBeat(body,targetPack);
     const asset=asArray(targetPack?.externalAssets).find(a=>a.name===assetName);
     if(!assetMatchesLocalBeat(asset,targetPack,selected))return false;
@@ -1973,11 +1982,12 @@
           .map(x=>str(x?.tag).toLowerCase());
         const verifiedWork=str(pack.originalWork).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
         const verifiedTag=verifiedTags.find(tag=>verifiedWork&&tag.includes(verifiedWork));
-        if(pack.characterKind==='fanwork'&&!verifiedTag){
+        if(pack.characterKind==='fanwork'&&beat.packPresent&&!verifiedTag){
           skipped('2차창작 캐릭터 태그 미확인 · 원작명과 검색 태그 연결 필요');continue;
         }
-        const base=pack.characterKind==='original'?'1girl '+keys.join(' '):
-          verifiedTag+' '+keys[0];
+        const base=!beat.packPresent?'no_humans '+keys[0]:
+          pack.characterKind==='original'?'1girl '+keys[0]:
+            verifiedTag+' '+keys[0];
         const tags=base.split(/\s+/).slice(0,6).filter(Boolean);
         if(!tags.length){skipped('검색 태그 생성 실패');continue;}
         autoCollectBusy=true;
@@ -1986,7 +1996,7 @@
           // Set cooldown only when retrieval produced viable candidates.
           // Empty results should not suppress the next user-triggered attempt.
           const available=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id)));
-          const identityMatches=available.filter(x=>verifiedPackIdentity(x,pack));
+          const identityMatches=available.filter(x=>beat.packPresent?verifiedPackIdentity(x,pack):true);
           const sceneMatches=identityMatches.filter(x=>assetMatchesLocalBeat(x,pack,beat));
           const candidates=sceneMatches
             .slice(0,densitySettings.searchCandidatePool);
