@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.6
+//@version 0.9.7
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -555,7 +555,14 @@
     // Require a recognizable excerpt from the most recent assistant message.
     const first=expected.slice(0,Math.min(45,expected.length));
     const tail=expected.slice(-Math.min(45,expected.length));
-    if(!actual.includes(first)&&!actual.includes(tail))return null;
+    if(!actual.includes(first)&&!actual.includes(tail)){
+      // A RisuBard display hook may see a transformed/partially formatted
+      // message. Verify the last assistant message by interior excerpts,
+      // never by generic emotions or character names alone.
+      const chunks=expected.split(/(?<=[.!?。！？])\s+/).filter(x=>x.length>=80);
+      const anchors=chunks.flatMap(x=>[x.slice(0,80),x.slice(-80)]).slice(0,20);
+      if(!anchors.some(x=>actual.includes(x)))return null;
+    }
     const turn=turns.length-1;
     const key=str(ctx.chat.id)+'|'+ctx.ci+'|'+ctx.ti;
     const signature=str(turn)+'|'+str(raw.length)+'|'+contentFingerprint(raw);
@@ -1394,6 +1401,9 @@
   function isRelevantPost(item,signals,kind,pack=null,scene=''){
     if(pack&&kind==='fanwork'&&!verifiedPackIdentity(item,pack))return false;
     if(scene&&!sceneSubjectMatched(scene,item?.tags))return false;
+    // The concrete scene subject is sufficient when verified. A character
+    // playing an arcade game need not also have a smile tag.
+    if(scene&&sceneSubjectTags(scene).length)return true;
     return assetSceneScore(item,signals,kind)>=3;
   }
   function isUsablePackAsset(asset,pack,signals,scene=''){
@@ -1739,8 +1749,11 @@
           const rows=await searchBooruWithFallback(tags,densitySettings.searchCandidatePool,0);
           // Set cooldown only when retrieval produced viable candidates.
           // Empty results should not suppress the next user-triggered attempt.
-          const candidates=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
-            &&isRelevantPost(x,tagSignals,pack.characterKind,pack,window)).slice(0,densitySettings.searchCandidatePool);
+          const available=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id)));
+          const identityMatches=available.filter(x=>verifiedPackIdentity(x,pack));
+          const sceneMatches=identityMatches.filter(x=>sceneSubjectMatched(window,x.tags));
+          const candidates=sceneMatches.filter(x=>isRelevantPost(x,tagSignals,pack.characterKind,pack,window))
+            .slice(0,densitySettings.searchCandidatePool);
           if(candidates.length&&!manual)lastDiscovery.set(eventKey,Date.now());
           const saved=[],failures=[];
           for(const candidate of candidates){
@@ -1754,7 +1767,9 @@
               saved.map(x=>'#'+x.id).join(', ')+')';
           }else{
             autoCollectStatus=failures.length?'검색은 성공했지만 이미지 다운로드 실패: '+failures[0]:
-              pack.name+' · 조건에 맞는 신규 이미지 없음 (기존 '+localMatches+'장, 장면 태그 및 캐릭터 태그 확인 필요)';
+              pack.name+' · 검색 '+rows.length+'건 / 신규 '+available.length+
+              '건 / 캐릭터 확인 '+identityMatches.length+'건 / 장면 일치 '+sceneMatches.length+
+              '건 / 저장 후보 '+candidates.length+'건 (기존 적합 '+localMatches+'장)';
           }
           outputLastResult=autoCollectStatus;
         }catch(e){
@@ -1978,7 +1993,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.6</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.7</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
