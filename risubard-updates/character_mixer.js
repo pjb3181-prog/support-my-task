@@ -1736,6 +1736,15 @@
       for(const source of asArray(meta?.sourceIds).filter(id=>str(id).startsWith('pack:'))){
         const pack=packLibrary.find(x=>'pack:'+x.id===source);
         if(!pack||!['original','fanwork'].includes(pack.characterKind))continue;
+        const previousFingerprints=new Set();
+        for(const used of asArray(pack.externalAssets).filter(asset=>prior.has(asset.name))){
+          if(used.fingerprint){previousFingerprints.add(used.fingerprint);continue;}
+          if(!safePath(used.path))continue;
+          try{
+            const old=bytesOf(await risuai.readImage(used.path));
+            if(old?.length)previousFingerprints.add(imageFingerprint(old));
+          }catch(error){console.warn('[CharacterMixer] prior image fingerprint unavailable');}
+        }
         const candidates=asArray(pack.externalAssets).filter(asset=>
           !prior.has(asset.name)&&isUsablePackAsset(asset,pack,signals,text)&&
           asArray(mod.assets).some(row=>Array.isArray(row)&&row[0]===asset.name));
@@ -1746,7 +1755,7 @@
             const bytes=bytesOf(await risuai.readImage(asset.path));
             if(!bytes?.length)continue;
             const fp=imageFingerprint(bytes);
-            if(seen.has(fp))continue;
+            if(seen.has(fp)||previousFingerprints.has(fp))continue;
             seen.add(fp);
             if(await appendAssetToCommittedReply(current,sourceText,asset.name))return true;
           }catch(error){console.warn('[CharacterMixer] saved scene asset unavailable',error);}
