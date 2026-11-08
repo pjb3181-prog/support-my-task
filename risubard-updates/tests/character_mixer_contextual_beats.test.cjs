@@ -53,7 +53,7 @@ test('insertion preserves original text and inserts native macro once',()=>{
  assert.equal((next.match(/gelbooru_777/g)||[]).length,1);
 });
 test('committed messages use contextual chosen beat rather than end append',()=>{
- assert.match(src,/const selected=beatOverride\|\|chooseIllustrationBeat\(body,targetPack\)/);
+ assert.match(src,/let selected=beatOverride\|\|chooseIllustrationBeat\(body,targetPack\)/);
  assert.match(src,/const inserted=insertImageAtBeat\(body,assetName,selected\)/);
  assert.match(src,/const beats=rankIllustrationBeats\(window,pack\)/);
  assert.match(src,/const beats=rankIllustrationBeats\(text,pack\)/);
