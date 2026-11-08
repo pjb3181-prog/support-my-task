@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.1
+//@version 0.9.2-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -471,7 +471,12 @@
     const last=turns.at(-1);
     const raw=str(last?.data).trim();
     // Never inject a new image into previously rendered messages or user text.
-    if(raw.length<40||!content.includes(raw.slice(0,Math.min(90,raw.length))))return null;
+    if(raw.length<40)return null;
+    // RisuBard's edit-display pipeline can normalize typography and line
+    // breaks. Reject other chat messages, but tolerate those normalizations.
+    const compact=x=>str(x).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+    const expected=compact(raw),actual=compact(content);
+    if(!actual.includes(expected.slice(0,Math.min(45,expected.length))))return null;
     const turn=turns.length-1;
     const key=str(ctx.chat.id)+'|'+ctx.ci+'|'+ctx.ti;
     const signature=str(turn)+'|'+str(raw.length)+'|'+contentFingerprint(raw);
@@ -545,9 +550,14 @@
       const previous=decision.sameMessage?
         (asArray(decision.row.lastAssets).length?decision.row.lastAssets:
           [decision.row.lastAsset].filter(Boolean)):[];
-      const usablePrevious=previous.filter(name=>!omitted.has(name)&&cached.tagAssets.some(x=>x.name===name));
-      if(decision.sameMessage)return usablePrevious.length?
-        safe+'\n\n'+usablePrevious.map(name=>'{{img::'+name+'}}').join('\n\n'):safe;
+      // A display hook can run again while modules/cache are refreshing.
+      // A recorded decision must be re-applied to the same reply rather than
+      // briefly drawing the image and then clearing it.
+      const usablePrevious=previous.filter(name=>!omitted.has(name));
+      if(decision.sameMessage){
+        return usablePrevious.length?
+          safe+'\n\n'+usablePrevious.map(name=>'{{img::'+name+'}}').join('\n\n'):safe;
+      }
       if(!decision.canShow||densitySettings.maxAssetsPerReply===0)return safe;
       const recent=new Set((densitySettings.recentDuplicateWindow===0?[]:
         asArray(decision.row.recent).slice(-densitySettings.recentDuplicateWindow))
@@ -1772,7 +1782,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.1</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.2-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
