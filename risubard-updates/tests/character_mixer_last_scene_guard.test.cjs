@@ -30,7 +30,7 @@ test('crossover and unrelated multi-character artwork are excluded',()=>{
 test('all automatic insertion routes use their local scene instead of final-only actor checks',()=>{
  assert.match(src,/const beats=rankIllustrationBeats\(text,pack\)/);
  assert.match(src,/const beats=rankIllustrationBeats\(window,pack\)/);
- assert.match(src,/const selected=beatOverride\|\|chooseIllustrationBeat\(body,targetPack\)/);
+ assert.match(src,/let selected=beatOverride\|\|chooseIllustrationBeat\(body,targetPack\)/);
  assert.match(src,/assetMatchesLocalBeat\(asset,pack,beat\)/);
  assert.match(src,/pack&&!safeAutoIllustrationPost\(item,pack\)/);
 });
