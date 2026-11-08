@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.8.0-beta.2
+//@version 0.8.0-beta.3
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -1409,7 +1409,11 @@
         if(!manual)lastDiscovery.set(eventKey,now);
         const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
         // Reuse-first: an existing suitably tagged asset means no network call.
-        if(existing.some(x=>isUsablePackAsset(x,pack,tagSignals))){skipped('기존 라이브러리에 적합한 이미지 있음 · 외부 검색 불필요');continue;}
+        const localMatches=existing.filter(x=>isUsablePackAsset(x,pack,tagSignals)).length;
+        if(densitySettings.skipIfEnoughAssets&&localMatches>=densitySettings.minimumLocalAssets&&
+          (densitySettings.minimumLocalAssets>0||localMatches>0)){
+          skipped('기존 장면 에셋 '+localMatches+'장 확보 · 설정된 충분 기준 만족');continue;
+        }
         const base=pack.characterKind==='original'?'1girl '+keys.join(' '):
           (asArray(pack.identityEvidence?.externalCandidates)[0]?.tag||
             str(pack.name).toLowerCase().replace(/\s+/g,'_'))+' '+keys[0];
@@ -1417,25 +1421,27 @@
         if(!tags.length){skipped('검색 태그 생성 실패');continue;}
         autoCollectBusy=true;
         try{
-          const rows=await searchBooruWithFallback(tags,12,0);
+          const rows=await searchBooruWithFallback(tags,densitySettings.searchCandidatePool,0);
           const candidates=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
-            &&isRelevantPost(x,tagSignals,pack.characterKind)).slice(0,3);
-          let saved=null,lastFailure='';
+            &&isRelevantPost(x,tagSignals,pack.characterKind)).slice(0,densitySettings.searchCandidatePool);
+          const saved=[],failures=[];
           for(const candidate of candidates){
+            if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
             try{
-              if(await persistAssetToPack(pack,candidate,ctx)){saved=candidate;break;}
-            }catch(e){lastFailure=clip(e?.message||e,210);}
+              if(await persistAssetToPack(pack,candidate,ctx))saved.push(candidate);
+            }catch(e){failures.push(clip(e?.message||e,120));}
           }
-          if(saved){
-            autoCollectStatus=pack.name+' · 에셋 #'+saved.id+' 자동 저장';
+          if(saved.length){
+            autoCollectStatus=pack.name+' · 신규 에셋 '+saved.length+'장 저장 ('+
+              saved.map(x=>'#'+x.id).join(', ')+')';
           }else{
-            autoCollectStatus=lastFailure?'자동 검색은 성공했지만 이미지 다운로드 실패: '+lastFailure:
+            autoCollectStatus=failures.length?'검색은 성공했지만 이미지 다운로드 실패: '+failures[0]:
               pack.name+' · 조건에 맞는 신규 이미지 없음';
           }
           outputLastResult=autoCollectStatus;
         }catch(e){autoCollectStatus='자동 검색 실패: '+clip(e?.message||e,150);}
         finally{autoCollectBusy=false;}
-        return; // One search and at most one image per display event.
+        return; // One bounded search per scene; save at most configured number.
       }
     }
     if(!autoCollectStatus||autoCollectStatus.startsWith('검색 실행 기록'))skipped('검색 대상 캐릭터 팩이 없음');
@@ -1638,7 +1644,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.0-beta.2</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.0-beta.3</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
