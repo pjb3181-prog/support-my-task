@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.3-beta.2
+//@version 0.9.3-beta.3
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -1845,6 +1845,8 @@
       const previews=new Map(await Promise.all(previewItems.map(async item=>
         [str(item.postId),await localImagePreview(item.path,item.ext)])));
       const previewReady=[...previews.values()].filter(Boolean).length;
+      const uniqueLocalImages=new Set([...previews.values()].filter(Boolean)).size;
+      const repeatedLocalImages=previewReady-uniqueLocalImages;
       const aliases=activeAliases(ctx);
       const names=[...aliases.lookup.map.entries()].filter(([a,b])=>a!==str(b).toLocaleLowerCase()).slice(0,20);
       const diagnostic='<section><h3>Asset aliases (A chat)</h3>'+
@@ -1875,7 +1877,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.3-beta.2</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.3-beta.3</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1944,7 +1946,8 @@
         (sourceId.startsWith('pack:')?
           '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4>'+
           '<p class="muted">로컬 이미지 미리보기 '+previewReady+'/'+previewItems.length+
-          '장 준비됨 (최근 최대 12장) · 실제 RisuBard 저장 파일을 사용</p><div class="grid">'+
+          '장 준비됨 (최근 최대 12장) · 실제 RisuBard 저장 파일을 사용'+
+          (repeatedLocalImages?' · 중복 이미지 '+repeatedLocalImages+'장 감지 (기존 저장분 보존)':'')+'</p><div class="grid">'+
           asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.externalAssets).slice(-60).reverse().map(item=>
             '<div class="item"><span>'+(previews.get(str(item.postId))?'<img loading="lazy" src="'+
               previews.get(str(item.postId))+'" alt="원본 #'+esc(item.postId)+
