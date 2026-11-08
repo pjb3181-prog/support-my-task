@@ -415,7 +415,7 @@
       [['kitchen','cooking'],/(?:부엌|주방|요리하|조리대|kitchen|cooking)/i,3],
       [['eating','food'],/(?:밥을 먹|식사를 하|음식을 먹|먹기 시작|식탁|eating|having.lunch)/i,3],
       [['cookie','cookies','chocolate_chip_cookie'],/(?:쿠키|cookie|chocolate.chip.cookie)/i,3],
-      [['video_games','playing_video_games','game_controller','arcade'],/(?:격투\\s*게임|비디오\\s*게임|게임\\s*센터|오락실|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\\s*game|game\\s*controller)/i,3],
+      [['video_games','playing_video_games','game_controller','arcade'],/(?:격투\s*게임|비디오\s*게임|게임\s*센터|오락실|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\s*game|game\s*controller)/i,3],
       [['entrance','door'],/(?:현관|문을 열|문 앞|entrance)/i,2],
       [['indoors'],/(?:실내|방 안|방에서|가게 안|inside|indoors)/i,1],
       [['outdoors'],/(?:실외|거리|길거리|공원|바깥|outside|outdoors)/i,1],
@@ -430,17 +430,17 @@
   // Strong scene subjects outrank generic expressions. A smile is not
   // sufficient evidence for an image in a video-game or cooking scene.
   const sceneSubjects=[
-    {re:/(?:격투\\s*게임|비디오\\s*게임|게임\\s*센터|오락실|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\\s*game|playing\\s*games|game\\s*controller)/i,
+    {re:/(?:격투\s*게임|비디오\s*게임|게임\s*센터|오락실|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\s*game|playing\s*games|game\s*controller)/i,
       tags:['video_games','video_game','playing_video_games','game_controller','controller','arcade','arcade_cabinet','fighting_game','gaming']},
     {re:/(?:쿠키|초콜릿|초코릿|과자|cookie|chocolate)/i,
       tags:['cookie','cookies','chocolate','chocolate_chip_cookie','sweets','confectionery']},
-    {re:/(?:요리하|조리하|음식을\\s*만들|cooking|baking)/i,
+    {re:/(?:요리하|조리하|음식을\s*만들|cooking|baking)/i,
       tags:['cooking','baking','kitchen','food_preparation']},
-    {re:/(?:운전하|운전석|차를\\s*몰|driving|steering\\s*wheel)/i,
+    {re:/(?:운전하|운전석|차를\s*몰|driving|steering\s*wheel)/i,
       tags:['driving','steering_wheel','car_interior','driver']},
-    {re:/(?:수영하|수영장|swimming|swimming\\s*pool)/i,
+    {re:/(?:수영하|수영장|swimming|swimming\s*pool)/i,
       tags:['swimming','pool','swimming_pool']},
-    {re:/(?:기타를\\s*치|피아노를\\s*치|연주하|playing\\s*(?:guitar|piano)|musical\\s*instrument)/i,
+    {re:/(?:기타를\s*치|피아노를\s*치|연주하|playing\s*(?:guitar|piano)|musical\s*instrument)/i,
       tags:['guitar','piano','musical_instrument','playing_instrument']}
   ];
   function sceneSubjectTags(text){
