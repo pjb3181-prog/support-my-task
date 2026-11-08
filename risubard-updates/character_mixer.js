@@ -413,9 +413,12 @@
       {re:/(?:기타를\s*치|피아노를\s*치|연주하|playing\s*(?:guitar|piano)|musical\s*instrument)/i,
         tags:['guitar','piano','musical_instrument','playing_instrument']}
     ];
-    const active=subjects.filter(x=>x.re.test(lower));
+    const active=subjects.map(subject=>({...subject,index:lower.search(subject.re)}))
+      .filter(subject=>subject.index>=0).sort((a,b)=>b.index-a.index);
     if(!active.length)return true;
-    return active.some(subject=>subject.tags.some(tag=>set.has(tag)));
+    // The latest specific subject is the one being illustrated; generic
+    // emotion tags cannot substitute for its visual evidence.
+    return active[0].tags.some(tag=>set.has(tag));
   }
   function verifiedPackIdentity(item,pack){
     if(pack?.characterKind!=='fanwork')return true;
