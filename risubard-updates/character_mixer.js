@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.10.1
+//@version 0.10.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -538,7 +538,7 @@
     const tags=[...new Set(signals.filter(x=>x.weight>=2).flatMap(x=>x.tags.slice(0,1)))];
     return {signals,searchTags:tags.slice(0,3)};
   }
-  function chooseIllustrationBeat(text,pack){
+  function rankIllustrationBeats(text,pack){
     const beats=sceneBeats(text);
     const options=[];
     for(const beat of beats){
@@ -556,7 +556,20 @@
         (subject.length?4:0)+(active?7:0)+(memory&&!active?-3:0);
       options.push({...beat,packPresent:active,plan:local,score});
     }
-    return options.sort((a,b)=>b.score-a.score||a.index-b.index)[0]||null;
+    return options.sort((a,b)=>b.score-a.score||a.index-b.index);
+  }
+  function chooseIllustrationBeat(text,pack){
+    return rankIllustrationBeats(text,pack)[0]||null;
+  }
+  // Treat scene-only world packs differently from an identified individual.
+  // Gender is included only if expressly present in the selected passage.
+  function sceneActorTags(beat){
+    const text=str(beat?.context||beat?.text);
+    if(/(?:여자|여성|그녀|소녀|여학생|woman|female|girl)/i.test(text)&&
+       !/(?:남자|남성|그|소년|male|man|boy)/i.test(text))return ['1girl','solo'];
+    if(/(?:남자|남성|그는|소년|남학생|male|man|boy)/i.test(text)&&
+       !/(?:여자|여성|그녀|소녀|woman|female|girl)/i.test(text))return ['1boy','solo'];
+    return ['no_humans'];
   }
   function assetMatchesLocalBeat(asset,pack,beat){
     if(!beat||!safeAutoIllustrationPost(asset,pack))return false;
@@ -567,14 +580,20 @@
     if(pack?.characterKind==='fanwork'){
       if(!beat.packPresent||!verifiedPackIdentity(asset,pack))return false;
     }else if(!beat.packPresent){
-      // Scene-only pictures cannot feature an unrelated character.
-      // Avoid giving the reader a random portrait as the narrator.
-      if(!tags.has('no_humans')&&!tags.has('scenery')&&!tags.has('still_life'))return false;
+      const actors=sceneActorTags(beat);
+      if(actors[0]==='no_humans'){
+        if(!['no_humans','scenery','still_life'].some(t=>tags.has(t)))return false;
+      }else if(!tags.has(actors[0])||['2girls','3girls','2boys','3boys','multiple_girls','multiple_boys'].some(t=>tags.has(t))){
+        return false;
+      }
     }
-    const strong=beat.plan.signals.filter(x=>x.weight>=2);
-    const matches=strong.filter(x=>x.tags.some(t=>tags.has(t)));
-    const hasObjectOrAction=matches.some(x=>!['smile','happy','laughing','grin','night','day','indoors','outdoors'].includes(x.tags[0]));
-    return hasObjectOrAction&&matches.length>=Math.min(2,strong.length);
+    // A concrete primary action/object is enough for a first pass. Do not
+    // require two unrelated tags from Danbooru/Gelbooru inventories: many
+    // posts label 'cellphone' without also labelling 'bedroom'.
+    const core=sceneTagSignals(beat.text).filter(x=>x.weight>=2);
+    const matches=core.filter(x=>x.tags.some(t=>tags.has(t)));
+    const distinct=matches.filter(x=>!['smile','happy','laughing','grin','night','day','indoors','outdoors','blush'].includes(x.tags[0]));
+    return distinct.length>=1;
   }
   // Place the macro beside the selected passage. Use the ORIGINAL message
   // block positions; no story words are rewritten.
@@ -1836,7 +1855,7 @@
   // downloaded, deduplicated, and linked to the active chat's asset module.
   // This works independently of whether the display hook happened to render
   // an older message last. Never rewrite the user's prose or other turns.
-  async function appendAssetToCommittedReply(ctx,sourceText,assetName,pack=null){
+  async function appendAssetToCommittedReply(ctx,sourceText,assetName,pack=null,beatOverride=null){
     if(!/^gelbooru_(?:db_)?[0-9]+$/.test(str(assetName)))return false;
     const current=await context();
     if(current.ci!==ctx.ci||current.ti!==ctx.ti||current.chat.id!==ctx.chat.id)return false;
@@ -1859,7 +1878,7 @@
     // Inserting into a chapter whose thought blocks were removed from tag
     // analysis could otherwise corrupt offsets; refuse that scenario.
     if(sanitizeSceneText(body)!==body.trim())return false;
-    const selected=chooseIllustrationBeat(body,targetPack);
+    const selected=beatOverride||chooseIllustrationBeat(body,targetPack);
     const asset=asArray(targetPack?.externalAssets).find(a=>a.name===assetName);
     if(!assetMatchesLocalBeat(asset,targetPack,selected))return false;
     const inserted=insertImageAtBeat(body,assetName,selected);
