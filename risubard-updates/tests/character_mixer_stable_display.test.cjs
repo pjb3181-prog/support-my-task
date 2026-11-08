@@ -21,7 +21,8 @@ test('same reply selection persists across cache/module refresh',()=>{
  assert.ok(part.includes('const usablePrevious=previous.filter(name=>!omitted.has(name))'));
  assert.ok(!part.includes('&&cached.tagAssets.some(x=>x.name===name)'));
  assert.ok(part.includes('if(decision.sameMessage)'));
- assert.ok(part.includes("usablePrevious.map(name=>'{{img::'"));
+ assert.ok(part.includes('await renderSelectedImages(usablePrevious)'));
+ assert.ok(part.includes('shown.map(x=>x.html)'));
 
 });
 test('local saved bytes are used for pack preview, never remote hotlinks',()=>{
