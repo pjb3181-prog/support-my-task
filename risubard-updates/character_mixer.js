@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.3
+//@version 0.9.4
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -394,6 +394,43 @@
       if(regex.test(text))hits.push({tags,weight});
     return hits;
   }
+  // Strong scene subjects outrank generic expressions. A smile is not
+  // sufficient evidence for an image in a video-game or cooking scene.
+  function sceneSubjectMatched(text,tags){
+    const lower=str(text).toLowerCase();
+    const set=new Set(asArray(tags).map(x=>str(x).toLowerCase()));
+    const subjects=[
+      {re:/(?:격투\s*게임|비디오\s*게임|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\s*game|playing\s*games|game\s*controller)/i,
+        tags:['video_games','video_game','playing_video_games','game_controller','controller','arcade','arcade_cabinet','fighting_game','gaming']},
+      {re:/(?:쿠키|초콜릿|초코릿|과자|cookie|chocolate)/i,
+        tags:['cookie','cookies','chocolate','chocolate_chip_cookie','sweets','confectionery']},
+      {re:/(?:요리하|조리하|음식을\s*만들|cooking|baking)/i,
+        tags:['cooking','baking','kitchen','food_preparation']},
+      {re:/(?:운전하|운전석|차를\s*몰|driving|steering\s*wheel)/i,
+        tags:['driving','steering_wheel','car_interior','driver']},
+      {re:/(?:수영하|수영장|swimming|swimming\s*pool)/i,
+        tags:['swimming','pool','swimming_pool']},
+      {re:/(?:기타를\s*치|피아노를\s*치|연주하|playing\s*(?:guitar|piano)|musical\s*instrument)/i,
+        tags:['guitar','piano','musical_instrument','playing_instrument']}
+    ];
+    const active=subjects.map(subject=>({...subject,index:lower.search(subject.re)}))
+      .filter(subject=>subject.index>=0).sort((a,b)=>b.index-a.index);
+    if(!active.length)return true;
+    // The latest specific subject is the one being illustrated; generic
+    // emotion tags cannot substitute for its visual evidence.
+    return active[0].tags.some(tag=>set.has(tag));
+  }
+  function verifiedPackIdentity(item,pack){
+    if(pack?.characterKind!=='fanwork')return true;
+    const work=str(pack.originalWork).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
+    const candidates=asArray(pack.identityEvidence?.externalCandidates)
+      .map(x=>str(x?.tag).toLowerCase()).filter(Boolean);
+    // Do not silently accept a similarly named character from another work.
+    const expected=candidates.filter(tag=>work&&tag.includes(work));
+    if(!expected.length)return false;
+    const tags=new Set(asArray(item?.tags).map(x=>str(x).toLowerCase()));
+    return expected.some(tag=>tags.has(tag));
+  }
   function pickTaggedAsset(content,cached,excludedNames=new Set()){
     if(!cached?.tagAssets?.length||/\{\{\s*(?:img|image|asset|emotion)\s*(?:::|=)/i.test(content))return '';
     if(content.length>40000||content.length<40)return '';
@@ -436,6 +473,9 @@
     let winner=null,best=0;
     for(const item of candidates){
       if(excludedNames.has(item.name))continue;
+      if(!sceneSubjectMatched(excerpt,item.tags))continue;
+      const pack=packLibrary.find(p=>'pack:'+p.id===item.sourceId);
+      if(kind==='fanwork'&&!verifiedPackIdentity(item,pack))continue;
       const tags=new Set(asArray(item.tags));
       let score=0;
       for(const signal of effective){
@@ -560,7 +600,14 @@
       // briefly drawing the image and then clearing it.
       const usablePrevious=previous.filter(name=>!omitted.has(name));
       if(decision.sameMessage){
-        const shown=await renderSelectedImages(usablePrevious);
+        const tagLookup=new Map(cached.tagAssets.map(x=>[x.name,x]));
+        const contextual=usablePrevious.filter(name=>{
+          const asset=tagLookup.get(name);
+          if(!asset||!sceneSubjectMatched(safe,asset.tags))return false;
+          const pack=packLibrary.find(p=>'pack:'+p.id===asset.sourceId);
+          return verifiedPackIdentity(asset,pack);
+        });
+        const shown=await renderSelectedImages(contextual);
         displayHookLast=shown.length?'동일 답변 에셋 '+shown.length+'장 재표시':'기존 답변 표시 가능 이미지 없음';
         return shown.length?safe+'\n\n'+shown.map(x=>x.html).join('\n\n'):safe;
       }
@@ -1307,13 +1354,15 @@
     const effective=kind==='original'?asArray(signals):asArray(signals).filter(x=>x.weight===3).slice(0,1);
     return effective.reduce((score,signal)=>score+(asArray(signal.tags).some(tag=>tags.has(tag))?signal.weight:0),0);
   }
-  function isRelevantPost(item,signals,kind){
+  function isRelevantPost(item,signals,kind,pack=null,scene=''){
+    if(pack&&kind==='fanwork'&&!verifiedPackIdentity(item,pack))return false;
+    if(scene&&!sceneSubjectMatched(scene,item?.tags))return false;
     return assetSceneScore(item,signals,kind)>=3;
   }
   function isUsablePackAsset(asset,pack,signals){
     if(!asset||!pack||isRejected(asset.postId))return false;
     if(!asArray(pack.snapshot?.additionalAssets).some(a=>Array.isArray(a)&&a[0]===asset.name))return false;
-    return isRelevantPost(asset,signals,pack.characterKind);
+    return isRelevantPost(asset,signals,pack.characterKind,pack);
   }
   function imageMagic(bytes){
     if(!bytes||bytes.length<12)return '';
@@ -1640,7 +1689,7 @@
           const rows=await searchBooruWithFallback(tags,densitySettings.searchCandidatePool,0);
           if(!manual)lastDiscovery.set(eventKey,Date.now());
           const candidates=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
-            &&isRelevantPost(x,tagSignals,pack.characterKind)).slice(0,densitySettings.searchCandidatePool);
+            &&isRelevantPost(x,tagSignals,pack.characterKind,pack,window)).slice(0,densitySettings.searchCandidatePool);
           const saved=[],failures=[];
           for(const candidate of candidates){
             if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
@@ -1877,7 +1926,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.3</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.4</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
