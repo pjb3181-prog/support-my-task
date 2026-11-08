@@ -19,18 +19,18 @@ test('fanwork identity must match a verified character tag',()=>{
  assert.equal(f.verifiedPackIdentity({tags:['lillie_(pokemon)','smile']},pack),true);
  assert.equal(f.verifiedPackIdentity({tags:['smile']},{characterKind:'fanwork',originalWork:'pokemon'}),false);
 });
-test('v0.9.9 keeps existing binary and storage logic',()=>{
- assert.match(src,/\/\/\@version 0\.9\.9/);
+test('v0.10.0 keeps existing binary and storage logic',()=>{
+ assert.match(src,/\/\/\@version 0\.10\.0/);
  assert.match(src,/const PACK_STORE='character_mixer_library_v1'/);
  assert.match(src,/async function inlineAssetForDisplay/);
  assert.match(src,/async function persistAssetToPack/);
 });
 test('the scene-specific source tag is preferred during search',()=>{
  const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
- assert.match(source,/const focus=sceneSubjectTags\(window\)/);
- assert.match(source,/const keys=focus.length\?\[focus\[0\]\]/);
- assert.match(source,/const localMatches=await countDistinctMatchingAssets\(pack,tagSignals,window\)/);
- assert.match(source,/isUsablePackAsset\(asset,pack,signals,scene\)/);
+ assert.match(source,/const focus=sceneSubjectTags\(beat.text\)/);
+ assert.match(source,/const keys=beat.plan.searchTags.length/);
+ assert.match(source,/const localMatches=await countDistinctMatchingAssets\(pack,beat\)/);
+ assert.match(source,/assetMatchesLocalBeat\(asset,pack,beat\)/);
  assert.doesNotMatch(source,/const localMatches=existing.filter\(x=>isUsablePackAsset\(x,pack,tagSignals\)\)\.length/);
 });
 test('display and auto search both recognize games and cookies',()=>{
@@ -41,8 +41,8 @@ test('display and auto search both recognize games and cookies',()=>{
 
 test('search diagnostics identify character and scene rejection separately',()=>{
  const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
- assert.match(source,/const identityMatches=available.filter\(x=>verifiedPackIdentity\(x,pack\)\)/);
- assert.match(source,/const sceneMatches=identityMatches.filter\(x=>sceneSubjectMatched\(window,x.tags\)\)/);
+ assert.match(source,/const identityMatches=available.filter\(x=>beat.packPresent\?verifiedPackIdentity\(x,pack\):true\)/);
+ assert.match(source,/const sceneMatches=identityMatches.filter\(x=>assetMatchesLocalBeat\(x,pack,beat\)\)/);
  assert.match(source,/캐릭터 확인 /);
  assert.match(source,/장면 일치 /);
 });

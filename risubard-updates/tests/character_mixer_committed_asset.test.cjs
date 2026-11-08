@@ -22,6 +22,10 @@ function fixture(messageData='She wins the arcade game and smiles.'){
  'const recordDisplayedImages=()=>{};',
  'const contentFingerprint=()=>"test";',
  'const displayHistory={};',
+ 'const packLibrary=[{id:"test",name:"Lily",characterKind:"original",externalAssets:[{name:"gelbooru_123",tags:["arcade","smile"]}]}];',
+ 'const chooseIllustrationBeat=(body,pack)=>({end:body.length,plan:{signals:[{tags:["arcade"],weight:3}]},packPresent:true});',
+ 'const assetMatchesLocalBeat=(asset,pack,beat)=>!!asset&&beat.packPresent;',
+ 'const insertImageAtBeat=(body,name,beat)=>body.slice(0,beat.end)+"\\n\\n{{img::"+name+"}}"+body.slice(beat.end);',
  src.slice(a,b),'appendAssetToCommittedReply'
  ].join('\n');
  const fn=vm.runInNewContext(code,{chat,api});

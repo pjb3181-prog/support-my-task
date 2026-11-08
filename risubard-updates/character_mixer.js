@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.9
+//@version 0.10.0
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -401,6 +401,13 @@
       [['sitting','seated'],/(?:앉았|앉아|의자|sitting|seated)/i,2],
       [['standing'],/(?:일어섰|서 있|일어서|standing)/i,2],
       [['lying','on_bed'],/(?:누웠|누워|침대|lying|on.bed)/i,2],
+      [['sleeping','closed_eyes'],/(?:잠들|잠자|잠을 자|눈을 감았|눈을 감았다|sleeping|asleep)/i,3],
+      [['cellphone','phone'],/(?:핸드폰|휴대폰|스마트폰|폰을|휴대전화|cellphone|smartphone|mobile phone)/i,3],
+      [['texting','cellphone'],/(?:문자를 보냈|답장을 썼|메시지를 보냈|texting)/i,3],
+      [['talking','conversation'],/(?:대화했|대화를 나눴|말했|말을 걸었|talking|conversation)/i,3],
+      [['hug','hugging'],/(?:안아주|껴안|포옹|hugging|embrac)/i,3],
+      [['kissing','kiss'],/(?:키스했|입맞|kissed|kissing)/i,3],
+      [['sex','sexually_active'],/(?:성관계|섹스|sex|intercourse)/i,3],
       [['walking'],/(?:걷|걸어|산책|walking)/i,2],
       [['school_uniform','uniform'],/(?:교복|school uniform)/i,2],
       [['dress'],/(?:드레스|원피스|dress)/i,2],
@@ -411,7 +418,7 @@
       [['restaurant','dining'],/(?:식당|음식점|레스토랑|restaurant)/i,3],
       [['cafe','coffee_shop'],/(?:카페|커피숍|coffee.shop|cafe)/i,3],
       [['classroom','school'],/(?:교실|수업 시간|칠판|classroom)/i,3],
-      [['bedroom','indoors'],/(?:침실|원룸|자취방|침대 옆|bedroom)/i,3],
+      [['bedroom','indoors'],/(?:침실|원룸|자취방|침대 옆|침대에|bedroom)/i,3],
       [['kitchen','cooking'],/(?:부엌|주방|요리하|조리대|kitchen|cooking)/i,3],
       [['eating','food'],/(?:밥을 먹|식사를 하|음식을 먹|먹기 시작|식탁|eating|having.lunch)/i,3],
       [['cookie','cookies','chocolate_chip_cookie'],/(?:쿠키|cookie|chocolate.chip.cookie)/i,3],
@@ -419,7 +426,7 @@
       [['entrance','door'],/(?:현관|문을 열|문 앞|entrance)/i,2],
       [['indoors'],/(?:실내|방 안|방에서|가게 안|inside|indoors)/i,1],
       [['outdoors'],/(?:실외|거리|길거리|공원|바깥|outside|outdoors)/i,1],
-      [['night'],/(?:한밤|밤하늘|밤거리|야밤|night)/i,1],
+      [['night'],/(?:한밤|밤하늘|밤거리|야밤|밤바람|가로등|night|goodnight)/i,1],
       [['day'],/(?:대낮|한낮|햇살|낮 시간|daytime)/i,1]
     ];
     const hits=[];
@@ -471,6 +478,82 @@
     return true;
   }
 
+
+  // Scene candidates cover the entire reply. No fixed 'last N paragraphs'
+  // shortcut: local surroundings are used for each potential illustration.
+  function sceneBeats(text){
+    const cleaned=sanitizeSceneText(text);
+    if(!cleaned)return [];
+    const blocks=[];
+    const re=/[^\n]+(?:\n(?!\s*\n)[^\n]+)*/g;
+    let match;
+    while((match=re.exec(cleaned))){
+      const value=match[0].trim();
+      if(!value||value.length<12)continue;
+      blocks.push({text:value,start:match.index,end:match.index+match[0].length});
+    }
+    const beats=[];
+    for(let i=0;i<blocks.length;i++){
+      const center=blocks[i];
+      const left=blocks[i-1]?.text||'';
+      const right=blocks[i+1]?.text||'';
+      // A tight window around a candidate is used for tag inference.
+      beats.push({text:center.text,context:[left.slice(-240),center.text,right.slice(0,180)]
+        .filter(Boolean).join('\n'),start:center.start,end:center.end,index:i,total:blocks.length});
+    }
+    return beats;
+  }
+  function sceneTagPlan(beat){
+    const core=sceneTagSignals(beat.text);
+    const surrounding=sceneTagSignals(beat.context).filter(signal=>
+      !core.some(x=>x.tags[0]===signal.tags[0])).map(x=>({...x,weight:Math.max(1,x.weight-1)}));
+    const signals=[...core,...surrounding];
+    const tags=[...new Set(signals.filter(x=>x.weight>=2).flatMap(x=>x.tags.slice(0,1)))];
+    return {signals,searchTags:tags.slice(0,3)};
+  }
+  function chooseIllustrationBeat(text,pack){
+    const beats=sceneBeats(text);
+    const options=[];
+    for(const beat of beats){
+      const local=sceneTagPlan(beat);
+      const active=pack?activeCharacterInScene(beat.text,pack):false;
+      const subject=sceneSubjectTags(beat.text);
+      const exact=local.signals.filter(x=>x.weight>=2&&sceneTagSignals(beat.text)
+        .some(y=>y.tags[0]===x.tags[0]));
+      const hasAction=/(?:말했|대답|물었|웃었|손을|걸어|앉았|누웠|잠들|눈을 감|핸드폰|휴대폰|메시지|문자|안았|키스|입맞|sex|kiss|hug|talk|sleep|phone|bed|sitting|walking)/i.test(beat.text);
+      if(!hasAction||!exact.length)continue;
+      // Prefer a concrete local action and verified on-stage character.
+      // Do not select a message/recollection as a portrait of its sender.
+      const memory=/(?:떠올|회상|기억|그랬을까|했을까|메시지|문자|답장|알림)/i.test(beat.text);
+      const score=exact.reduce((n,x)=>n+x.weight,0)+
+        (subject.length?4:0)+(active?7:0)+(memory&&!active?-3:0);
+      options.push({...beat,packPresent:active,plan:local,score});
+    }
+    return options.sort((a,b)=>b.score-a.score||a.index-b.index)[0]||null;
+  }
+  function assetMatchesLocalBeat(asset,pack,beat){
+    if(!beat||!safeAutoIllustrationPost(asset,pack))return false;
+    const tags=new Set(asArray(asset?.tags).map(x=>str(x).toLowerCase()));
+    if(pack?.characterKind==='fanwork'){
+      if(!beat.packPresent||!verifiedPackIdentity(asset,pack))return false;
+    }else if(!beat.packPresent){
+      // Scene-only pictures cannot feature an unrelated character.
+      // Avoid giving the reader a random portrait as the narrator.
+      if(!tags.has('no_humans')&&!tags.has('scenery')&&!tags.has('still_life'))return false;
+    }
+    const strong=beat.plan.signals.filter(x=>x.weight>=2);
+    const matches=strong.filter(x=>x.tags.some(t=>tags.has(t)));
+    const hasObjectOrAction=matches.some(x=>!['smile','happy','laughing','grin','night','day','indoors','outdoors'].includes(x.tags[0]));
+    return hasObjectOrAction&&matches.length>=Math.min(2,strong.length);
+  }
+  // Place the macro beside the selected passage. Use the ORIGINAL message
+  // block positions; no story words are rewritten.
+  function insertImageAtBeat(text,assetName,beat){
+    const body=str(text);
+    if(!beat||!Number.isInteger(beat.end)||beat.end<0||beat.end>body.length)return '';
+    return body.slice(0,beat.end)+'\n\n{{img::'+assetName+'}}'+body.slice(beat.end);
+  }
+
   function sceneSubjectTags(text){
     const lower=str(text).toLowerCase();
     const subjects=sceneSubjects.filter(x=>x.re.test(lower))
@@ -497,7 +580,7 @@
   function pickTaggedAsset(content,cached,excludedNames=new Set()){
     if(!cached?.tagAssets?.length||/\{\{\s*(?:img|image|asset|emotion)\s*(?:::|=)/i.test(content))return '';
     if(content.length>40000||content.length<40)return '';
-    const window=finalSceneBeat(content);
+    const window=sanitizeSceneText(content);
     if(!window)return '';
     let latest=null;
     for(const item of cached.tagAssets){
@@ -519,11 +602,13 @@
       selectedSource=candidates[0];
     }
     const candidates=cached.tagAssets.filter(x=>x.sourceId===selectedSource);
-    if(!activeCharacterInScene(window,packLibrary.find(p=>'pack:'+p.id===selectedSource)))return '';
+    const selectedPack=packLibrary.find(p=>'pack:'+p.id===selectedSource);
+    const beat=chooseIllustrationBeat(window,selectedPack);
+    if(!beat)return '';
     if(!candidates.length)return '';
     const kind=candidates[0].characterKind;
     if(kind!=='original'&&kind!=='fanwork')return '';
-    let excerpt=latest?window.slice(latest.index,Math.min(window.length,latest.index+1200)):window.slice(-1200);
+    let excerpt=beat.context;
     if(latest){
       const boundary=excerpt.slice(1).search(/\n\[[^\]\n]{1,80}\]/);
       if(boundary>=0)excerpt=excerpt.slice(0,boundary+1);
@@ -537,7 +622,7 @@
     let winner=null,best=0;
     for(const item of candidates){
       if(excludedNames.has(item.name))continue;
-      if(!sceneSubjectMatched(excerpt,item.tags))continue;
+      if(!assetMatchesLocalBeat(item,selectedPack,beat))continue;
       const pack=packLibrary.find(p=>'pack:'+p.id===item.sourceId);
       if(!safeAutoIllustrationPost(item,pack))continue;
       if(kind==='fanwork'&&!verifiedPackIdentity(item,pack))continue;
@@ -673,6 +758,11 @@
         displayHookLast='저장된 외부 에셋 '+names.length+'장 직접 표시';
         return result;
       }
+      // Generated replies are modified only through the committed-output
+      // scene planner, which places assets next to a verified scene paragraph.
+      // This hook exists exclusively for native/legacy image compatibility.
+      displayHookLast='기존 이미지 처리 정상 · 자동 삽입은 장면별 생성 완료 처리';
+      return safe;
       const decision=currentDisplayDecision(ctx,safe);
       if(!decision){displayHookLast='최신 AI 답변 판정 불일치';return safe;}
       // Preserve images already written explicitly in the chat; never append
@@ -1715,7 +1805,7 @@
   // downloaded, deduplicated, and linked to the active chat's asset module.
   // This works independently of whether the display hook happened to render
   // an older message last. Never rewrite the user's prose or other turns.
-  async function appendAssetToCommittedReply(ctx,sourceText,assetName){
+  async function appendAssetToCommittedReply(ctx,sourceText,assetName,pack=null){
     if(!/^gelbooru_(?:db_)?[0-9]+$/.test(str(assetName)))return false;
     const current=await context();
     if(current.ci!==ctx.ci||current.ti!==ctx.ti||current.chat.id!==ctx.chat.id)return false;
@@ -1733,8 +1823,17 @@
     const linked=installedInChat(current).some(mod=>
       asArray(mod.assets).some(x=>Array.isArray(x)&&x[0]===assetName));
     if(!linked)return false;
-    const token='{{img::'+assetName+'}}';
-    const nextMessage={...previous,data:body+'\n\n'+token};
+    const targetPack=pack||packLibrary.find(x=>asArray(x.externalAssets).some(a=>a.name===assetName));
+    // The source is identical to the committed chat before insertion.
+    // Inserting into a chapter whose thought blocks were removed from tag
+    // analysis could otherwise corrupt offsets; refuse that scenario.
+    if(sanitizeSceneText(body)!==body.trim())return false;
+    const selected=chooseIllustrationBeat(body,targetPack);
+    const asset=asArray(targetPack?.externalAssets).find(a=>a.name===assetName);
+    if(!assetMatchesLocalBeat(asset,targetPack,selected))return false;
+    const inserted=insertImageAtBeat(body,assetName,selected);
+    if(!inserted)return false;
+    const nextMessage={...previous,data:inserted};
     const nextChat={...current.chat,message:rows.map((row,i)=>i===index?nextMessage:row)};
     await risuai.setChatToIndex(current.ci,current.ti,nextChat);
     invalidateDisplayCache();
@@ -1750,7 +1849,7 @@
     if(densitySettings.maxAssetsPerReply===0)return false;
     const current=await context();
     if(current.chat.id!==ctx.chat.id||current.ci!==ctx.ci||current.ti!==ctx.ti)return false;
-    const text=finalSceneBeat(sourceText);
+    const text=sanitizeSceneText(sourceText);
     const signals=sceneTagSignals(text);
     if(!signals.length)return false;
     const turns=asArray(current.chat.message).filter(m=>['char','assistant'].includes(str(m?.role)));
@@ -1766,7 +1865,9 @@
       const meta=metadataOf(mod);
       for(const source of asArray(meta?.sourceIds).filter(id=>str(id).startsWith('pack:'))){
         const pack=packLibrary.find(x=>'pack:'+x.id===source);
-        if(!pack||!['original','fanwork'].includes(pack.characterKind)||!activeCharacterInScene(text,pack))continue;
+        if(!pack||!['original','fanwork'].includes(pack.characterKind))continue;
+        const beat=chooseIllustrationBeat(text,pack);
+        if(!beat)continue;
         const previousFingerprints=new Set();
         for(const used of asArray(pack.externalAssets).filter(asset=>prior.has(asset.name))){
           if(used.fingerprint){previousFingerprints.add(used.fingerprint);continue;}
@@ -1777,7 +1878,7 @@
           }catch(error){console.warn('[CharacterMixer] prior image fingerprint unavailable');}
         }
         const candidates=asArray(pack.externalAssets).filter(asset=>
-          !prior.has(asset.name)&&isUsablePackAsset(asset,pack,signals,text)&&
+          !prior.has(asset.name)&&assetMatchesLocalBeat(asset,pack,beat)&&
           asArray(mod.assets).some(row=>Array.isArray(row)&&row[0]===asset.name));
         const seen=new Set();
         for(const asset of candidates){
@@ -1788,7 +1889,7 @@
             const fp=imageFingerprint(bytes);
             if(seen.has(fp)||previousFingerprints.has(fp))continue;
             seen.add(fp);
-            if(await appendAssetToCommittedReply(current,sourceText,asset.name))return true;
+            if(await appendAssetToCommittedReply(current,sourceText,asset.name,pack))return true;
           }catch(error){console.warn('[CharacterMixer] saved scene asset unavailable',error);}
         }
       }
@@ -1818,10 +1919,10 @@
     }catch(e){outputLastResult='자동 처리 실패: '+clip(e?.message||e,160);console.warn('[CharacterMixer] output event',e);}
   }
 
-  async function countDistinctMatchingAssets(pack,signals,scene){
+  async function countDistinctMatchingAssets(pack,beat){
     const seen=new Set();
     for(const asset of asArray(pack.externalAssets)){
-      if(!isUsablePackAsset(asset,pack,signals,scene))continue;
+      if(!assetMatchesLocalBeat(asset,pack,beat))continue;
       if(!safePath(asset.path))continue;
       try{
         const data=bytesOf(await risuai.readImage(asset.path));
@@ -1845,7 +1946,7 @@
     const raw=str(last?.data).trim();
     if(!raw){skipped('최신 AI 답변이 없음');return;}
     if(!manual&&!content.includes(raw.slice(0,Math.min(100,raw.length)))&&content!==raw){skipped('현재 화면의 최신 답변과 불일치');return;}
-    const window=finalSceneBeat(content);
+    const window=sanitizeSceneText(content);
     if(window.length<30){autoCollectStatus='장면 텍스트 없음 · Thoughts/내부 분석을 제외했어';return;}
     const signals=sceneTagSignals(window);
     if(!signals.length){skipped('분석 가능한 장면·행동·표정 태그 없음');return;}
@@ -1860,18 +1961,20 @@
         const singlePack=active.flatMap(x=>asArray(x.meta?.sourceIds)).filter(x=>str(x).startsWith('pack:')).length===1;
         const onlyOC=pack.characterKind==='original'&&active.flatMap(x=>asArray(x.meta?.sourceIds)).filter(id=>str(id).startsWith('pack:')).length===1;
         if(!named&&!onlyOC&&!singlePack){skipped('현재 장면의 캐릭터 연결 불확실');continue;}
-        if(!activeCharacterInScene(window,pack)){skipped('최종 장면에 캐릭터 직접 등장 없음 · 회상/메시지 사진 방지');continue;}
+        const beat=chooseIllustrationBeat(window,pack);
+        if(!beat){skipped('이번 답변에서 이미지 삽입에 적합한 구간 없음');continue;}
         const tagSignals=pack.characterKind==='original'?signals:signals.filter(x=>x.weight===3);
         if(!tagSignals.length){skipped('2차창작 이미지와 일치하는 감정 태그 없음');continue;}
-        const focus=sceneSubjectTags(window);
-        const keys=focus.length?[focus[0]]:tagSignals.map(x=>x.tags[0]).slice(0,2);
+        const focus=sceneSubjectTags(beat.text);
+        const keys=beat.plan.searchTags.length?beat.plan.searchTags.slice(0,2):
+          (focus.length?[focus[0]]:tagSignals.map(x=>x.tags[0]).slice(0,2));
         const eventKey=ctx.chat.id+'|'+pack.id+'|'+keys.join('|');
         if(!manual&&now-(lastDiscovery.get(eventKey)||0)<5*60*1000){skipped('동일 장면 최근 검색됨 (5분 제한)');continue;}
         // A failed search is not a completed discovery. Record cooldown only
         // after a successful API response; otherwise users were blocked for 5m.
         const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
         // Reuse-first: an existing suitably tagged asset means no network call.
-        const localMatches=await countDistinctMatchingAssets(pack,tagSignals,window);
+        const localMatches=await countDistinctMatchingAssets(pack,beat);
         if(densitySettings.skipIfEnoughAssets&&localMatches>=densitySettings.minimumLocalAssets&&
           (densitySettings.minimumLocalAssets>0||localMatches>0)){
           skipped('기존 장면 에셋 '+localMatches+'장 확보 · 설정된 충분 기준 만족');continue;
@@ -1880,11 +1983,12 @@
           .map(x=>str(x?.tag).toLowerCase());
         const verifiedWork=str(pack.originalWork).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
         const verifiedTag=verifiedTags.find(tag=>verifiedWork&&tag.includes(verifiedWork));
-        if(pack.characterKind==='fanwork'&&!verifiedTag){
+        if(pack.characterKind==='fanwork'&&beat.packPresent&&!verifiedTag){
           skipped('2차창작 캐릭터 태그 미확인 · 원작명과 검색 태그 연결 필요');continue;
         }
-        const base=pack.characterKind==='original'?'1girl '+keys.join(' '):
-          verifiedTag+' '+keys[0];
+        const base=!beat.packPresent?'no_humans '+keys[0]:
+          pack.characterKind==='original'?'1girl '+keys[0]:
+            verifiedTag+' '+keys[0];
         const tags=base.split(/\s+/).slice(0,6).filter(Boolean);
         if(!tags.length){skipped('검색 태그 생성 실패');continue;}
         autoCollectBusy=true;
@@ -1893,9 +1997,9 @@
           // Set cooldown only when retrieval produced viable candidates.
           // Empty results should not suppress the next user-triggered attempt.
           const available=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id)));
-          const identityMatches=available.filter(x=>verifiedPackIdentity(x,pack));
-          const sceneMatches=identityMatches.filter(x=>sceneSubjectMatched(window,x.tags));
-          const candidates=sceneMatches.filter(x=>isRelevantPost(x,tagSignals,pack.characterKind,pack,window))
+          const identityMatches=available.filter(x=>beat.packPresent?verifiedPackIdentity(x,pack):true);
+          const sceneMatches=identityMatches.filter(x=>assetMatchesLocalBeat(x,pack,beat));
+          const candidates=sceneMatches
             .slice(0,densitySettings.searchCandidatePool);
           if(candidates.length&&!manual)lastDiscovery.set(eventKey,Date.now());
           const saved=[],failures=[];
@@ -1907,7 +2011,7 @@
           }
           if(saved.length){
             const inserted=densitySettings.maxAssetsPerReply>0&&
-              await appendAssetToCommittedReply(ctx,raw,'gelbooru_'+saved[0].id)
+              await appendAssetToCommittedReply(ctx,raw,'gelbooru_'+saved[0].id,pack)
               .catch(e=>{console.warn('[CharacterMixer] inline asset insertion:',e);return false;});
             autoCollectStatus=pack.name+' · 신규 고유 이미지 '+saved.length+'장 저장 ('+
               saved.map(x=>'#'+x.id).join(', ')+') · 채팅 삽입 '+(inserted?'완료':'미완료 (현재 답변 또는 기존 이미지 보호)');
