@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.5
+//@version 0.9.6
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -300,6 +300,37 @@
       return '{{'+kind+'::'+mapped+'}}';
     });
   }
+  // Restore old roleplay image directives without affecting unknown markup.
+  // RisuBard only parses {{img::NAME}} natively; historical presets emit
+  // <img="NAME"> and occasionally <img="NAME> without a closing quote.
+  function rewriteLegacyImageTokens(text,lookup,existing=null){
+    const byName=new Map();
+    const add=(name,resolved=name)=>{
+      const n=str(name).trim();
+      if(n&&!byName.has(n.toLocaleLowerCase()))byName.set(n.toLocaleLowerCase(),resolved);
+    };
+    for(const row of asArray(existing?.additionalAssets)){
+      if(Array.isArray(row)&&row.length>=2)add(row[0]);
+    }
+    for(const row of asArray(existing?.ccAssets)){
+      if(isPlain(row)&&row.name&&row.uri)add(row.name);
+    }
+    for(const row of asArray(existing?.emotionImages)){
+      if(Array.isArray(row)&&row.length>=2){
+        add(row[0]);
+        add('emotion_'+str(row[0]));
+      }
+    }
+    const legacy=/<img\s*=\s*(?:"([^"<>\n]{1,160})"?|'([^'<>\n]{1,160})'?|([a-zA-Z0-9_][a-zA-Z0-9_.-]{0,159}))\s*>/gi;
+    return str(text).replace(legacy,(whole,dbl,single,bare)=>{
+      const name=str(dbl??single??bare).trim();
+      if(!name)return whole;
+      const mapped=byName.get(name.toLocaleLowerCase())||
+        lookup?.map?.get(name.toLocaleLowerCase());
+      if(!mapped)return whole;
+      return '{{img::'+mapped+'}}';
+    });
+  }
   function remapAssetReferences(text,assets){
     return rewriteAssetTokens(text,createAliasLookup(assets));
   }
@@ -565,7 +596,8 @@
   async function displayAssetCompatibility(content){
     if(destroyed||typeof content!=='string')return content;
     displayHookCalls++;
-    const hasAssetTag=/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content);
+    const hasAssetTag=/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content)||
+      /<img\s*=/i.test(content);
     if(!hasAssetTag&&!/\[[^\]\n]{1,80}\]/.test(content)&&!autoCollectEnabled)return content;
     try{
       const ctx=await context();
@@ -585,8 +617,9 @@
           hasActive:aliases.active.length>0,target:ctx.target,tagAssets};
         displayCache=cached;
       }
-      if(!cached.hasActive){displayHookLast='이미지 표시 대상 모듈 미연결';return content;}
-      const rewritten=hasAssetTag?rewriteAssetTokens(content,cached.lookup,cached.target):content;
+      const legacyRewritten=hasAssetTag?rewriteLegacyImageTokens(content,cached.lookup,cached.target):content;
+      if(!cached.hasActive){displayHookLast='이미지 표시 대상 모듈 미연결 · 기존 이미지 태그 우선';return legacyRewritten;}
+      const rewritten=hasAssetTag?rewriteAssetTokens(legacyRewritten,cached.lookup,cached.target):legacyRewritten;
       const omitted=new Set(Object.keys(rejectedPosts).filter(k=>rejectedPosts[k]).map(k=>'gelbooru_'+k.slice(9)));
       const safe=rewritten.replace(/\{\{img::(gelbooru_(?:db_)?\d+)\}\}/g,(token,name)=>omitted.has(name)?'':token);
       const decision=currentDisplayDecision(ctx,safe);
@@ -1945,7 +1978,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.5</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.6</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
