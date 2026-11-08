@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.8.0-beta.3
+//@version 0.8.0-beta.4
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -1599,6 +1599,10 @@
     return '<label class="check"><input type="checkbox" data-cm-flag="'+esc(id)+'" '+(checked?'checked':'')+'/>'+
       '<span><b>'+esc(title)+'</b><small>'+esc(help)+'</small></span></label>';
   }
+  function densityField(key,label,min,max){
+    return '<label>'+esc(label)+'<input type="number" data-cm-density="'+esc(key)+
+      '" min="'+min+'" max="'+max+'" step="1" value="'+densitySettings[key]+'"/></label>';
+  }
   async function render(){
     if(!opened||destroyed)return;
     try{
@@ -1644,7 +1648,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.0-beta.3</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.0-beta.4</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1675,6 +1679,28 @@
         '<p class="muted">자동 이미지 표시를 사용할 때 채팅의 [강세라], [핸콕] 같은 화자 이름을 인식하는 용도야. 쉼표로 구분해.</p>'+
         '<input id="cm-speaker-alias" type="text" value="'+esc(sourceId.startsWith('pack:')?(packLibrary.find(p=>'pack:'+p.id===sourceId)?.speakerAliases||[]).join(', '):'')+'" placeholder="예: 핸콕, 보아 핸콕"/>'+
         '<button id="cm-speaker-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>화자 이름 저장</button></section>'+
+        '<section><h3>에셋 표시량·자동 수집량</h3>'+
+        '<label>표시 강도 프리셋<select id="cm-density-preset">'+
+        [['low','적게'],['normal','보통'],['high','많이 (기본)'],['aggressive','공격적'],['custom','직접 설정']]
+          .map(x=>'<option value="'+x[0]+'" '+(densitySettings.displayPreset===x[0]?'selected':'')+'>'+x[1]+'</option>').join('')+
+        '</select></label>'+
+        '<div class="grid">'+
+          densityField('maxAssetsPerReply','답변당 최대 표시 장수',0,5)+
+          densityField('minReplyGap','이미지 표시 간격 (AI 답변 수)',0,10)+
+          densityField('recentDuplicateWindow','최근 중복 회피 이미지 수',0,20)+
+          densityField('reuseAfterReplies','같은 이미지 재사용까지 답변 수',0,50)+
+          densityField('autoCollectMaxPerRun','외부 검색 1회당 최대 저장 장수',1,5)+
+          densityField('searchCandidatePool','검색 후보 검토 개수',3,20)+
+          densityField('minimumLocalAssets','기존 에셋 충분 기준 (장)',0,20)+
+        '</div>'+
+        '<label class="check"><input type="checkbox" id="cm-density-skip" '+(densitySettings.skipIfEnoughAssets?'checked':'')+'/>'+
+          '<span>장면에 맞는 기존 에셋이 충분하면 외부 검색 생략<small>기준 0장은 자동 생략 없음</small></span></label>'+
+        '<label>사용자 에셋 지시 (짧은 자연어 설정)<textarea id="cm-density-hint" placeholder="예: 답변당 최대 3장, 수집 최대 2장, 간격 1턴, 에셋을 넉넉히 표시">'+esc(densitySettings.assetUsageHint)+'</textarea></label>'+
+        '<p class="muted">명시된 장수·간격은 설정값에 반영해. 모호한 문장은 전체 프리셋 강도에만 반영하고, 소설 프롬프트에 주입하지 않아.</p>'+
+        '<button id="cm-density-save" type="button" class="primary">에셋 설정 저장 및 즉시 적용</button>'+
+        '<p class="muted">현재 적용: 답변당 최대 '+densitySettings.maxAssetsPerReply+'장 · 간격 '+densitySettings.minReplyGap+
+        '답변 · 검색당 최대 '+densitySettings.autoCollectMaxPerRun+'장 · 후보 '+densitySettings.searchCandidatePool+'건</p>'+
+        '</section>'+
         '<section><h3>채팅 이미지 자동 수집 · 싫어요</h3>'+ 
         '<p class="muted">실제 생성 이벤트 연결: '+(outputListenerAvailable?'정상 등록':'미등록 · 플러그인의 replacer 권한이나 앱 버전 확인')+' / 수신 '+outputEventCount+'회</p>'+ 
         '<p class="muted">최근 자동 처리: '+esc(outputLastResult)+'</p>'+
@@ -1682,9 +1708,9 @@
         '<p class="muted">검색 제공처: '+esc(externalProviderStatus||'아직 확인 안 됨')+'</p>'+
         '<button id="cm-diagnose" type="button">현재 채팅 자동 연결 및 최근 답변 테스트</button>'+
         '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
-        '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<br/><small>한번에 최대 1장 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
+        '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<small>설정한 장수 이내 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
         '<p class="muted">채팅에 명시적으로 연결되고 자동 이미지 표시가 켜진 팩에만 적용돼. 현재 설정: '+(autoCollectEnabled?'자동 수집 ON':'자동 수집 OFF')+'</p>'+
-        '<p class="muted">표시 기준: 최신 AI 답변에 최대 1장 / 최소 3개 답변 간격 / 최근 5회 표시 중복 회피 (15개 답변 경과 시 재사용 가능). 적합한 이미지가 없으면 표시하지 않아. 수집은 표시와 별도이며 기존 에셋 우선.</p>'+
+        '<p class="muted">표시량과 검색·저장량은 위 설정을 따름. 적합한 이미지가 없으면 강제로 삽입하지 않으며 기존 에셋을 우선 사용해.</p>'+
         '<p class="muted">'+esc(autoCollectStatus||'아직 자동 수집 기록 없음')+'</p>'+
         (sourceId.startsWith('pack:')?
           '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4><div class="grid">'+
@@ -1815,6 +1841,37 @@
       el('cm-auth-test').onclick=()=>void testGelbooruAuth();
       el('cm-auth-clear').onclick=()=>void clearGelbooruAuth();
       el('cm-auth-save').onclick=()=>void saveGelbooruAuth().then(()=>render()).catch(e=>{authStatus='저장 실패: '+clip(e?.message||e,100);void render();});
+      el('cm-density-preset').onchange=e=>{
+        const preset=str(e.target.value);
+        densitySettings=normalizeDensity({displayPreset:preset,...(preset==='custom'?densitySettings:{})});
+        void render();
+      };
+      for(const node of document.querySelectorAll('[data-cm-density]')){
+        node.onchange=e=>{
+          const key=str(node.getAttribute('data-cm-density'));
+          densitySettings={...densitySettings,[key]:Number(e.target.value),displayPreset:'custom'};
+          el('cm-density-preset').value='custom';
+        };
+      }
+      el('cm-density-skip').onchange=e=>{
+        densitySettings={...densitySettings,skipIfEnoughAssets:Boolean(e.target.checked)};
+      };
+      el('cm-density-hint').oninput=e=>{
+        densitySettings={...densitySettings,assetUsageHint:str(e.target.value).slice(0,500)};
+      };
+      el('cm-density-save').onclick=()=>void (async()=>{
+        try{
+          const hint=parseAssetHint(densitySettings.assetUsageHint);
+          if(Object.keys(hint).length){
+            densitySettings=normalizeDensity({...densitySettings,...hint,displayPreset:'custom'});
+          }
+          await saveDensitySettings();
+          invalidateDisplayCache();
+          lastDiscovery.clear();
+          message='에셋 표시·수집 설정 저장 완료';
+          await render();
+        }catch(e){message='설정 저장 실패: '+clip(e?.message||e,150);await render();}
+      })();
       el('cm-diagnose').onclick=()=>void testCurrentChatAuto();
       el('cm-auto-collect').onchange=e=>{autoCollectEnabled=Boolean(e.target.checked);
         void saveAutoPrefs().then(()=>render()).catch(error=>{autoCollectStatus='설정 저장 실패 '+str(error?.message||error);void render();});};
