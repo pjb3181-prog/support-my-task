@@ -7,6 +7,7 @@ on:
       - 'risubard-updates/tests/character_mixer.test.cjs'
       - 'risubard-updates/tests/character_mixer_asset_compat.test.cjs'
       - 'risubard-updates/tests/character_mixer_scene_relevance.test.cjs'
+      - 'risubard-updates/tests/character_mixer_legacy_image.test.cjs'
       - 'risubard-updates/bridge/**'
       - '.github/workflows/character-mixer-check.yml'
   pull_request:
@@ -16,6 +17,7 @@ on:
       - 'risubard-updates/tests/character_mixer.test.cjs'
       - 'risubard-updates/tests/character_mixer_asset_compat.test.cjs'
       - 'risubard-updates/tests/character_mixer_scene_relevance.test.cjs'
+      - 'risubard-updates/tests/character_mixer_legacy_image.test.cjs'
       - 'risubard-updates/bridge/**'
       - '.github/workflows/character-mixer-check.yml'
   workflow_dispatch:
@@ -37,7 +39,7 @@ jobs:
       - name: Check plugin JavaScript syntax
         run: node --check risubard-updates/character_mixer.js
       - name: Test isolated Character Mixer against mocked host
-        run: node --test risubard-updates/tests/character_mixer.test.cjs risubard-updates/tests/character_mixer_asset_compat.test.cjs risubard-updates/tests/character_mixer_local_bridge.test.cjs risubard-updates/tests/character_mixer_inline_display.test.cjs risubard-updates/tests/character_mixer_stable_display.test.cjs risubard-updates/tests/character_mixer_scene_relevance.test.cjs
+        run: node --test risubard-updates/tests/character_mixer.test.cjs risubard-updates/tests/character_mixer_asset_compat.test.cjs risubard-updates/tests/character_mixer_local_bridge.test.cjs risubard-updates/tests/character_mixer_inline_display.test.cjs risubard-updates/tests/character_mixer_stable_display.test.cjs risubard-updates/tests/character_mixer_scene_relevance.test.cjs risubard-updates/tests/character_mixer_legacy_image.test.cjs
 
       - name: Check Python bridge syntax
         run: python -m py_compile risubard-updates/bridge/character_mixer_bridge.py
