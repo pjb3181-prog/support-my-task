@@ -36,7 +36,7 @@ test('the scene-specific source tag is preferred during search',()=>{
 test('display and auto search both recognize games and cookies',()=>{
  const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
  assert.match(source,/\[\['cookie','cookies','chocolate_chip_cookie'\]/);
- assert.match(source,/\[\['video_games','playing_video_games','game_controller'\]/);
+ assert.match(source,/\[\['video_games','playing_video_games','game_controller','arcade'\]/);
 });
 
 test('search diagnostics identify character and scene rejection separately',()=>{
