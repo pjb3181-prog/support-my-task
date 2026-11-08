@@ -1675,6 +1675,7 @@
       const source=installedInChat(ctx).length?ctx:await bootstrapCurrentChat(ctx);
       autoCollectStatus='';
       await discoverForScene(str(last.data),source,{manual:true});
+      await appendMatchingSavedAsset(source,str(last.data));
       if(!autoCollectStatus)outputLastResult='최근 답변 분석 실행 완료 · 이미지가 나오지 않으면 캐릭터·표정 태그 또는 API를 확인해';
     }catch(e){outputLastResult='진단 실패: '+clip(e?.message||e,160);}
     await render();
@@ -1706,7 +1707,53 @@
     const nextChat={...current.chat,message:rows.map((row,i)=>i===index?nextMessage:row)};
     await risuai.setChatToIndex(current.ci,current.ti,nextChat);
     invalidateDisplayCache();
+    // Record the displayed name so the next assistant reply does not repeat
+    // the same illustration when other suitable assets are available.
+    const turn=rows.filter(m=>['char','assistant'].includes(str(m?.role))).length-1;
+    const key=str(current.chat.id)+'|'+current.ci+'|'+current.ti;
+    recordDisplayedImages({key,turn,signature:str(turn)+'|'+body.length+'|'+contentFingerprint(body),
+      row:displayHistory[key]||{recent:[],lastShownTurn:-100}},[assetName]);
     return true;
+  }
+  async function appendMatchingSavedAsset(ctx,sourceText){
+    if(densitySettings.maxAssetsPerReply===0)return false;
+    const current=await context();
+    if(current.chat.id!==ctx.chat.id||current.ci!==ctx.ci||current.ti!==ctx.ti)return false;
+    const text=sanitizeSceneText(sourceText).slice(-3000);
+    const signals=sceneTagSignals(text);
+    if(!signals.length)return false;
+    const turns=asArray(current.chat.message).filter(m=>['char','assistant'].includes(str(m?.role)));
+    const turn=turns.length-1;
+    const historyKey=str(current.chat.id)+'|'+current.ci+'|'+current.ti;
+    const history=displayHistory[historyKey]||{lastShownTurn:-100,recent:[]};
+    if(turn-history.lastShownTurn<densitySettings.minReplyGap)return false;
+    const prior=new Set(asArray(history.recent).filter(row=>{
+      const earlier=Number(row?.turn);
+      return Number.isFinite(earlier)&&turn-earlier<densitySettings.reuseAfterReplies;
+    }).map(row=>str(row.name)));
+    for(const mod of installedInChat(current)){
+      const meta=metadataOf(mod);
+      for(const source of asArray(meta?.sourceIds).filter(id=>str(id).startsWith('pack:'))){
+        const pack=packLibrary.find(x=>'pack:'+x.id===source);
+        if(!pack||!['original','fanwork'].includes(pack.characterKind))continue;
+        const candidates=asArray(pack.externalAssets).filter(asset=>
+          !prior.has(asset.name)&&isUsablePackAsset(asset,pack,signals,text)&&
+          asArray(mod.assets).some(row=>Array.isArray(row)&&row[0]===asset.name));
+        const seen=new Set();
+        for(const asset of candidates){
+          if(!safePath(asset.path))continue;
+          try{
+            const bytes=bytesOf(await risuai.readImage(asset.path));
+            if(!bytes?.length)continue;
+            const fp=imageFingerprint(bytes);
+            if(seen.has(fp))continue;
+            seen.add(fp);
+            if(await appendAssetToCommittedReply(current,sourceText,asset.name))return true;
+          }catch(error){console.warn('[CharacterMixer] saved scene asset unavailable',error);}
+        }
+      }
+    }
+    return false;
   }
   async function onCommittedChatOutput(payload){
     if(destroyed||!autoCollectEnabled)return;
@@ -1722,7 +1769,12 @@
       const active=installedInChat(ctx).length?ctx:await bootstrapCurrentChat(ctx);
       const cleanScene=sanitizeSceneText(raw);
       outputLastResult=cleanScene?'장면 분석: '+clip(cleanScene.slice(0,80).replace(/\s+/g,' '),80):'내부 Thoughts 구간 제외 · 분석 가능한 장면 없음';
-      if(cleanScene)await discoverForScene(raw,active);
+      if(cleanScene){
+        await discoverForScene(raw,active);
+        // Reuse an existing unique scene match even when search is skipped,
+        // returns zero new candidates, or downloaded posts were duplicates.
+        await appendMatchingSavedAsset(active,raw);
+      }
     }catch(e){outputLastResult='자동 처리 실패: '+clip(e?.message||e,160);console.warn('[CharacterMixer] output event',e);}
   }
 
@@ -1813,7 +1865,8 @@
             }catch(e){failures.push(clip(e?.message||e,120));}
           }
           if(saved.length){
-            const inserted=await appendAssetToCommittedReply(ctx,raw,'gelbooru_'+saved[0].id)
+            const inserted=densitySettings.maxAssetsPerReply>0&&
+              await appendAssetToCommittedReply(ctx,raw,'gelbooru_'+saved[0].id)
               .catch(e=>{console.warn('[CharacterMixer] inline asset insertion:',e);return false;});
             autoCollectStatus=pack.name+' · 신규 고유 이미지 '+saved.length+'장 저장 ('+
               saved.map(x=>'#'+x.id).join(', ')+') · 채팅 삽입 '+(inserted?'완료':'미완료 (현재 답변 또는 기존 이미지 보호)');
