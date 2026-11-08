@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.8.2
+//@version 0.9.0-beta.1
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -67,6 +67,61 @@
   let displayHistory={};
   let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
   let externalProviderStatus='',authFailureCount=0,authStatus='Gelbooru 인증 정보 미등록';
+  const LOCAL_BRIDGE='http://127.0.0.1:18765';
+  let localBridgeActive=false,localBridgeStatus='로컬 Python 브리지 연결 확인 전';
+  async function localBridgeRequest(route,payload){
+    // Fixed loopback host and fixed routes: never allow an arbitrary URL proxy.
+    if(route!=='search'&&route!=='image')throw Error('Bridge route not allowed');
+    const response=await risuai.nativeFetch(LOCAL_BRIDGE+'/'+route,{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)
+    });
+    if(!response?.ok){
+      let category='HTTP '+str(response?.status||'unknown');
+      try{const data=await response.json();if(data?.error&&/^[a-zA-Z0-9 ()-]{1,120}$/.test(data.error))
+        category+=' ('+data.error+')';}catch(_){}
+      throw Error('Python bridge '+category);
+    }
+    return response;
+  }
+  async function pingLocalBridge(){
+    try{
+      const response=await risuai.nativeFetch(LOCAL_BRIDGE+'/health',{method:'GET'});
+      if(!response?.ok)throw Error('HTTP '+str(response?.status));
+      const data=await response.json();
+      if(data?.service!=='CharacterMixerBridge'||data?.ok!==true)throw Error('서비스 응답 불일치');
+      localBridgeActive=true;
+      localBridgeStatus='로컬 Python 이미지 브리지 연결됨';
+      return true;
+    }catch(e){
+      localBridgeActive=false;
+      localBridgeStatus='로컬 브리지 미연결 · start_character_mixer_bridge.cmd 실행 필요 ('+
+        clip(e?.message||e,100)+')';
+      return false;
+    }
+  }
+  async function testLocalBridge(){await pingLocalBridge();await render();}
+  async function searchViaLocalBridge(tags,limit,page){
+    const response=await localBridgeRequest('search',{
+      tags:[...tags.filter(x=>!x.startsWith('rating:')),'rating:general'].join(' '),
+      limit,page,userId:externalUserId.trim(),apiKey:externalApiKey.trim()
+    });
+    const raw=await response.json();
+    const posts=parseBooruPosts(raw);
+    localBridgeActive=true;
+    localBridgeStatus='Python 브리지 검색 성공 ('+posts.length+'건)';
+    externalProviderStatus='로컬 Python 브리지 · Gelbooru ('+posts.length+'건)';
+    return posts;
+  }
+  async function fetchViaLocalBridge(url,limit){
+    const response=await localBridgeRequest('image',{url});
+    const declared=Number(response.headers?.get?.('content-length')||0);
+    if(declared>limit)throw Error('브리지 이미지가 용량 제한 초과');
+    const bytes=new Uint8Array(await response.arrayBuffer());
+    const ext=imageMagic(bytes);
+    if(!ext||bytes.byteLength>limit)throw Error('브리지 응답이 이미지가 아니거나 용량 초과');
+    localBridgeActive=true;
+    return {bytes,ext,url};
+  }
   let rejectedPosts={},lastDiscovery=new Map(),discoveryRun=new Set();
   let latestShown=null,reviewFirst=false;
   let outputListenerAvailable=false,outputEventCount=0,outputLastResult='아직 생성 완료 이벤트를 받지 못함';
@@ -1105,6 +1160,12 @@
   }
   async function searchBooruWithFallback(baseTags,limit=12,page=0){
     const userTags=asArray(baseTags).map(x=>str(x).trim()).filter(x=>x&&!x.startsWith('rating:'));
+    // Prefer the Python route when previously verified; avoid the failing
+    // RisuBard external /proxy2 entirely in this case.
+    if(localBridgeActive){
+      try{return await searchViaLocalBridge(userTags,limit,page);}
+      catch(e){localBridgeStatus='로컬 브리지 재연결 실패: '+clip(e?.message||e,120);localBridgeActive=false;}
+    }
     const gelParams=new URLSearchParams({page:'dapi',s:'post',q:'index',json:'1',
       limit:String(limit),pid:String(page),tags:[...userTags,'rating:general'].join(' ')});
     if(externalApiKey.trim()&&externalUserId.trim()){
@@ -1139,7 +1200,13 @@
     }catch(e){
       const second=clip(e?.message||e,100);
       externalProviderStatus='Gelbooru '+gelFailure+' / Danbooru '+second;
-      throw Error('이미지 검색 서버 접근 실패: '+externalProviderStatus);
+      try{return await searchViaLocalBridge(userTags,limit,page);}
+      catch(error){
+        localBridgeActive=false;
+        localBridgeStatus='로컬 브리지 검색 불가: '+clip(error?.message||error,120);
+        throw Error('외부 중계 실패 · '+externalProviderStatus+
+          ' / Python 로컬 브리지 미연결 또는 실패 · '+clip(error?.message||error,105));
+      }
     }
   }
   function isRejected(postId){return rejectedPosts['gelbooru:'+str(postId)]===true;}
@@ -1684,7 +1751,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.2</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.0-beta.1</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
