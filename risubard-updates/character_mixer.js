@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.9.7
+//@version 0.9.8
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -629,6 +629,20 @@
       const rewritten=hasAssetTag?rewriteAssetTokens(legacyRewritten,cached.lookup,cached.target):legacyRewritten;
       const omitted=new Set(Object.keys(rejectedPosts).filter(k=>rejectedPosts[k]).map(k=>'gelbooru_'+k.slice(9)));
       const safe=rewritten.replace(/\{\{img::(gelbooru_(?:db_)?\d+)\}\}/g,(token,name)=>omitted.has(name)?'':token);
+      // Native tags written by Character Mixer can otherwise disappear because
+      // RisuBard's module asset parser cache may lag a setDatabaseLite update.
+      // Render ONLY our own verified external-asset tags inline, preserving
+      // original-character assets and all other native macros unchanged.
+      if(/\{\{img::gelbooru_(?:db_)?\d+\}\}/i.test(safe)){
+        let result=safe;
+        const names=[...new Set([...safe.matchAll(/\{\{img::(gelbooru_(?:db_)?\d+)\}\}/gi)].map(x=>x[1]))];
+        for(const name of names){
+          const image=await inlineAssetForDisplay(name);
+          if(image)result=result.replaceAll('{{img::'+name+'}}',image.html);
+        }
+        displayHookLast='저장된 외부 에셋 '+names.length+'장 직접 표시';
+        return result;
+      }
       const decision=currentDisplayDecision(ctx,safe);
       if(!decision){displayHookLast='최신 AI 답변 판정 불일치';return safe;}
       // Preserve images already written explicitly in the chat; never append
@@ -1479,20 +1493,21 @@
 
   async function persistAssetToPack(pack,item,ctx=null){
     if(!pack||!item||isRejected(item.id))return false;
-    if(asArray(pack.externalAssets).some(x=>str(x.postId)===str(item.id)))return false;
+    const latestBefore=packLibrary.find(x=>x.id===pack.id);
+    if(!latestBefore||asArray(latestBefore.externalAssets).some(x=>str(x.postId)===str(item.id)))return false;
     const download=await fetchImageBinary(item);
     const {bytes}=download;
-    // Distinct post IDs can reference byte-identical pictures.
-    // Preserve previous assets; reject only future duplicated downloads.
-    for(const existingAsset of asArray(pack.externalAssets)){
+    const fingerprint=imageFingerprint(bytes);
+    // Re-read the CURRENT pack, not the stale pack object passed at the start
+    // of a multi-image batch. Otherwise five post IDs can save the same bytes.
+    const latest=packLibrary.find(x=>x.id===pack.id);
+    if(!latest)return false;
+    for(const existingAsset of asArray(latest.externalAssets)){
+      if(existingAsset.fingerprint&&existingAsset.fingerprint===fingerprint)return false;
       if(!safePath(existingAsset.path))continue;
       try{
         const old=bytesOf(await risuai.readImage(existingAsset.path));
-        if(old&&old.length===bytes.length){
-          let same=true;
-          for(let i=0;i<bytes.length;i++)if(old[i]!==bytes[i]){same=false;break;}
-          if(same)return false;
-        }
+        if(old&&imageFingerprint(old)===fingerprint)return false;
       }catch(e){console.warn('[CharacterMixer] duplicate comparison unavailable');}
     }
     // The plugin iframe transfers the argument buffer (zero-copy).
@@ -1509,7 +1524,7 @@
     const name='gelbooru_'+item.id;
     if(existing.some(x=>x[0]===name))return false;
     const ext=download.ext;
-    const asset={name,path,ext,postId:str(item.id),tags:item.tags,
+    const asset={name,path,ext,postId:str(item.id),tags:item.tags,fingerprint,
       provider:item.provider||'gelbooru',sourceURL:item.postURL,previewURL:gelbooruMediaURL(item.thumbnail||item.image),artistSource:item.source||'',autoAdded:true};
     const updated={...fresh,updatedAt:Date.now(),
       externalAssets:[...asArray(fresh.externalAssets),asset],
@@ -1660,9 +1675,94 @@
       const source=installedInChat(ctx).length?ctx:await bootstrapCurrentChat(ctx);
       autoCollectStatus='';
       await discoverForScene(str(last.data),source,{manual:true});
+      await appendMatchingSavedAsset(source,str(last.data));
       if(!autoCollectStatus)outputLastResult='최근 답변 분석 실행 완료 · 이미지가 나오지 않으면 캐릭터·표정 태그 또는 API를 확인해';
     }catch(e){outputLastResult='진단 실패: '+clip(e?.message||e,160);}
     await render();
+  }
+  // Append a small native asset reference only after the image has been
+  // downloaded, deduplicated, and linked to the active chat's asset module.
+  // This works independently of whether the display hook happened to render
+  // an older message last. Never rewrite the user's prose or other turns.
+  async function appendAssetToCommittedReply(ctx,sourceText,assetName){
+    if(!/^gelbooru_(?:db_)?[0-9]+$/.test(str(assetName)))return false;
+    const current=await context();
+    if(current.ci!==ctx.ci||current.ti!==ctx.ti||current.chat.id!==ctx.chat.id)return false;
+    const rows=asArray(current.chat.message);
+    let index=-1;
+    for(let i=rows.length-1;i>=0;i--){
+      if(['char','assistant'].includes(str(rows[i]?.role))){index=i;break;}
+    }
+    if(index<0)return false;
+    const previous=rows[index],body=str(previous.data);
+    const original=sanitizeSceneText(sourceText).trim();
+    if(!original||sanitizeSceneText(body).trim()!==original)return false;
+    // Existing native or legacy image tags always win.
+    if(/\{\{\s*(?:img|image|asset|emotion)\s*(?:::|=)/i.test(body)||/<img\s*=/i.test(body))return false;
+    const linked=installedInChat(current).some(mod=>
+      asArray(mod.assets).some(x=>Array.isArray(x)&&x[0]===assetName));
+    if(!linked)return false;
+    const token='{{img::'+assetName+'}}';
+    const nextMessage={...previous,data:body+'\n\n'+token};
+    const nextChat={...current.chat,message:rows.map((row,i)=>i===index?nextMessage:row)};
+    await risuai.setChatToIndex(current.ci,current.ti,nextChat);
+    invalidateDisplayCache();
+    // Record the displayed name so the next assistant reply does not repeat
+    // the same illustration when other suitable assets are available.
+    const turn=rows.filter(m=>['char','assistant'].includes(str(m?.role))).length-1;
+    const key=str(current.chat.id)+'|'+current.ci+'|'+current.ti;
+    recordDisplayedImages({key,turn,signature:str(turn)+'|'+body.length+'|'+contentFingerprint(body),
+      row:displayHistory[key]||{recent:[],lastShownTurn:-100}},[assetName]);
+    return true;
+  }
+  async function appendMatchingSavedAsset(ctx,sourceText){
+    if(densitySettings.maxAssetsPerReply===0)return false;
+    const current=await context();
+    if(current.chat.id!==ctx.chat.id||current.ci!==ctx.ci||current.ti!==ctx.ti)return false;
+    const text=sanitizeSceneText(sourceText).slice(-3000);
+    const signals=sceneTagSignals(text);
+    if(!signals.length)return false;
+    const turns=asArray(current.chat.message).filter(m=>['char','assistant'].includes(str(m?.role)));
+    const turn=turns.length-1;
+    const historyKey=str(current.chat.id)+'|'+current.ci+'|'+current.ti;
+    const history=displayHistory[historyKey]||{lastShownTurn:-100,recent:[]};
+    if(turn-history.lastShownTurn<densitySettings.minReplyGap)return false;
+    const prior=new Set(asArray(history.recent).filter(row=>{
+      const earlier=Number(row?.turn);
+      return Number.isFinite(earlier)&&turn-earlier<densitySettings.reuseAfterReplies;
+    }).map(row=>str(row.name)));
+    for(const mod of installedInChat(current)){
+      const meta=metadataOf(mod);
+      for(const source of asArray(meta?.sourceIds).filter(id=>str(id).startsWith('pack:'))){
+        const pack=packLibrary.find(x=>'pack:'+x.id===source);
+        if(!pack||!['original','fanwork'].includes(pack.characterKind))continue;
+        const previousFingerprints=new Set();
+        for(const used of asArray(pack.externalAssets).filter(asset=>prior.has(asset.name))){
+          if(used.fingerprint){previousFingerprints.add(used.fingerprint);continue;}
+          if(!safePath(used.path))continue;
+          try{
+            const old=bytesOf(await risuai.readImage(used.path));
+            if(old?.length)previousFingerprints.add(imageFingerprint(old));
+          }catch(error){console.warn('[CharacterMixer] prior image fingerprint unavailable');}
+        }
+        const candidates=asArray(pack.externalAssets).filter(asset=>
+          !prior.has(asset.name)&&isUsablePackAsset(asset,pack,signals,text)&&
+          asArray(mod.assets).some(row=>Array.isArray(row)&&row[0]===asset.name));
+        const seen=new Set();
+        for(const asset of candidates){
+          if(!safePath(asset.path))continue;
+          try{
+            const bytes=bytesOf(await risuai.readImage(asset.path));
+            if(!bytes?.length)continue;
+            const fp=imageFingerprint(bytes);
+            if(seen.has(fp)||previousFingerprints.has(fp))continue;
+            seen.add(fp);
+            if(await appendAssetToCommittedReply(current,sourceText,asset.name))return true;
+          }catch(error){console.warn('[CharacterMixer] saved scene asset unavailable',error);}
+        }
+      }
+    }
+    return false;
   }
   async function onCommittedChatOutput(payload){
     if(destroyed||!autoCollectEnabled)return;
@@ -1678,7 +1778,12 @@
       const active=installedInChat(ctx).length?ctx:await bootstrapCurrentChat(ctx);
       const cleanScene=sanitizeSceneText(raw);
       outputLastResult=cleanScene?'장면 분석: '+clip(cleanScene.slice(0,80).replace(/\s+/g,' '),80):'내부 Thoughts 구간 제외 · 분석 가능한 장면 없음';
-      if(cleanScene)await discoverForScene(raw,active);
+      if(cleanScene){
+        await discoverForScene(raw,active);
+        // Reuse an existing unique scene match even when search is skipped,
+        // returns zero new candidates, or downloaded posts were duplicates.
+        await appendMatchingSavedAsset(active,raw);
+      }
     }catch(e){outputLastResult='자동 처리 실패: '+clip(e?.message||e,160);console.warn('[CharacterMixer] output event',e);}
   }
 
@@ -1769,8 +1874,11 @@
             }catch(e){failures.push(clip(e?.message||e,120));}
           }
           if(saved.length){
-            autoCollectStatus=pack.name+' · 신규 에셋 '+saved.length+'장 저장 ('+
-              saved.map(x=>'#'+x.id).join(', ')+')';
+            const inserted=densitySettings.maxAssetsPerReply>0&&
+              await appendAssetToCommittedReply(ctx,raw,'gelbooru_'+saved[0].id)
+              .catch(e=>{console.warn('[CharacterMixer] inline asset insertion:',e);return false;});
+            autoCollectStatus=pack.name+' · 신규 고유 이미지 '+saved.length+'장 저장 ('+
+              saved.map(x=>'#'+x.id).join(', ')+') · 채팅 삽입 '+(inserted?'완료':'미완료 (현재 답변 또는 기존 이미지 보호)');
           }else{
             autoCollectStatus=failures.length?'검색은 성공했지만 이미지 다운로드 실패: '+failures[0]:
               pack.name+' · 검색 '+rows.length+'건 / 신규 '+available.length+
@@ -1999,7 +2107,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.7</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.8</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
