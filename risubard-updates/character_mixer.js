@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.7.10
+//@version 0.8.0
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -19,7 +19,51 @@
   const AUTO_PREF_KEY='character_mixer_auto_assets_v1';
   const DISPLAY_KEY='character_mixer_display_history_v1';
   const AUTH_KEY='character_mixer_gelbooru_auth_v1';
-  const DISPLAY_MIN_GAP=3, DISPLAY_RECENT_WINDOW=5, DISPLAY_REPEAT_TURN_WINDOW=15;
+  const DENSITY_STORE='character_mixer_density_v1';
+  const DENSITY_PRESETS={
+    low:{maxAssetsPerReply:1,minReplyGap:4,recentDuplicateWindow:6,reuseAfterReplies:15,autoCollectMaxPerRun:1,searchCandidatePool:4,minimumLocalAssets:1},
+    normal:{maxAssetsPerReply:1,minReplyGap:3,recentDuplicateWindow:5,reuseAfterReplies:12,autoCollectMaxPerRun:1,searchCandidatePool:5,minimumLocalAssets:2},
+    high:{maxAssetsPerReply:2,minReplyGap:1,recentDuplicateWindow:3,reuseAfterReplies:6,autoCollectMaxPerRun:2,searchCandidatePool:8,minimumLocalAssets:3},
+    aggressive:{maxAssetsPerReply:3,minReplyGap:0,recentDuplicateWindow:1,reuseAfterReplies:3,autoCollectMaxPerRun:3,searchCandidatePool:12,minimumLocalAssets:4}
+  };
+  const DENSITY_DEFAULT={displayPreset:'high',...DENSITY_PRESETS.high,skipIfEnoughAssets:true,assetUsageHint:''};
+  let densitySettings={...DENSITY_DEFAULT};
+  const bounded=(v,lo,hi,fallback)=>Number.isFinite(Number(v))?Math.min(hi,Math.max(lo,Math.round(Number(v)))):fallback;
+  function normalizeDensity(input){
+    const raw=input&&typeof input==='object'?input:{};
+    const preset=['low','normal','high','aggressive','custom'].includes(raw.displayPreset)?raw.displayPreset:'high';
+    const merged={...DENSITY_DEFAULT,...raw,...(preset==='custom'?{}:DENSITY_PRESETS[preset]),displayPreset:preset};
+    for(const [key,lo,hi] of [['maxAssetsPerReply',0,5],['minReplyGap',0,10],
+      ['recentDuplicateWindow',0,20],['reuseAfterReplies',0,50],['autoCollectMaxPerRun',1,5],
+      ['searchCandidatePool',3,20],['minimumLocalAssets',0,20]]){
+      merged[key]=bounded(merged[key],lo,hi,DENSITY_DEFAULT[key]);
+    }
+    merged.skipIfEnoughAssets=merged.skipIfEnoughAssets!==false;
+    merged.assetUsageHint=String(merged.assetUsageHint||'').slice(0,500);
+    return merged;
+  }
+  async function loadDensitySettings(){
+    try{densitySettings=normalizeDensity(await risuai.pluginStorage.getItem(DENSITY_STORE));}
+    catch(error){densitySettings={...DENSITY_DEFAULT};console.warn('[CharacterMixer] density settings load failed',error);}
+  }
+  async function saveDensitySettings(){
+    densitySettings=normalizeDensity(densitySettings);
+    await risuai.pluginStorage.setItem(DENSITY_STORE,densitySettings);
+  }
+  // Optional, bounded natural-language shortcuts; no prompt injections or LLM calls.
+  function parseAssetHint(hint){
+    const t=String(hint||'').slice(0,500);
+    const result={};
+    const max=t.match(/(?:답변당|한\s*답변(?:에|당)?)\s*(?:최대\s*)?(\d)\s*장/);
+    const collect=t.match(/(?:수집|저장|검색(?:당|마다))\s*(?:최대\s*)?(\d)\s*장/);
+    const gap=t.match(/(?:간격|띄우기)\s*(\d{1,2})\s*(?:턴|답변|회)/);
+    if(max)result.maxAssetsPerReply=bounded(max[1],0,5,2);
+    if(collect)result.autoCollectMaxPerRun=bounded(collect[1],1,5,2);
+    if(gap)result.minReplyGap=bounded(gap[1],0,10,1);
+    if(/적극적|넉넉히|많이\s*보여|자주\s*보여/.test(t))Object.assign(result,{...DENSITY_PRESETS.high,...result});
+    if(/아주\s*적게|최소한만|이미지\s*줄여/.test(t))Object.assign(result,{...DENSITY_PRESETS.low,...result});
+    return result;
+  }
   let displayHistory={};
   let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
   let externalProviderStatus='',authFailureCount=0,authStatus='Gelbooru 인증 정보 미등록';
@@ -342,6 +386,18 @@
     const min=3;
     return winner&&best>=min?'{{img::'+winner.name+'}}':'';
   }
+  function pickTaggedAssets(content,cached,excludedNames=new Set(),limit=1){
+    const found=[],excluded=new Set(excludedNames);
+    for(let i=0;i<bounded(limit,0,5,1);i++){
+      const token=pickTaggedAsset(content,cached,excluded);
+      if(!token)break;
+      const name=token.match(/^\{\{img::([^}]+)\}\}$/)?.[1];
+      if(!name||excluded.has(name))break;
+      excluded.add(name);
+      found.push(name);
+    }
+    return found;
+  }
   function contentFingerprint(value){
     // Keep only a compact hash; do not retain chat text in plugin storage.
     let h=2166136261;
@@ -362,25 +418,33 @@
     const row=turn<previous.lastShownTurn?{lastShownTurn:-100,recent:[]}:previous;
     return {key,signature,turn,row,
       sameMessage:row.messageKey===signature,
-      canShow:turn-row.lastShownTurn>=DISPLAY_MIN_GAP};
+      canShow:turn-row.lastShownTurn>=densitySettings.minReplyGap};
   }
-  function recordDisplayedImage(decision,assetName){
-    const recent=asArray(decision.row.recent).filter(x=>{
+  function recordDisplayedImages(decision,assetNames){
+    const names=[...new Set(asArray(assetNames).filter(Boolean))];
+    if(!names.length)return;
+    const old=asArray(decision.row.recent).filter(x=>{
       const name=typeof x==='string'?x:x?.name;
       const turn=typeof x==='string'?decision.turn:Number(x?.turn);
-      return name!==assetName&&Number.isFinite(turn)&&decision.turn-turn<DISPLAY_REPEAT_TURN_WINDOW;
-    }).slice(-(DISPLAY_RECENT_WINDOW-1));
-    displayHistory[decision.key]={lastShownTurn:decision.turn,messageKey:decision.signature,
-      lastAsset:assetName,recent:[...recent,{name:assetName,turn:decision.turn}]};
+      return !names.includes(name)&&Number.isFinite(turn)&&
+        decision.turn-turn<densitySettings.reuseAfterReplies;
+    });
+    const additions=names.map(name=>({name,turn:decision.turn}));
+    const recent=[...old,...additions].slice(-Math.max(1,densitySettings.recentDuplicateWindow,5));
+    displayHistory[decision.key]={lastShownTurn:decision.turn,
+      messageKey:decision.signature,lastAsset:names.at(-1),lastAssets:names,recent};
     void saveDisplayHistory().catch(e=>console.warn('[CharacterMixer] display history save failed',e));
   }
+  function recordDisplayedImage(decision,assetName){recordDisplayedImages(decision,[assetName]);}
   function rememberFeedback(assetName){
-    // A disliked image must never reappear from a saved display decision.
     for(const [key,row] of Object.entries(displayHistory)){
-      if(row?.lastAsset===assetName)delete displayHistory[key];
-      else if(asArray(row?.recent).some(x=>(typeof x==='string'?x:x?.name)===assetName)){
-        displayHistory[key]={...row,recent:row.recent.filter(x=>(typeof x==='string'?x:x?.name)!==assetName)};
-      }
+      if(!row||typeof row!=='object')continue;
+      const shown=asArray(row.lastAssets).length?row.lastAssets:[row.lastAsset].filter(Boolean);
+      const remaining=shown.filter(x=>x!==assetName);
+      const recent=asArray(row.recent).filter(x=>(typeof x==='string'?x:x?.name)!==assetName);
+      // Preserve the existing message key to avoid inserting a replacement
+      // in the middle of a completed, already-read reply.
+      displayHistory[key]={...row,lastAssets:remaining,lastAsset:remaining.at(-1)||'',recent};
     }
     void saveDisplayHistory().catch(e=>console.warn('[CharacterMixer] feedback history save failed',e));
   }
@@ -417,30 +481,33 @@
       if(hasAssetTag)return safe;
       // Stable repeated renders of the same assistant reply must not add extra
       // images, advance the cooldown or launch duplicate external searches.
-      const previousName=decision.sameMessage?str(decision.row.lastAsset):'';
-      if(previousName&&!omitted.has(previousName)
-        &&cached.tagAssets.some(x=>x.name===previousName)){
-        return safe+'\n\n{{img::'+previousName+'}}';
-      }
-      if(!decision.canShow)return safe;
-      const recent=new Set(asArray(decision.row.recent).filter(x=>{
-        const turn=typeof x==='string'?decision.turn:Number(x?.turn);
-        return Number.isFinite(turn)&&decision.turn-turn<DISPLAY_REPEAT_TURN_WINDOW;
-      }).map(x=>typeof x==='string'?x:x.name));
-      const selected=pickTaggedAsset(safe,
-        {...cached,tagAssets:cached.tagAssets.filter(x=>!omitted.has(x.name))},recent);
-      if(selected){
-        const assetName=selected.match(/^\{\{img::([^}]+)\}\}$/)?.[1];
-        const row=cached.tagAssets.find(x=>x.name===assetName);
-        if(row&&assetName){
-          recordDisplayedImage(decision,assetName);
-          const pack=packLibrary.find(p=>'pack:'+p.id===row.sourceId);
+      const previous=decision.sameMessage?
+        (asArray(decision.row.lastAssets).length?decision.row.lastAssets:
+          [decision.row.lastAsset].filter(Boolean)):[];
+      const usablePrevious=previous.filter(name=>!omitted.has(name)&&cached.tagAssets.some(x=>x.name===name));
+      if(decision.sameMessage)return usablePrevious.length?
+        safe+'\n\n'+usablePrevious.map(name=>'{{img::'+name+'}}').join('\n\n'):safe;
+      if(!decision.canShow||densitySettings.maxAssetsPerReply===0)return safe;
+      const recent=new Set((densitySettings.recentDuplicateWindow===0?[]:
+        asArray(decision.row.recent).slice(-densitySettings.recentDuplicateWindow))
+        .filter(x=>{
+          const turn=typeof x==='string'?decision.turn:Number(x?.turn);
+          return Number.isFinite(turn)&&decision.turn-turn<densitySettings.reuseAfterReplies;
+        }).map(x=>typeof x==='string'?x:x.name));
+      const selected=pickTaggedAssets(safe,
+        {...cached,tagAssets:cached.tagAssets.filter(x=>!omitted.has(x.name))},
+        recent,densitySettings.maxAssetsPerReply);
+      if(selected.length){
+        recordDisplayedImages(decision,selected);
+        for(const assetName of selected){
+          const row=cached.tagAssets.find(x=>x.name===assetName);
+          const pack=packLibrary.find(p=>'pack:'+p.id===row?.sourceId);
           const external=asArray(pack?.externalAssets).find(x=>x.name===assetName);
           if(pack&&external&&!isRejected(external.postId))
             latestShown={packId:pack.id,postId:str(external.postId),assetName,
               chatIndex:ctx.ti,characterIndex:ctx.ci};
         }
-        return safe+'\n\n'+selected;
+        return safe+'\n\n'+selected.map(name=>'{{img::'+name+'}}').join('\n\n');
       }
       if(autoCollectEnabled&&!destroyed){
         // A normal reply is returned immediately; remote fetch is optional.
@@ -1343,7 +1410,11 @@
         if(!manual)lastDiscovery.set(eventKey,now);
         const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
         // Reuse-first: an existing suitably tagged asset means no network call.
-        if(existing.some(x=>isUsablePackAsset(x,pack,tagSignals))){skipped('기존 라이브러리에 적합한 이미지 있음 · 외부 검색 불필요');continue;}
+        const localMatches=existing.filter(x=>isUsablePackAsset(x,pack,tagSignals)).length;
+        if(densitySettings.skipIfEnoughAssets&&localMatches>=densitySettings.minimumLocalAssets&&
+          (densitySettings.minimumLocalAssets>0||localMatches>0)){
+          skipped('기존 장면 에셋 '+localMatches+'장 확보 · 설정된 충분 기준 만족');continue;
+        }
         const base=pack.characterKind==='original'?'1girl '+keys.join(' '):
           (asArray(pack.identityEvidence?.externalCandidates)[0]?.tag||
             str(pack.name).toLowerCase().replace(/\s+/g,'_'))+' '+keys[0];
@@ -1351,25 +1422,27 @@
         if(!tags.length){skipped('검색 태그 생성 실패');continue;}
         autoCollectBusy=true;
         try{
-          const rows=await searchBooruWithFallback(tags,12,0);
+          const rows=await searchBooruWithFallback(tags,densitySettings.searchCandidatePool,0);
           const candidates=rows.filter(x=>!isRejected(x.id)&&!existing.some(y=>str(y.postId)===str(x.id))
-            &&isRelevantPost(x,tagSignals,pack.characterKind)).slice(0,3);
-          let saved=null,lastFailure='';
+            &&isRelevantPost(x,tagSignals,pack.characterKind)).slice(0,densitySettings.searchCandidatePool);
+          const saved=[],failures=[];
           for(const candidate of candidates){
+            if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
             try{
-              if(await persistAssetToPack(pack,candidate,ctx)){saved=candidate;break;}
-            }catch(e){lastFailure=clip(e?.message||e,210);}
+              if(await persistAssetToPack(pack,candidate,ctx))saved.push(candidate);
+            }catch(e){failures.push(clip(e?.message||e,120));}
           }
-          if(saved){
-            autoCollectStatus=pack.name+' · 에셋 #'+saved.id+' 자동 저장';
+          if(saved.length){
+            autoCollectStatus=pack.name+' · 신규 에셋 '+saved.length+'장 저장 ('+
+              saved.map(x=>'#'+x.id).join(', ')+')';
           }else{
-            autoCollectStatus=lastFailure?'자동 검색은 성공했지만 이미지 다운로드 실패: '+lastFailure:
+            autoCollectStatus=failures.length?'검색은 성공했지만 이미지 다운로드 실패: '+failures[0]:
               pack.name+' · 조건에 맞는 신규 이미지 없음';
           }
           outputLastResult=autoCollectStatus;
         }catch(e){autoCollectStatus='자동 검색 실패: '+clip(e?.message||e,150);}
         finally{autoCollectBusy=false;}
-        return; // One search and at most one image per display event.
+        return; // One bounded search per scene; save at most configured number.
       }
     }
     if(!autoCollectStatus||autoCollectStatus.startsWith('검색 실행 기록'))skipped('검색 대상 캐릭터 팩이 없음');
@@ -1527,6 +1600,10 @@
     return '<label class="check"><input type="checkbox" data-cm-flag="'+esc(id)+'" '+(checked?'checked':'')+'/>'+
       '<span><b>'+esc(title)+'</b><small>'+esc(help)+'</small></span></label>';
   }
+  function densityField(key,label,min,max){
+    return '<label>'+esc(label)+'<input type="number" data-cm-density="'+esc(key)+
+      '" min="'+min+'" max="'+max+'" step="1" value="'+densitySettings[key]+'"/></label>';
+  }
   async function render(){
     if(!opened||destroyed)return;
     try{
@@ -1572,7 +1649,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.7.10</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.8.0</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -1603,6 +1680,28 @@
         '<p class="muted">자동 이미지 표시를 사용할 때 채팅의 [강세라], [핸콕] 같은 화자 이름을 인식하는 용도야. 쉼표로 구분해.</p>'+
         '<input id="cm-speaker-alias" type="text" value="'+esc(sourceId.startsWith('pack:')?(packLibrary.find(p=>'pack:'+p.id===sourceId)?.speakerAliases||[]).join(', '):'')+'" placeholder="예: 핸콕, 보아 핸콕"/>'+
         '<button id="cm-speaker-save" '+(!sourceId.startsWith('pack:')?'disabled':'')+'>화자 이름 저장</button></section>'+
+        '<section><h3>에셋 표시량·자동 수집량</h3>'+
+        '<label>표시 강도 프리셋<select id="cm-density-preset">'+
+        [['low','적게'],['normal','보통'],['high','많이 (기본)'],['aggressive','공격적'],['custom','직접 설정']]
+          .map(x=>'<option value="'+x[0]+'" '+(densitySettings.displayPreset===x[0]?'selected':'')+'>'+x[1]+'</option>').join('')+
+        '</select></label>'+
+        '<div class="grid">'+
+          densityField('maxAssetsPerReply','답변당 최대 표시 장수',0,5)+
+          densityField('minReplyGap','이미지 표시 간격 (AI 답변 수)',0,10)+
+          densityField('recentDuplicateWindow','최근 중복 회피 이미지 수',0,20)+
+          densityField('reuseAfterReplies','같은 이미지 재사용까지 답변 수',0,50)+
+          densityField('autoCollectMaxPerRun','외부 검색 1회당 최대 저장 장수',1,5)+
+          densityField('searchCandidatePool','검색 후보 검토 개수',3,20)+
+          densityField('minimumLocalAssets','기존 에셋 충분 기준 (장)',0,20)+
+        '</div>'+
+        '<label class="check"><input type="checkbox" id="cm-density-skip" '+(densitySettings.skipIfEnoughAssets?'checked':'')+'/>'+
+          '<span>장면에 맞는 기존 에셋이 충분하면 외부 검색 생략<small>기준 0장은 자동 생략 없음</small></span></label>'+
+        '<label>사용자 에셋 지시 (짧은 자연어 설정)<textarea id="cm-density-hint" placeholder="예: 답변당 최대 3장, 수집 최대 2장, 간격 1턴, 에셋을 넉넉히 표시">'+esc(densitySettings.assetUsageHint)+'</textarea></label>'+
+        '<p class="muted">명시된 장수·간격은 설정값에 반영해. 모호한 문장은 전체 프리셋 강도에만 반영하고, 소설 프롬프트에 주입하지 않아.</p>'+
+        '<button id="cm-density-save" type="button" class="primary">에셋 설정 저장 및 즉시 적용</button>'+
+        '<p class="muted">현재 적용: 답변당 최대 '+densitySettings.maxAssetsPerReply+'장 · 간격 '+densitySettings.minReplyGap+
+        '답변 · 검색당 최대 '+densitySettings.autoCollectMaxPerRun+'장 · 후보 '+densitySettings.searchCandidatePool+'건</p>'+
+        '</section>'+
         '<section><h3>채팅 이미지 자동 수집 · 싫어요</h3>'+ 
         '<p class="muted">실제 생성 이벤트 연결: '+(outputListenerAvailable?'정상 등록':'미등록 · 플러그인의 replacer 권한이나 앱 버전 확인')+' / 수신 '+outputEventCount+'회</p>'+ 
         '<p class="muted">최근 자동 처리: '+esc(outputLastResult)+'</p>'+
@@ -1610,9 +1709,9 @@
         '<p class="muted">검색 제공처: '+esc(externalProviderStatus||'아직 확인 안 됨')+'</p>'+
         '<button id="cm-diagnose" type="button">현재 채팅 자동 연결 및 최근 답변 테스트</button>'+
         '<label class="check"><input id="cm-auto-collect" type="checkbox" '+(autoCollectEnabled?'checked':'')+'/>'+
-        '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<br/><small>한번에 최대 1장 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
+        '<span>채팅 장면에 맞는 이미지가 없으면 Gelbooru에서 자동 검색해 팩에 저장<small>설정한 장수 이내 · 일반 등급 · 중복 및 싫어요 이미지 제외</small></span></label>'+
         '<p class="muted">채팅에 명시적으로 연결되고 자동 이미지 표시가 켜진 팩에만 적용돼. 현재 설정: '+(autoCollectEnabled?'자동 수집 ON':'자동 수집 OFF')+'</p>'+
-        '<p class="muted">표시 기준: 최신 AI 답변에 최대 1장 / 최소 3개 답변 간격 / 최근 5회 표시 중복 회피 (15개 답변 경과 시 재사용 가능). 적합한 이미지가 없으면 표시하지 않아. 수집은 표시와 별도이며 기존 에셋 우선.</p>'+
+        '<p class="muted">표시량과 검색·저장량은 위 설정을 따름. 적합한 이미지가 없으면 강제로 삽입하지 않으며 기존 에셋을 우선 사용해.</p>'+
         '<p class="muted">'+esc(autoCollectStatus||'아직 자동 수집 기록 없음')+'</p>'+
         (sourceId.startsWith('pack:')?
           '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4><div class="grid">'+
@@ -1743,6 +1842,37 @@
       el('cm-auth-test').onclick=()=>void testGelbooruAuth();
       el('cm-auth-clear').onclick=()=>void clearGelbooruAuth();
       el('cm-auth-save').onclick=()=>void saveGelbooruAuth().then(()=>render()).catch(e=>{authStatus='저장 실패: '+clip(e?.message||e,100);void render();});
+      el('cm-density-preset').onchange=e=>{
+        const preset=str(e.target.value);
+        densitySettings=normalizeDensity({...densitySettings,displayPreset:preset});
+        void render();
+      };
+      for(const node of document.querySelectorAll('[data-cm-density]')){
+        node.onchange=e=>{
+          const key=str(node.getAttribute('data-cm-density'));
+          densitySettings={...densitySettings,[key]:Number(e.target.value),displayPreset:'custom'};
+          el('cm-density-preset').value='custom';
+        };
+      }
+      el('cm-density-skip').onchange=e=>{
+        densitySettings={...densitySettings,skipIfEnoughAssets:Boolean(e.target.checked)};
+      };
+      el('cm-density-hint').oninput=e=>{
+        densitySettings={...densitySettings,assetUsageHint:str(e.target.value).slice(0,500)};
+      };
+      el('cm-density-save').onclick=()=>void (async()=>{
+        try{
+          const hint=parseAssetHint(densitySettings.assetUsageHint);
+          if(Object.keys(hint).length){
+            densitySettings=normalizeDensity({...densitySettings,...hint,displayPreset:'custom'});
+          }
+          await saveDensitySettings();
+          invalidateDisplayCache();
+          lastDiscovery.clear();
+          message='에셋 표시·수집 설정 저장 완료';
+          await render();
+        }catch(e){message='설정 저장 실패: '+clip(e?.message||e,150);await render();}
+      })();
       el('cm-diagnose').onclick=()=>void testCurrentChatAuto();
       el('cm-auto-collect').onchange=e=>{autoCollectEnabled=Boolean(e.target.checked);
         void saveAutoPrefs().then(()=>render()).catch(error=>{autoCollectStatus='설정 저장 실패 '+str(error?.message||error);void render();});};
@@ -1780,6 +1910,7 @@
     }
     await loadPacks();
     await loadAutoPrefs();
+    await loadDensitySettings();
     await loadGelbooruAuth();
     await loadDisplayHistory();
     try{
@@ -1796,6 +1927,7 @@
   }
   await loadPacks();
   await loadAutoPrefs();
+  await loadDensitySettings();
   await loadGelbooruAuth();
   await loadDisplayHistory();
   async function openFeedback(){reviewFirst=true;await open();}
