@@ -40,6 +40,17 @@ class BridgeTests(unittest.TestCase):
                 with urlopen(addr+"/health",timeout=3) as res:
                     health = json.loads(res.read())
                     self.assertTrue(health["ok"])
+                # Browser Private Network Access preflight for a localhost RisuBard host.
+                options=Request(addr+"/search",method="OPTIONS",headers={
+                    "Origin":"http://localhost:7777",
+                    "Access-Control-Request-Method":"POST",
+                    "Access-Control-Request-Headers":"content-type",
+                    "Access-Control-Request-Private-Network":"true",
+                })
+                with urlopen(options,timeout=3) as pre:
+                    self.assertEqual(pre.status,204)
+                    self.assertEqual(pre.headers.get("Access-Control-Allow-Origin"),"http://localhost:7777")
+                    self.assertEqual(pre.headers.get("Access-Control-Allow-Private-Network"),"true")
                 req=Request(addr+"/search",data=json.dumps({"tags":"smile rating:general","limit":5,"userId":"123","apiKey":"fakekey"}).encode(),
                             headers={"Content-Type":"application/json"},method="POST")
                 with urlopen(req,timeout=3) as res:

@@ -112,6 +112,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        # Chrome/Edge may send a Private Network Access preflight when an
+        # application origin calls 127.0.0.1. This is safe for the already
+        # restricted loopback-only origins above.
+        if origin and allowed_origin(origin):
+            self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.send_header("Vary", "Access-Control-Request-Private-Network")
         self.send_header("Cache-Control", "no-store")
 
     def _send(self, status, content, content_type="application/json"):
