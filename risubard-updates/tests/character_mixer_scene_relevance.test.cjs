@@ -19,8 +19,8 @@ test('fanwork identity must match a verified character tag',()=>{
  assert.equal(f.verifiedPackIdentity({tags:['lillie_(pokemon)','smile']},pack),true);
  assert.equal(f.verifiedPackIdentity({tags:['smile']},{characterKind:'fanwork',originalWork:'pokemon'}),false);
 });
-test('v0.9.7 keeps existing binary and storage logic',()=>{
- assert.match(src,/\/\/\@version 0\.9\.7/);
+test('v0.9.8 keeps existing binary and storage logic',()=>{
+ assert.match(src,/\/\/\@version 0\.9\.8/);
  assert.match(src,/const PACK_STORE='character_mixer_library_v1'/);
  assert.match(src,/async function inlineAssetForDisplay/);
  assert.match(src,/async function persistAssetToPack/);
