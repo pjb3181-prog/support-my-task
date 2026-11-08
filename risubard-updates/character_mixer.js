@@ -415,7 +415,7 @@
       [['kitchen','cooking'],/(?:부엌|주방|요리하|조리대|kitchen|cooking)/i,3],
       [['eating','food'],/(?:밥을 먹|식사를 하|음식을 먹|먹기 시작|식탁|eating|having.lunch)/i,3],
       [['cookie','cookies','chocolate_chip_cookie'],/(?:쿠키|cookie|chocolate.chip.cookie)/i,3],
-      [['video_games','playing_video_games','game_controller'],/(?:격투\\s*게임|비디오\\s*게임|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\\s*game|game\\s*controller)/i,3],
+      [['video_games','playing_video_games','game_controller','arcade'],/(?:격투\\s*게임|비디오\\s*게임|게임\\s*센터|오락실|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\\s*game|game\\s*controller)/i,3],
       [['entrance','door'],/(?:현관|문을 열|문 앞|entrance)/i,2],
       [['indoors'],/(?:실내|방 안|방에서|가게 안|inside|indoors)/i,1],
       [['outdoors'],/(?:실외|거리|길거리|공원|바깥|outside|outdoors)/i,1],
@@ -430,7 +430,7 @@
   // Strong scene subjects outrank generic expressions. A smile is not
   // sufficient evidence for an image in a video-game or cooking scene.
   const sceneSubjects=[
-    {re:/(?:격투\\s*게임|비디오\\s*게임|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\\s*game|playing\\s*games|game\\s*controller)/i,
+    {re:/(?:격투\\s*게임|비디오\\s*게임|게임\\s*센터|오락실|게임(?:을|에서|이|에|하다|했다|하고|하면서)|게임기|컨트롤러|video\\s*game|playing\\s*games|game\\s*controller)/i,
       tags:['video_games','video_game','playing_video_games','game_controller','controller','arcade','arcade_cabinet','fighting_game','gaming']},
     {re:/(?:쿠키|초콜릿|초코릿|과자|cookie|chocolate)/i,
       tags:['cookie','cookies','chocolate','chocolate_chip_cookie','sweets','confectionery']},
@@ -1739,9 +1739,15 @@
           (densitySettings.minimumLocalAssets>0||localMatches>0)){
           skipped('기존 장면 에셋 '+localMatches+'장 확보 · 설정된 충분 기준 만족');continue;
         }
+        const verifiedTags=asArray(pack.identityEvidence?.externalCandidates)
+          .map(x=>str(x?.tag).toLowerCase());
+        const verifiedWork=str(pack.originalWork).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
+        const verifiedTag=verifiedTags.find(tag=>verifiedWork&&tag.includes(verifiedWork));
+        if(pack.characterKind==='fanwork'&&!verifiedTag){
+          skipped('2차창작 캐릭터 태그 미확인 · 원작명과 검색 태그 연결 필요');continue;
+        }
         const base=pack.characterKind==='original'?'1girl '+keys.join(' '):
-          (asArray(pack.identityEvidence?.externalCandidates)[0]?.tag||
-            str(pack.name).toLowerCase().replace(/\s+/g,'_'))+' '+keys[0];
+          verifiedTag+' '+keys[0];
         const tags=base.split(/\s+/).slice(0,6).filter(Boolean);
         if(!tags.length){skipped('검색 태그 생성 실패');continue;}
         autoCollectBusy=true;
