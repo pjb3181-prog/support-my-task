@@ -407,6 +407,7 @@
       [['talking','conversation'],/(?:대화했|대화를 나눴|말했|말을 걸었|talking|conversation)/i,3],
       [['hug','hugging'],/(?:안아주|껴안|포옹|hugging|embrac)/i,3],
       [['kissing','kiss'],/(?:키스했|입맞|kissed|kissing)/i,3],
+      [['sex','sexually_active'],/(?:성관계|섹스|sex|intercourse)/i,3],
       [['walking'],/(?:걷|걸어|산책|walking)/i,2],
       [['school_uniform','uniform'],/(?:교복|school uniform)/i,2],
       [['dress'],/(?:드레스|원피스|dress)/i,2],
@@ -1918,10 +1919,10 @@
     }catch(e){outputLastResult='자동 처리 실패: '+clip(e?.message||e,160);console.warn('[CharacterMixer] output event',e);}
   }
 
-  async function countDistinctMatchingAssets(pack,signals,scene){
+  async function countDistinctMatchingAssets(pack,beat){
     const seen=new Set();
     for(const asset of asArray(pack.externalAssets)){
-      if(!isUsablePackAsset(asset,pack,signals,scene))continue;
+      if(!assetMatchesLocalBeat(asset,pack,beat))continue;
       if(!safePath(asset.path))continue;
       try{
         const data=bytesOf(await risuai.readImage(asset.path));
@@ -1973,7 +1974,7 @@
         // after a successful API response; otherwise users were blocked for 5m.
         const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
         // Reuse-first: an existing suitably tagged asset means no network call.
-        const localMatches=await countDistinctMatchingAssets(pack,beat.plan.signals,beat.context);
+        const localMatches=await countDistinctMatchingAssets(pack,beat);
         if(densitySettings.skipIfEnoughAssets&&localMatches>=densitySettings.minimumLocalAssets&&
           (densitySettings.minimumLocalAssets>0||localMatches>0)){
           skipped('기존 장면 에셋 '+localMatches+'장 확보 · 설정된 충분 기준 만족');continue;
