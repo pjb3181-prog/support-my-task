@@ -29,7 +29,7 @@ test('the scene-specific source tag is preferred during search',()=>{
  const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
  assert.match(source,/const beats=rankIllustrationBeats\(window,pack\)/);
  assert.match(source,/const requests=buildSceneSearchRequests\(beat,pack\)/);
- assert.match(source,/const distinct=await countDistinctMatchingAssets\(pack,beat\)/);
+ assert.match(source,/distinct=await countDistinctMatchingAssets\(pack,beat\)/);
  assert.match(source,/assetMatchesLocalBeat\(asset,pack,beat\)/);
  assert.doesNotMatch(source,/const localMatches=existing.filter\(x=>isUsablePackAsset\(x,pack,tagSignals\)\)\.length/);
 });
