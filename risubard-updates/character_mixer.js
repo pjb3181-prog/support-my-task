@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.10.3
+//@version 0.10.4
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -67,6 +67,9 @@
   }
   let displayHistory={};
   let autoCollectEnabled=true,autoCollectStatus='',autoCollectBusy=false;
+  const processedOutputTurns=new Map();
+  const MAX_AUTO_SEARCH_CALLS=2;
+  const MAX_AUTO_ASSET_SCANS=8;
   let externalProviderStatus='',authFailureCount=0,authStatus='Gelbooru 인증 정보 미등록';
   const LOCAL_BRIDGE='http://127.0.0.1:18765';
   let localBridgeActive=false,localBridgeStatus='로컬 Python 브리지 연결 확인 전';
@@ -800,7 +803,9 @@
     displayHookCalls++;
     const hasAssetTag=/\{\{\s*(?:img|image|asset|emotion|raw|path|video|audio|bgm|bg|video-img)\s*(?:::|=)/i.test(content)||
       /<img\s*=/i.test(content);
-    if(!hasAssetTag&&!/\[[^\]\n]{1,80}\]/.test(content)&&!autoCollectEnabled)return content;
+    // Display hooks run for historical messages and partial re-renders.
+    // Only registered image tokens require compatibility work.
+    if(!hasAssetTag&&!/\[[^\]\n]{1,80}\]/.test(content))return content;
     try{
       const ctx=await context();
       const now=Date.now();
@@ -1995,6 +2000,11 @@
       if(!msg||!['char','assistant'].includes(str(msg.role)))return;
       const raw=str(msg.data);
       if(raw.length<40)return;
+      const key=str(ctx.chat.id)+'|'+str(payload.messageIndex);
+      const signature=raw.length+':'+contentFingerprint(raw);
+      if(processedOutputTurns.get(key)===signature)return;
+      processedOutputTurns.set(key,signature);
+      if(processedOutputTurns.size>120)processedOutputTurns.delete(processedOutputTurns.keys().next().value);
       const active=installedInChat(ctx).length?ctx:await bootstrapCurrentChat(ctx);
       const cleanScene=sanitizeSceneText(raw);
       outputLastResult=cleanScene?'장면 분석: '+clip(cleanScene.slice(0,80).replace(/\s+/g,' '),80):'내부 Thoughts 구간 제외 · 분석 가능한 장면 없음';
@@ -2009,9 +2019,12 @@
 
   async function countDistinctMatchingAssets(pack,beat){
     const seen=new Set();
+    let scanned=0;
+    // Use existing fingerprints rather than re-reading every large binary.
     for(const asset of asArray(pack.externalAssets)){
       if(!assetMatchesLocalBeat(asset,pack,beat))continue;
-      if(!safePath(asset.path))continue;
+      if(asset.fingerprint){seen.add(asset.fingerprint);continue;}
+      if(!safePath(asset.path)||scanned++>=MAX_AUTO_ASSET_SCANS)continue;
       try{
         const data=bytesOf(await risuai.readImage(asset.path));
         if(data?.length)seen.add(imageFingerprint(data));
@@ -2055,11 +2068,12 @@
         const work=str(pack.originalWork).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
         const verifiedTag=verifiedSearchTag(pack);
         const saved=[],failures=[],attempts=[];
-        let matchedBeat=null,cooldownBlocked=0,localMatches=0;
+        let matchedBeat=null,cooldownBlocked=0,localMatches=0,searchCalls=0;
+        const checkedBeats=new Map();
         autoCollectBusy=true;
         try{
           for(const beat of beats){
-            if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
+            if(saved.length>=1||searchCalls>=MAX_AUTO_SEARCH_CALLS)break;
             if(pack.characterKind==='fanwork'&&beat.packPresent&&!verifiedTag){
               attempts.push('캐릭터 정체성 태그 미확인');continue;
             }
@@ -2067,7 +2081,7 @@
             if(!requests.length){attempts.push('장면 핵심 태그 부족');continue;}
             const searchKeys=new Set();
             for(const terms of requests){
-              if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
+              if(saved.length>=1||searchCalls>=MAX_AUTO_SEARCH_CALLS)break;
               const tags=terms.filter(Boolean);
               const queryKey=tags.join(' ');
               if(!queryKey||searchKeys.has(queryKey))continue;
@@ -2076,13 +2090,18 @@
               if(!manual&&now-(lastDiscovery.get(eventKey)||0)<5*60*1000){
                 cooldownBlocked++;continue;
               }
-              const distinct=await countDistinctMatchingAssets(pack,beat);
+              let distinct=checkedBeats.get(beat.index);
+              if(distinct===undefined){
+                distinct=await countDistinctMatchingAssets(pack,beat);
+                checkedBeats.set(beat.index,distinct);
+              }
               localMatches=Math.max(localMatches,distinct);
               if(densitySettings.skipIfEnoughAssets&&distinct>=densitySettings.minimumLocalAssets&&
                 (densitySettings.minimumLocalAssets>0||distinct>0)){
                 attempts.push(queryKey+': 기존 적합 '+distinct+'장');continue;
               }
-              const rows=await searchBooruWithFallback(tags,densitySettings.searchCandidatePool,0,beat.context);
+              searchCalls++;
+              const rows=await searchBooruWithFallback(tags,Math.min(densitySettings.searchCandidatePool,8),0,beat.context);
               const available=rows.filter(x=>!isRejected(x.id)&&
                 !asArray(packLibrary.find(p=>p.id===pack.id)?.externalAssets)
                   .some(y=>str(y.postId)===str(x.id)));
@@ -2093,7 +2112,7 @@
                 ' · 핵심 '+strongSceneTags(beat.text).join(',')+': 검색 '+rows.length+' / 신규 '+available.length+
                 ' / 정체성 '+identity.length+' / 장면 '+suitable.length);
               for(const candidate of suitable){
-                if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
+                if(saved.length>=1)break;
                 try{
                   if(await persistAssetToPack(pack,candidate,ctx)){
                     saved.push(candidate);matchedBeat=beat;
@@ -2109,12 +2128,12 @@
                 .catch(e=>{console.warn('[CharacterMixer] contextual insertion',e);return false;});
             autoCollectStatus=pack.name+' · 고유 이미지 '+saved.length+'장 저장 ('+
               saved.map(x=>'#'+x.id).join(', ')+') · 채팅 삽입 '+(inserted?'완료':'미완료')+
-              ' · 시도 '+attempts.length+'회';
+              ' · 검색 요청 '+searchCalls+'회';
           }else{
             autoCollectStatus=pack.name+' · 신규 이미지 없음 · '+attempts.slice(-6).join(' | ')+
               (cooldownBlocked?' / 최근 검색 제한 '+cooldownBlocked+'회':'')+
               (failures.length?' / 다운로드 실패 '+failures[0]:'')+
-              ' (기존 적합 '+localMatches+'장)';
+              ' (기존 적합 '+localMatches+'장 · 검색 요청 '+searchCalls+'회)';
           }
           outputLastResult=autoCollectStatus;
         }catch(e){
@@ -2653,7 +2672,8 @@
       id:'character-mixer-dislike-chat'},openFeedback);
   }catch(error){console.warn('[CharacterMixer] chat feedback button unavailable',error);}
   if(typeof risuai.addRisuChatListener==='function'){
-    outputListener=async arg=>onCommittedChatOutput(arg);
+    // Do not block chat generation while searching for optional images.
+    outputListener=arg=>{void onCommittedChatOutput(arg);};
     try{
       const allowed=typeof risuai.requestPluginPermission==='function'
         ?await risuai.requestPluginPermission('replacer'):true;
