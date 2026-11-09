@@ -427,13 +427,16 @@
       [['sad','downcast_eyes'],/(?:슬픔|우울|풀이 죽|sad|depress)/i,3],
       [['sitting','seated'],/(?:앉았|앉아|의자|sitting|seated)/i,2],
       [['standing'],/(?:일어섰|서 있|일어서|standing)/i,2],
-      [['lying','on_bed'],/(?:누웠|누워|침대|lying|on.bed)/i,2],
+      [['lying','on_bed','bed'],/(?:누웠|누워|침대|lying|on.bed)/i,3],
       [['sleeping','closed_eyes'],/(?:잠들|잠자|잠을 자|눈을 감았|눈을 감았다|sleeping|asleep)/i,3],
-      [['cellphone','phone'],/(?:핸드폰|휴대폰|스마트폰|폰을|휴대전화|cellphone|smartphone|mobile phone)/i,3],
-      [['texting','cellphone'],/(?:문자를 보냈|답장을 썼|메시지를 보냈|texting)/i,3],
+      [['cellphone','smartphone','phone'],/(?:핸드폰|휴대폰|스마트폰|폰을|휴대전화|cellphone|smartphone|mobile phone)/i,3],
+      [['texting','cellphone'],/(?:문자를 보냈|답장을 썼|메시지를 보냈|문자를 읽|메시지를 읽|답장을 읽|texting)/i,3],
       [['talking','conversation'],/(?:대화했|대화를 나눴|말했|말을 걸었|talking|conversation)/i,3],
       [['hug','hugging'],/(?:안아주|껴안|포옹|hugging|embrac)/i,3],
       [['kissing','kiss'],/(?:키스했|입맞|kissed|kissing)/i,3],
+      [['desk','table'],/(?:책상|테이블|desk|table)/i,3],
+      [['train','train_interior','subway'],/(?:지하철|전철|열차|기차|객차|subway|train)/i,3],
+      [['bathroom','indoors'],/(?:욕실|화장실|bathroom)/i,3],
       [['sex','sexually_active'],/(?:성관계|섹스|sex|intercourse)/i,3],
       [['walking'],/(?:걷|걸어|산책|walking)/i,2],
       [['school_uniform','uniform'],/(?:교복|school uniform)/i,2],
@@ -2050,8 +2053,7 @@
         if(!beats.length){skipped('태그로 설명할 수 있는 행동 구간 없음');continue;}
         const existing=asArray(pack.externalAssets).filter(x=>!isRejected(x.postId));
         const work=str(pack.originalWork).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
-        const verifiedTag=asArray(pack.identityEvidence?.externalCandidates)
-          .map(x=>str(x?.tag).toLowerCase()).find(tag=>work&&tag.includes(work));
+        const verifiedTag=verifiedSearchTag(pack);
         const saved=[],failures=[],attempts=[];
         let matchedBeat=null,cooldownBlocked=0,localMatches=0;
         autoCollectBusy=true;
@@ -2061,15 +2063,8 @@
             if(pack.characterKind==='fanwork'&&beat.packPresent&&!verifiedTag){
               attempts.push('캐릭터 정체성 태그 미확인');continue;
             }
-            const core=beat.plan.searchTags.filter(Boolean);
-            if(!core.length)continue;
-            const actor=beat.packPresent?
-              (pack.characterKind==='fanwork'?verifiedTag:(sceneActorTags(beat)[0]==='no_humans'?'1girl':sceneActorTags(beat)[0])):
-              sceneActorTags(beat)[0];
-            // Try the named actor and local action, then a broader single
-            // action search. The latter still passes all identity/context
-            // checks before downloading; it is never blindly inserted.
-            const requests=[[actor,core[0]], [core[0]]];
+            const requests=buildSceneSearchRequests(beat,pack);
+            if(!requests.length){attempts.push('장면 핵심 태그 부족');continue;}
             const searchKeys=new Set();
             for(const terms of requests){
               if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
@@ -2094,7 +2089,8 @@
               const identity=available.filter(x=>
                 pack.characterKind==='fanwork'&&beat.packPresent?verifiedPackIdentity(x,pack):true);
               const suitable=identity.filter(x=>assetMatchesLocalBeat(x,pack,beat));
-              attempts.push(queryKey+': 검색 '+rows.length+' / 신규 '+available.length+
+              attempts.push('[장면 '+beat.index+'] '+queryKey+' · 주체 '+sceneActorTags(beat)[0]+
+                ' · 핵심 '+strongSceneTags(beat.text).join(',')+': 검색 '+rows.length+' / 신규 '+available.length+
                 ' / 정체성 '+identity.length+' / 장면 '+suitable.length);
               for(const candidate of suitable){
                 if(saved.length>=densitySettings.autoCollectMaxPerRun)break;
