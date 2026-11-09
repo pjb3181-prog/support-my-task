@@ -1261,7 +1261,9 @@
   }
   // Preview RisuBard's verified saved bytes rather than linking to a
   // Gelbooru thumbnail that Firefox may block because of hotlink protection.
+  const imagePreviewCache=new Map();
   async function localImagePreview(path,ext){
+    if(imagePreviewCache.has(path))return imagePreviewCache.get(path).data;
     try{
       if(typeof btoa!=='function')return '';
       const bytes=bytesOf(await risuai.readImage(path));
@@ -1274,7 +1276,11 @@
       for(let i=0;i<bytes.length;i+=step){
         data+=String.fromCharCode(...bytes.subarray(i,i+step));
       }
-      return 'data:'+mime+';base64,'+btoa(data);
+      const result={data:'data:'+mime+';base64,'+btoa(data),fingerprint:imageFingerprint(bytes)};
+      imagePreviewCache.set(path,result);
+      // Bound memory: base64 images can consume several MB each.
+      if(imagePreviewCache.size>4)imagePreviewCache.delete(imagePreviewCache.keys().next().value);
+      return result.data;
     }catch(e){
       console.warn('[CharacterMixer] local preview failed:',clip(e?.message||e,95));
       return '';
@@ -1307,11 +1313,10 @@
     // the cached native {{img::...}} lookup that silently removes new images.
     const data=await localImagePreview(path);
     if(!data)return null;
-    const bytes=bytesOf(await risuai.readImage(path));
-    if(!bytes)return null;
+    const fingerprint=imagePreviewCache.get(path)?.fingerprint||name;
     return {name,html:'<img src="'+data+'" alt="Character Mixer '+str(name).replace(/[^a-zA-Z0-9_-]/g,'')+
       '" loading="lazy" style="max-width:100%;max-height:65vh;object-fit:contain;display:block;margin:0.6em auto"/>',
-      fingerprint:imageFingerprint(bytes),path};
+      fingerprint,path};
   }
   async function renderSelectedImages(names){
     const results=[],seen=new Set();
@@ -2319,7 +2324,7 @@
         '<button type="button" data-cm-remove="'+esc(m.id)+'">이 채팅에서 해제</button></div>').join('')
         :'<p class="muted">현재 채팅에 편입된 캐릭터가 없어.</p>';
       const previewItems=sourceId.startsWith('pack:')?
-        asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.externalAssets).slice(-12):[];
+        asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.externalAssets).slice(-4):[];
       const previews=new Map(await Promise.all(previewItems.map(async item=>
         [str(item.postId),await localImagePreview(item.path,item.ext)])));
       const previewReady=[...previews.values()].filter(Boolean).length;
@@ -2355,7 +2360,7 @@
         '.installed{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:9px 0}'+
         '.status{padding:10px;background:#132134;border-radius:8px}.primary{background:#385d96}'+
         '@media(max-width:700px){body{padding:9px}.grid{grid-template-columns:1fr}}'+
-        '</style><main><div class="top"><h2>🧩 Character Mixer v0.9.8</h2><button id="cm-close">닫기</button></div>'+
+        '</style><main><div class="top"><h2>🧩 Character Mixer v0.10.4</h2><button id="cm-close">닫기</button></div>'+
         '<p class="muted">현재 채팅의 내용을 지우지 않고 다른 봇의 설정·로어북·에셋 참조를 선택적으로 추가해. B 봇은 RisuBard에 먼저 가져와 둬야 해.</p>'+recentFeedback+
         '<section><h3>독립 캐릭터 라이브러리 · '+packLibrary.length+'개</h3>'+
         '<p class="muted">추출은 현재 채팅과 무관해. 원본 봇과 분리된 캐릭터 팩을 보관하고, 필요할 때만 다른 채팅에서 불러올 수 있어.</p>'+
@@ -2429,7 +2434,7 @@
         (sourceId.startsWith('pack:')?
           '<h4>저장된 외부 이미지 · 마음에 안 들면 싫어요</h4>'+
           '<p class="muted">로컬 이미지 미리보기 '+previewReady+'/'+previewItems.length+
-          '장 준비됨 (최근 최대 12장) · 실제 RisuBard 저장 파일을 사용'+
+          '장 준비됨 (성능 보호를 위해 최근 4장만 미리보기) · 실제 RisuBard 저장 파일을 사용'+
           (repeatedLocalImages?' · 중복 이미지 '+repeatedLocalImages+'장 감지 (기존 저장분 보존)':'')+'</p><div class="grid">'+
           asArray(packLibrary.find(p=>'pack:'+p.id===sourceId)?.externalAssets).slice(-60).reverse().map(item=>
             '<div class="item"><span>'+(previews.get(str(item.postId))?'<img loading="lazy" src="'+
@@ -2700,6 +2705,8 @@
   }
   await risuai.onUnload(async()=>{
     destroyed=true;opened=false;
+    imagePreviewCache.clear();
+    processedOutputTurns.clear();
     if(outputListener&&typeof risuai.removeRisuChatListener==='function'){
       try{await risuai.removeRisuChatListener('output',outputListener);}
       catch(e){console.warn('[CharacterMixer] output listener cleanup failed',e);}
