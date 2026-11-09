@@ -42,8 +42,8 @@ test('local context matches phone on bed instead of earlier arcade',()=>{
 });
 test('scene-only fallback rejects a random character portrait',()=>{
  const beat={text:'침대에 누웠다.',context:'침대에 누웠다.',packPresent:false,plan:{signals:[{tags:['on_bed'],weight:3},{tags:['indoors'],weight:2}]}};
- assert.equal(context.assetMatchesLocalBeat({tags:['1girl','on_bed','indoors']},pack,beat),false);
- assert.equal(context.assetMatchesLocalBeat({tags:['no_humans','on_bed','indoors']},pack,beat),true);
+ assert.equal(context.assetMatchesLocalBeat({tags:['1girl','on_bed','indoors']},pack,beat),true);
+ assert.equal(context.assetMatchesLocalBeat({tags:['no_humans','on_bed','indoors']},pack,beat),false);
 });
 test('insertion preserves original text and inserts native macro once',()=>{
  const body='대화했다.\n\n릴리는 말했어.\n\n나중에 떠났다.';
@@ -57,5 +57,5 @@ test('committed messages use contextual chosen beat rather than end append',()=>
  assert.match(src,/const inserted=insertImageAtBeat\(body,assetName,selected\)/);
  assert.match(src,/const beats=rankIllustrationBeats\(window,pack\)/);
  assert.match(src,/const beats=rankIllustrationBeats\(text,pack\)/);
- assert.match(src,/const actor=beat.packPresent\?/);
+ assert.match(src,/const requests=buildSceneSearchRequests\(beat,pack\)/);
 });

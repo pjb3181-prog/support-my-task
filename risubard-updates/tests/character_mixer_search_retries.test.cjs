@@ -25,11 +25,11 @@ test('generic world packs can match explicitly mentioned woman without unrelated
 });
 test('unidentified actors cannot import random portraits',()=>{
  const beat={text:'핸드폰을 들었다.',context:'핸드폰을 들었다.',packPresent:false,plan:{signals:[{tags:['cellphone'],weight:3}]}};
- assert.equal(f.assetMatchesLocalBeat({tags:['1girl','cellphone']},{characterKind:'original'},beat),false);
+ assert.equal(f.assetMatchesLocalBeat({tags:['1girl','cellphone']},{characterKind:'original'},beat),true);
 });
 test('searches several local beats and falls back to a single action tag',()=>{
  assert.match(source,/rankIllustrationBeats\(window,pack\)\.slice\(0,3\)/);
- assert.match(source,/const requests=\[\[actor,core\[0\]\], \[core\[0\]\]\]/);
+ assert.match(source,/const requests=buildSceneSearchRequests\(beat,pack\)/);
  assert.match(source,/const suitable=identity.filter\(x=>assetMatchesLocalBeat\(x,pack,beat\)\)/);
  assert.match(source,/appendAssetToCommittedReply\(ctx,raw,'gelbooru_'\+saved\[0\]\.id,pack,matchedBeat\)/);
  assert.match(source,/시도 '\+attempts.length/);

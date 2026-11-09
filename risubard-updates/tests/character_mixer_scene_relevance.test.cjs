@@ -19,8 +19,8 @@ test('fanwork identity must match a verified character tag',()=>{
  assert.equal(f.verifiedPackIdentity({tags:['lillie_(pokemon)','smile']},pack),true);
  assert.equal(f.verifiedPackIdentity({tags:['smile']},{characterKind:'fanwork',originalWork:'pokemon'}),false);
 });
-test('v0.10.2 keeps existing binary and storage logic',()=>{
- assert.match(src,/\/\/\@version 0\.10\.2/);
+test('v0.10.3 keeps existing binary and storage logic',()=>{
+ assert.match(src,/\/\/\@version 0\.10\.3/);
  assert.match(src,/const PACK_STORE='character_mixer_library_v1'/);
  assert.match(src,/async function inlineAssetForDisplay/);
  assert.match(src,/async function persistAssetToPack/);
@@ -28,7 +28,7 @@ test('v0.10.2 keeps existing binary and storage logic',()=>{
 test('the scene-specific source tag is preferred during search',()=>{
  const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
  assert.match(source,/const beats=rankIllustrationBeats\(window,pack\)/);
- assert.match(source,/const core=beat.plan.searchTags.filter\(Boolean\)/);
+ assert.match(source,/const requests=buildSceneSearchRequests\(beat,pack\)/);
  assert.match(source,/const distinct=await countDistinctMatchingAssets\(pack,beat\)/);
  assert.match(source,/assetMatchesLocalBeat\(asset,pack,beat\)/);
  assert.doesNotMatch(source,/const localMatches=existing.filter\(x=>isUsablePackAsset\(x,pack,tagSignals\)\)\.length/);
@@ -63,7 +63,7 @@ test('arcade is recognized as a specific scene rather than generic smiling',()=>
 });
 test('fanwork search uses a corroborated series tag',()=>{
  const source=fs.readFileSync(path.join(__dirname,'..','character_mixer.js'),'utf8');
- assert.match(source,/const verifiedTag=asArray\(pack.identityEvidence\?\.externalCandidates\)/);
+ assert.match(source,/const verifiedTag=verifiedSearchTag\(pack\)/);
  assert.match(source,/캐릭터 정체성 태그 미확인/);
  assert.doesNotMatch(source,/externalCandidates\)\[0\]\?\.tag/);
 });
