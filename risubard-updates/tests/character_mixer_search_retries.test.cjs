@@ -32,5 +32,5 @@ test('searches several local beats and falls back to a single action tag',()=>{
  assert.match(source,/const requests=buildSceneSearchRequests\(beat,pack\)/);
  assert.match(source,/const suitable=identity.filter\(x=>assetMatchesLocalBeat\(x,pack,beat\)\)/);
  assert.match(source,/appendAssetToCommittedReply\(ctx,raw,'gelbooru_'\+saved\[0\]\.id,pack,matchedBeat\)/);
- assert.match(source,/시도 '\+attempts.length/);
+ assert.match(source,/검색 요청 '\+searchCalls/);
 });
