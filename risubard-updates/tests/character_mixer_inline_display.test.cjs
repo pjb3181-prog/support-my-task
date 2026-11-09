@@ -10,8 +10,10 @@ const byPath={'assets/first':bytesA,'assets/duplicate':bytesA,'assets/other':byt
 const packLibrary=[{externalAssets:[{name:'gelbooru_1',postId:'1',path:'assets/first'},
  {name:'gelbooru_2',postId:'2',path:'assets/duplicate'},
  {name:'gelbooru_3',postId:'3',path:'assets/other'}]}];
-const context={console,packLibrary,risuai:{readImage:async p=>byPath[p]},btoa:()=> 'MOCK',
-  localImagePreview:async p=>p.startsWith('assets/')?'data:image/png;base64,MOCK':'',
+const imagePreviewCache=new Map();
+const helpersFingerprint=bytes=>[...bytes].join(',');
+const context={console,packLibrary,imagePreviewCache,risuai:{readImage:async p=>byPath[p]},btoa:()=> 'MOCK',
+  localImagePreview:async p=>{if(p.startsWith('assets/')){imagePreviewCache.set(p,{data:'data:image/png;base64,MOCK',fingerprint:helpersFingerprint(byPath[p])});return 'data:image/png;base64,MOCK';}return '';},
   bytesOf:x=>x,str:x=>String(x??''),asArray:x=>Array.isArray(x)?x:[],
   safePath:x=>typeof x==='string'&&x.startsWith('assets/'),
   isRejected:()=>false,clip:(x,n)=>String(x).slice(0,n)};
