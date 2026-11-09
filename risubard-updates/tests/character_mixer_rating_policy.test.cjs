@@ -38,7 +38,7 @@ test('bridge, external query and both providers apply same rating policy',()=>{
  assert.match(src,/parseBooruPosts\(await readBooruJson\(response,'Gelbooru'\),ratingMode\)/);
  assert.match(src,/parseDanbooruPosts\(await readBooruJson\(response,'Danbooru'\),ratingMode\)/);
  assert.match(src,/searchViaLocalBridge\(userTags,limit,page,ratingMode\)/);
- assert.match(src,/searchBooruWithFallback\(tags,densitySettings.searchCandidatePool,0,beat.context\)/);
+ assert.match(src,/searchBooruWithFallback\(tags,Math.min\(densitySettings.searchCandidatePool,8\),0,beat.context\)/);
 });
 test('the UI includes explicit opt-in and persists the setting',()=>{
  assert.match(src,/id="cm-rating-policy"/);
