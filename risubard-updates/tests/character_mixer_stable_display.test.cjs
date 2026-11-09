@@ -32,7 +32,7 @@ test('local saved bytes are used for pack preview, never remote hotlinks',()=>{
  const mock={readImage:async path=>path==='assets/test.png'?png:null};
  const fn=vm.runInNewContext('const str=x=>String(x??"");const clip=(x,n)=>str(x).slice(0,n);'+
   'const bytesOf=x=>x;const imageMagic=x=>x?.[0]===137&&x?.[1]===80?"png":"";'+
-  'const imagePreviewCache=new Map();const imageFingerprint=()=>"mock";'+
+  'const imagePreviewCache=new Map();'+
   src.slice(a,b)+'({localImagePreview})',{risuai:mock,btoa:x=>'BASE64_MOCK',console});
  return fn.localImagePreview('assets/test.png','png').then(url=>{
   assert.match(url,/^data:image\/png;base64,/);
