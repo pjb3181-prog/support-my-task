@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.10.2
+//@version 0.10.3
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -535,8 +535,8 @@
     const surrounding=sceneTagSignals(beat.context).filter(signal=>
       !core.some(x=>x.tags[0]===signal.tags[0])).map(x=>({...x,weight:Math.max(1,x.weight-1)}));
     const signals=[...core,...surrounding];
-    const tags=[...new Set(signals.filter(x=>x.weight>=2).flatMap(x=>x.tags.slice(0,1)))];
-    return {signals,searchTags:tags.slice(0,3)};
+    const tags=strongSceneTags(beat.text);
+    return {signals,searchTags:tags};
   }
   function rankIllustrationBeats(text,pack){
     const beats=sceneBeats(text);
@@ -548,11 +548,11 @@
       const exact=local.signals.filter(x=>x.weight>=2&&sceneTagSignals(beat.text)
         .some(y=>y.tags[0]===x.tags[0]));
       const hasAction=/(?:말했|대답|물었|웃었|손을|걸어|앉았|누웠|잠들|눈을 감|핸드폰|휴대폰|메시지|문자|안았|키스|입맞|sex|kiss|hug|talk|sleep|phone|bed|sitting|walking)/i.test(beat.text);
-      if(!hasAction||!exact.length)continue;
+      if(!hasAction||!strongSceneTags(beat.text).length)continue;
       // Prefer a concrete local action and verified on-stage character.
       // Do not select a message/recollection as a portrait of its sender.
       const memory=/(?:떠올|회상|기억|그랬을까|했을까|메시지|문자|답장|알림)/i.test(beat.text);
-      const score=exact.reduce((n,x)=>n+x.weight,0)+
+      const score=strongSceneSignals(beat.text).reduce((n,x)=>n+x.weight,0)+
         (subject.length?4:0)+(active?7:0)+(memory&&!active?-3:0);
       options.push({...beat,packPresent:active,plan:local,score});
     }
@@ -561,39 +561,67 @@
   function chooseIllustrationBeat(text,pack){
     return rankIllustrationBeats(text,pack)[0]||null;
   }
-  // Treat scene-only world packs differently from an identified individual.
-  // Gender is included only if expressly present in the selected passage.
+
+  const WEAK_SCENE_TAGS=new Set(['smile','happy','laughing','grin','crying','tears','sad','angry','frown','blush','embarrassed','shy','surprised','sitting','seated','standing','indoors','outdoors','night','day']);
+  const HUMAN_ACTION_RE=/(?:누웠|누워|눕|잠들|잠을\s*자|눈을\s*감|앉았|앉아|일어섰|걸었|걸어|달렸|핸드폰|휴대폰|스마트폰|문자|메시지|답장|전화|충전기|바라봤|쳐다봤|껴안|안았|키스|입맞|성관계|섹스|울었|눈물|웃었|미소|말했|대답|속삭|만졌|lying|sleeping|sleep|sitting|standing|walking|cellphone|smartphone|texting|kiss|hug|nude|sex|talking|crying|smile)/i;
+  function strongSceneSignals(text){
+    return sceneTagSignals(str(text)).filter(x=>x.weight>=2&&x.tags.some(t=>!WEAK_SCENE_TAGS.has(t)));
+  }
+  function strongSceneTags(text){
+    const seen=new Set(),tags=[];
+    for(const signal of strongSceneSignals(text)){
+      const tag=signal.tags.find(t=>!WEAK_SCENE_TAGS.has(t));
+      if(tag&&!seen.has(tag)){seen.add(tag);tags.push(tag);}
+    }
+    return tags.slice(0,4);
+  }
   function sceneActorTags(beat){
-    const text=str(beat?.context||beat?.text);
-    if(/(?:여자|여성|그녀|소녀|여학생|woman|female|girl)/i.test(text)&&
-       !/(?:남자|남성|그|소년|male|man|boy)/i.test(text))return ['1girl','solo'];
-    if(/(?:남자|남성|그는|소년|남학생|male|man|boy)/i.test(text)&&
-       !/(?:여자|여성|그녀|소녀|woman|female|girl)/i.test(text))return ['1boy','solo'];
+    const focus=str(beat?.text||''),local=focus+' '+str(beat?.context||'');
+    const female=/(?:그녀|여자|여성|소녀|여학생|woman|female|girl)/i.test(focus);
+    const male=/(?:그는|그가|그의|남자|남성|소년|남학생|한성|man|male|boy)/i.test(focus);
+    if(female&&!male)return ['1girl','solo'];
+    if(male&&!female)return ['1boy','solo'];
+    if(HUMAN_ACTION_RE.test(local))return ['solo'];
     return ['no_humans'];
   }
+  function verifiedSearchTag(pack){
+    const work=str(pack?.originalWork).toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
+    return asArray(pack?.identityEvidence?.externalCandidates)
+      .map(x=>str(x?.tag).toLowerCase()).find(tag=>work&&tag.includes(work))||'';
+  }
+  function buildSceneSearchRequests(beat,pack){
+    const strong=strongSceneTags(beat?.text||'');
+    if(!strong.length)return [];
+    const actor=sceneActorTags(beat)[0];
+    const prefix=pack?.characterKind==='fanwork'&&beat?.packPresent
+      ? verifiedSearchTag(pack):actor==='1girl'||actor==='1boy'?actor:'';
+    if(pack?.characterKind==='fanwork'&&beat?.packPresent&&!prefix)return [];
+    const tries=[];
+    if(prefix)tries.push([prefix,...strong.slice(0,2)],[prefix,strong[0]]);
+    if(actor==='no_humans')tries.push(['no_humans',strong[0]]);
+    if(actor==='solo')tries.push(['solo',strong[0]]);
+    tries.push(strong.slice(0,2),[strong[0]]);
+    const seen=new Set();
+    return tries.filter(parts=>{
+      const key=parts.filter(Boolean).join(' ');
+      if(!key||seen.has(key))return false;
+      seen.add(key);return true;
+    }).slice(0,4);
+  }
   function assetMatchesLocalBeat(asset,pack,beat){
-    if(!beat||!safeAutoIllustrationPost(asset,pack))return false;
-    // Legacy saved assets were all General; newly stored adult assets carry
-    // their actual rating so lowering the setting also stops their reuse.
-    if(!allowsRating(asset?.rating||'general',sceneRatingMode(beat.context||beat.text)))return false;
-    const tags=new Set(asArray(asset?.tags).map(x=>str(x).toLowerCase()));
-    if(pack?.characterKind==='fanwork'){
-      if(!beat.packPresent||!verifiedPackIdentity(asset,pack))return false;
-    }else if(!beat.packPresent){
-      const actors=sceneActorTags(beat);
-      if(actors[0]==='no_humans'){
-        if(!['no_humans','scenery','still_life'].some(t=>tags.has(t)))return false;
-      }else if(!tags.has(actors[0])||['2girls','3girls','2boys','3boys','multiple_girls','multiple_boys'].some(t=>tags.has(t))){
-        return false;
-      }
-    }
-    // A concrete primary action/object is enough for a first pass. Do not
-    // require two unrelated tags from Danbooru/Gelbooru inventories: many
-    // posts label 'cellphone' without also labelling 'bedroom'.
-    const core=sceneTagSignals(beat.text).filter(x=>x.weight>=2);
-    const matches=core.filter(x=>x.tags.some(t=>tags.has(t)));
-    const distinct=matches.filter(x=>!['smile','happy','laughing','grin','night','day','indoors','outdoors','blush'].includes(x.tags[0]));
-    return distinct.length>=1;
+    if(!asset||!beat||!safeAutoIllustrationPost(asset,pack))return false;
+    if(!allowsRating(asset.rating||'general',sceneRatingMode(beat.context||beat.text)))return false;
+    const tags=new Set(asArray(asset.tags).map(x=>str(x).toLowerCase()));
+    const actor=sceneActorTags(beat)[0];
+    if(!strongSceneSignals(beat.text).some(x=>x.tags.some(t=>tags.has(t))))return false;
+    if(['2girls','3girls','2boys','3boys','multiple_girls','multiple_boys'].some(t=>tags.has(t)))return false;
+    if(pack?.characterKind==='fanwork'&&beat.packPresent&&!verifiedPackIdentity(asset,pack))return false;
+    if(actor==='no_humans')return ['no_humans','scenery','still_life','object_focus'].some(t=>tags.has(t));
+    if(tags.has('no_humans')||!['1girl','1boy','solo'].some(t=>tags.has(t)))return false;
+    if(actor==='1girl'&&(!tags.has('1girl')||tags.has('1boy')))return false;
+    if(actor==='1boy'&&(!tags.has('1boy')||tags.has('1girl')))return false;
+    if((tags.has('animal_focus')||tags.has('object_focus'))&&!tags.has('1girl')&&!tags.has('1boy'))return false;
+    return true;
   }
   // Place the macro beside the selected passage. Use the ORIGINAL message
   // block positions; no story words are rewritten.
