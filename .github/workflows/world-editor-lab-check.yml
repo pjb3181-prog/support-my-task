@@ -4,11 +4,13 @@ on:
     paths:
       - 'risubard-updates/world_editor_lab.js'
       - 'risubard-updates/tests/world_editor_lab.test.cjs'
+      - 'risubard-updates/tests/world_editor_dialogue.test.cjs'
       - '.github/workflows/world-editor-lab-check.yml'
   pull_request:
     paths:
       - 'risubard-updates/world_editor_lab.js'
       - 'risubard-updates/tests/world_editor_lab.test.cjs'
+      - 'risubard-updates/tests/world_editor_dialogue.test.cjs'
       - '.github/workflows/world-editor-lab-check.yml'
   workflow_dispatch:
 jobs:
@@ -20,4 +22,4 @@ jobs:
         with:
           node-version: '22'
       - run: node --check risubard-updates/world_editor_lab.js
-      - run: node --test risubard-updates/tests/world_editor_lab.test.cjs
+      - run: node --test risubard-updates/tests/world_editor_lab.test.cjs risubard-updates/tests/world_editor_dialogue.test.cjs

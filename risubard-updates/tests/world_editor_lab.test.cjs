@@ -7,7 +7,7 @@ test('valid RisuBard API 3 plugin with stable self-update URL',()=>{
  new vm.Script(src);
  assert.match(src,/^\/\/@name world_editor_lab/m);
  assert.match(src,/^\/\/@api 3.0/m);
- assert.match(src,/^\/\/@version 0.1.0/m);
+ assert.match(src,/^\/\/@version 0.1.1/m);
  assert.match(src,/^\/\/@update-url https:\/\/raw\.githubusercontent\.com\/pjb3181-prog\/support-my-task\/main\/risubard-updates\/world_editor_lab\.js/m);
 });
 const base=src.slice(src.indexOf('const NAME='),src.indexOf('async function readStore('));
@@ -109,4 +109,14 @@ test('large card fields and lore are never replaced from truncated AI excerpts',
 test('reopening the editor switches character scope without corrupting another character session',()=>{
  assert.match(src,/async function open\(\)\{\s*\/\/ Opening the editor for a different character starts a fresh scoped session\.\s*character=null;/);
  assert.match(src,/if\(character&&charKey\(char\)!==charKey\(character\)\)/);
+});
+
+test('dialogue uses chosen model instead of an undefined variable',()=>{
+ assert.match(src,/runLLMModel\(\{mode:model,messages,allowPlugins:false\}\)/);
+ assert.doesNotMatch(src,/runLLMModel\(\{mode,messages/);
+});
+test('failed AI call retains unanswered user messages and explicit retry control',()=>{
+ assert.match(src,/id="wel-retry"/);
+ assert.match(src,/dialogue\.at\(-1\)\?\.role!=='user'/);
+ assert.match(src,/await discuss\(''\)/);
 });
