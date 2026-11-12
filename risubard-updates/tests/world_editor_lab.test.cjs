@@ -11,9 +11,9 @@ test('valid RisuBard API 3 plugin with stable self-update URL',()=>{
  assert.match(src,/^\/\/@update-url https:\/\/raw\.githubusercontent\.com\/pjb3181-prog\/support-my-task\/main\/risubard-updates\/world_editor_lab\.js/m);
 });
 const base=src.slice(src.indexOf('const NAME='),src.indexOf('async function readStore('));
-const normalize=src.slice(src.indexOf('function normalizeProposal('),src.indexOf('async function makeDraft('));
+const normalize=src.slice(src.indexOf('function protectedFirstMessageMarkers('),src.indexOf('async function makeDraft('));
 const materialize=src.slice(src.indexOf('function materialize('),src.indexOf('async function applyDraft('));
-const fixture=new vm.Script(base+normalize+materialize+'({snapshot,fingerprint,normalizeProposal,materialize})');
+const fixture=new vm.Script(base+normalize+materialize+'({snapshot,fingerprint,normalizeProposal,materialize,setPermit:x=>permitFirst=x,protectedFirstMessageMarkers})');
 const f=fixture.runInNewContext({});
 const card={
  desc:'A traveler in Seoul',personality:'Confident and reserved',
@@ -49,7 +49,7 @@ test('invalid lore indexes cannot overwrite arbitrary entries',()=>{
  assert.equal(plan.lore.length,0);
 });
 test('first message requires opt-in but is still diffed precisely',()=>{
- assert.match(src,/if\(key==='firstMessage'&&!permitFirst\)continue/);
+ assert.match(src,/if\(!permitFirst\)continue;/);
  assert.match(src,/permitFirst=false/);
  assert.match(src,/permitFirst=Boolean\(e.target.checked\);draft=null/);
 });
@@ -78,4 +78,35 @@ test('AI is opt-in only from explicit discussion or proposal buttons',()=>{
  assert.match(src,/act\('wel-talk'/);
  assert.match(src,/act\('wel-plan'/);
  assert.doesNotMatch(src,/runLLMModel\([^)]*onUnload/);
+});
+
+test('first message edit opt-in still preserves existing choices and asset tags',()=>{
+ f.setPermit(true);
+ const origin=f.snapshot(card);
+ assert.throws(()=>f.normalizeProposal({fields:{firstMessage:'Start immediately.'}},origin),/선택지 또는 이미지 태그/);
+ const permitted='{{img::intro}} Start: [A] [B] New opening context';
+ const proposed=f.normalizeProposal({fields:{firstMessage:permitted}},origin);
+ assert.equal(proposed.fields.firstMessage,permitted);
+ f.setPermit(false);
+});
+test('explicit line-based numbered and bracket choice options are protected',()=>{
+ const text='Beginning\n[선택 A] Follow her\n① Stay here\n1. Open the door\n{{img::background}}';
+ const tokens=Array.from(f.protectedFirstMessageMarkers(text));
+ assert.ok(tokens.includes('[선택 A] Follow her'));
+ assert.ok(tokens.includes('① Stay here'));
+ assert.ok(tokens.includes('1. Open the door'));
+ assert.ok(tokens.includes('{{img::background}}'));
+});
+
+test('large card fields and lore are never replaced from truncated AI excerpts',()=>{
+ const original=f.snapshot(card);
+ original.desc='D'.repeat(7000);
+ assert.throws(()=>f.normalizeProposal({fields:{desc:'unsafe partial'}},original),/참조 범위를 초과/);
+ original.desc='A traveler in Seoul';
+ original.globalLore[0].content='L'.repeat(1800);
+ assert.throws(()=>f.normalizeProposal({fields:{scenario:'New'},loreEdits:[{index:0,content:'unsafe'}]},original),/부분 손실/);
+});
+test('reopening the editor switches character scope without corrupting another character session',()=>{
+ assert.match(src,/async function open\(\)\{\s*\/\/ Opening the editor for a different character starts a fresh scoped session\.\s*character=null;/);
+ assert.match(src,/if\(character&&charKey\(char\)!==charKey\(character\)\)/);
 });
