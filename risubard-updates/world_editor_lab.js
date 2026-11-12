@@ -206,13 +206,18 @@ function render(){
  versions.map(v=>'<option value="'+esc(v.id)+'"'+(activeVersion===v.id?' selected':'')+'>'+esc(v.name)+' · '+esc(v.createdAt)+'</option>').join('')+
  '</select><button id="wel-switch">선택한 버전으로 전환</button></section></main>';
  const el=id=>document.getElementById(id);
- const act=(id,fn)=>{const node=el(id);if(node)node.onclick=()=>void execute(fn);};
+ const act=(id,fn)=>{const node=el(id);if(node)node.onclick=()=>{
+   // Capture input BEFORE execute() rerenders and replaces the form elements.
+   const input={prompt:el('wel-prompt')?.value||'',notes:el('wel-notes')?.value||'',
+     name:el('wel-name')?.value||'',version:el('wel-versions')?.value||''};
+   void execute(()=>fn(input));
+  };};
  act('wel-close',async()=>{openUI=false;await risuai.hideContainer();});
- act('wel-talk',async()=>{notes=cut(el('wel-notes').value,10000);await persist();await discuss(el('wel-prompt').value);});
+ act('wel-talk',async input=>{notes=cut(input.notes,10000);await persist();await discuss(input.prompt);});
  act('wel-clear',async()=>{dialogue=[];draft=null;await persist();status='논의 기록 초기화 · 세계관 버전은 보존됨';});
- act('wel-plan',async()=>{notes=cut(el('wel-notes').value,10000);await persist();await makeDraft();});
- act('wel-apply',async()=>applyDraft(el('wel-name').value));
- act('wel-switch',async()=>restore(el('wel-versions').value));
+ act('wel-plan',async input=>{notes=cut(input.notes,10000);await persist();await makeDraft();});
+ act('wel-apply',async input=>applyDraft(input.name));
+ act('wel-switch',async input=>restore(input.version));
  el('wel-first').onchange=e=>{permitFirst=Boolean(e.target.checked);draft=null;status='퍼스트 메시지 수정 권한 변경 · 새 수정안이 필요해';render();};
  el('wel-model').onchange=e=>{model=e.target.value;void persist();};
  el('wel-notes').onchange=e=>{notes=cut(e.target.value,10000);void persist();};
