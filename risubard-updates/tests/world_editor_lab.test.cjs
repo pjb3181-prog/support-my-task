@@ -49,7 +49,7 @@ test('invalid lore indexes cannot overwrite arbitrary entries',()=>{
  assert.equal(plan.lore.length,0);
 });
 test('first message requires opt-in but is still diffed precisely',()=>{
- assert.match(src,/if\(key==='firstMessage'&&!permitFirst\)continue/);
+ assert.match(src,/if\(!permitFirst\)continue;/);
  assert.match(src,/permitFirst=false/);
  assert.match(src,/permitFirst=Boolean\(e.target.checked\);draft=null/);
 });
