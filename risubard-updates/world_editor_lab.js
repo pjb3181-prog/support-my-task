@@ -88,12 +88,22 @@ function jsonResult(raw){
  if(a<0||b<=a)throw Error('AI 수정안 JSON을 읽지 못했어');
  return JSON.parse(s.slice(a,b+1));
 }
+function protectedFirstMessageMarkers(text){
+ const source=str(text);
+ const macros=source.match(/\{\{[^{}\n]{1,160}\}\}|<img\s*=[^>\n]{1,160}>/gi)||[];
+ const choices=source.split('\n').filter(line=>/^\s*(?:\[(?:선택|choice|option|[A-Z]|\d+)[^\]\n]{0,80}\]|(?:①|②|③|④|⑤)|(?:1|2|3)\.)/i.test(line)).map(line=>line.trim());
+ return [...new Set([...macros,...choices])];
+}
 function normalizeProposal(value,origin){
  if(!value||typeof value!=='object')throw Error('AI 수정안 형식 오류');
  const result={summary:cut(value.summary,1800),warnings:arr(value.warnings).map(x=>cut(x,240)).slice(0,10),fields:{},lore:[]};
  for(const [key,text] of Object.entries(value.fields||{})){
   if(!FIELDS.includes(key)||typeof text!=='string'||text.length>60000)continue;
-  if(key==='firstMessage'&&!permitFirst)continue;
+  if(key==='firstMessage'){
+   if(!permitFirst)continue;
+   const missing=protectedFirstMessageMarkers(origin.firstMessage).filter(token=>!text.includes(token));
+   if(missing.length)throw Error('퍼스트 메시지의 기존 선택지 또는 이미지 태그가 누락됐어: '+missing.slice(0,3).join(' / '));
+  }
   if(text!==str(origin[key]))result.fields[key]=text;
  }
  for(const edit of arr(value.loreEdits).slice(0,30)){
