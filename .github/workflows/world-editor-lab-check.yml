@@ -1,0 +1,23 @@
+name: World Editor Lab checks
+on:
+  push:
+    paths:
+      - 'risubard-updates/world_editor_lab.js'
+      - 'risubard-updates/tests/world_editor_lab.test.cjs'
+      - '.github/workflows/world-editor-lab-check.yml'
+  pull_request:
+    paths:
+      - 'risubard-updates/world_editor_lab.js'
+      - 'risubard-updates/tests/world_editor_lab.test.cjs'
+      - '.github/workflows/world-editor-lab-check.yml'
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --check risubard-updates/world_editor_lab.js
+      - run: node --test risubard-updates/tests/world_editor_lab.test.cjs
