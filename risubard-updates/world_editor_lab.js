@@ -99,6 +99,10 @@ function normalizeProposal(value,origin){
  const result={summary:cut(value.summary,1800),warnings:arr(value.warnings).map(x=>cut(x,240)).slice(0,10),fields:{},lore:[]};
  for(const [key,text] of Object.entries(value.fields||{})){
   if(!FIELDS.includes(key)||typeof text!=='string'||text.length>60000)continue;
+  // The model sees bounded excerpts, not the entire large field.
+  // Refuse an incomplete full replacement that could silently erase text.
+  const visibleLimit=key==='firstMessage'?5000:6500;
+  if(str(origin[key]).length>visibleLimit)throw Error(key+' 원문이 AI 참조 범위를 초과해 안전하게 전체 수정할 수 없어');
   if(key==='firstMessage'){
    if(!permitFirst)continue;
    const missing=protectedFirstMessageMarkers(origin.firstMessage).filter(token=>!text.includes(token));
@@ -110,6 +114,7 @@ function normalizeProposal(value,origin){
   if(!edit||typeof edit.content!=='string'||edit.content.length>14000)continue;
   const i=Number(edit.index);
   if(Number.isInteger(i)&&i>=0&&i<origin.globalLore.length){
+   if(str(origin.globalLore[i]?.content).length>1600)throw Error('로어북 #'+i+' 원문이 참조 범위를 초과해서 부분 손실 위험이 있어');
    if(edit.content!==str(origin.globalLore[i].content))result.lore.push({index:i,content:edit.content,title:cut(origin.globalLore[i].comment||origin.globalLore[i].name,100)});
   }else if(i===-1&&edit.content.trim()){
    result.lore.push({index:-1,content:edit.content,title:cut(edit.comment||'세계관 추가 설정',100),key:cut(edit.key,180)});
@@ -239,6 +244,8 @@ async function execute(fn){
  finally{busy=false;render();}
 }
 async function open(){
+ // Opening the editor for a different character starts a fresh scoped session.
+ character=null;
  const found=await live();idx=found.ci;character=found.char;openUI=true;status='';
  await readStore();render();await risuai.showContainer('fullscreen');
 }
