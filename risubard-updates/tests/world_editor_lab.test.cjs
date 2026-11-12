@@ -97,3 +97,16 @@ test('explicit line-based numbered and bracket choice options are protected',()=
  assert.ok(tokens.includes('1. Open the door'));
  assert.ok(tokens.includes('{{img::background}}'));
 });
+
+test('large card fields and lore are never replaced from truncated AI excerpts',()=>{
+ const original=f.snapshot(card);
+ original.desc='D'.repeat(7000);
+ assert.throws(()=>f.normalizeProposal({fields:{desc:'unsafe partial'}},original),/참조 범위를 초과/);
+ original.desc='A traveler in Seoul';
+ original.globalLore[0].content='L'.repeat(1800);
+ assert.throws(()=>f.normalizeProposal({fields:{scenario:'New'},loreEdits:[{index:0,content:'unsafe'}]},original),/부분 손실/);
+});
+test('reopening the editor switches character scope without corrupting another character session',()=>{
+ assert.match(src,/async function open\(\)\{\s*\/\/ Opening the editor for a different character starts a fresh scoped session\.\s*character=null;/);
+ assert.match(src,/if\(character&&charKey\(char\)!==charKey\(character\)\)/);
+});
