@@ -112,7 +112,8 @@ test('reopening the editor switches character scope without corrupting another c
 });
 
 test('dialogue uses chosen model instead of an undefined variable',()=>{
- assert.match(src,/runLLMModel\(\{mode:model,messages,allowPlugins:false\}\)/);
+ assert.match(src,/for\(const allowPlugins of \[false,true\]\)/);
+ assert.match(src,/runLLMModel\(\{mode:model,messages,allowPlugins\}\)/);
  assert.doesNotMatch(src,/runLLMModel\(\{mode,messages/);
 });
 test('failed AI call retains unanswered user messages and explicit retry control',()=>{

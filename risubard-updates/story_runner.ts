@@ -4586,11 +4586,22 @@
     }
   }
 
+  // Shared marker written by plugins that run their own structured main-model
+  // call (e.g. World Editor Lab). Story hooks must not treat those as story turns.
+  async function internalCallActive() {
+    try {
+      const v = await risuai.pluginStorage.getItem('risubard_internal_call_v1');
+      const age = Date.now() - Number(v && v.at);
+      return !!(v && v.owner) && age >= 0 && age < 240000;
+    } catch (_) { return false; }
+  }
+
   async function beforeRequest(messages, requestModel) {
     // RisuBard passes model usage in the replacer callback's second argument.
     // Story Runner must NEVER inject writer/notebook guidance into BardWiki
     // memory maintenance, emotion, translation or other auxiliary calls.
     if (requestModel && requestModel !== 'model') return messages;
+    if (await internalCallActive()) return messages;
     const isHostRequest = !directRunInProgress && internalLLMCallDepth === 0;
     const perf = isHostRequest ? {
       id: ++perfSequence,
@@ -4691,6 +4702,10 @@
   }
 
   async function afterRequest(content, requestKind) {
+    // Preserve auxiliary structured responses, including status-looking text.
+    // Direct Story Runner execution deliberately uses its own sentinel.
+    if (requestKind && requestKind !== 'model' && requestKind !== '__sr_direct__') return content;
+    if (requestKind !== '__sr_direct__' && await internalCallActive()) return content;
     const escaped = COMPLETE_MARKER.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
     let cleanResult = text(content)
       .replace(/\s*<!--SR_EPISODE_STATUS\s+[\s\S]*?-->\s*$/i, "")

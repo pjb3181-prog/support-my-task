@@ -55,8 +55,29 @@ function sourceSummary(c){
  lore:snap.globalLore.slice(0,50).map((x,i)=>({index:i,comment:cut(x.comment||x.name,90),key:cut(x.key,120),content:cut(x.content,1600)})),
  totalLore:snap.globalLore.length,truncated:snap.globalLore.length>50};
 }
+const MARK='risubard_internal_call_v1';
+async function callModel(messages){
+ // Isolated call first; plugin-provided models are blocked unless allowPlugins
+ // is true, so retry once with it (same policy as Story Runner).
+ let last=null;
+ for(const allowPlugins of [false,true]){
+  try{
+   const r=await risuai.runLLMModel({mode:model,messages,allowPlugins});
+   if(r?.type==='success'||r?.type==='streaming')return r;
+   last=r;
+  }catch(e){last={type:'error',result:e?.message||e};}
+ }
+ return last;
+}
 async function ai(messages){
- const r=await risuai.runLLMModel({mode:model,messages,allowPlugins:false});
+ // Tell story hooks (Mutation / Story Runner / Bard Editor Lab) this structured
+ // call is not a story turn, even when the main model is selected.
+ try{await risuai.pluginStorage.setItem(MARK,{owner:'world_editor_lab',at:Date.now()});}catch(_){}
+ try{return await aiInner(messages);}
+ finally{try{await risuai.pluginStorage.setItem(MARK,null);}catch(_){}}
+}
+async function aiInner(messages){
+ const r=await callModel(messages);
  if(r?.type==='success'&&typeof r.result==='string')return r.result;
  if(r?.type==='streaming'&&r.result?.getReader){
   const reader=r.result.getReader();let text='';

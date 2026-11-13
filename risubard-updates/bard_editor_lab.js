@@ -619,7 +619,12 @@
    if(uiOpen&&activityView==='auto')void render().catch(()=>{});
  }
 
+ async function internalCallActive(){
+   try{const v=await risuai.pluginStorage.getItem('risubard_internal_call_v1');const age=Date.now()-Number(v&&v.at);return !!(v&&v.owner)&&age>=0&&age<240000;}catch(_){return false;}
+ }
  async function injectStyleBeforeRequest(messages,type){
+   if(collabActive||state.busy)return messages;
+   if(await internalCallActive())return messages;
    if(unloaded||!conf.auto||!conf.promptAssist||type!=='model'||!Array.isArray(messages))return messages;
    // Only amend normal text-chat model prompts, not a structured task.
    if(messages.length<2||!messages.some(x=>x?.role==='user' && typeof x.content==='string'))return messages;
@@ -649,6 +654,8 @@
  }
 
  async function reviseBeforeSave(response,type){
+   if(collabActive||state.busy)return response;
+   if(await internalCallActive())return response;
    if(unloaded||!conf.auto||!conf.realEditor||type!=='model'||typeof response!=='string')return response;
    // Collaboration is deliberately post-save: deliver the first draft quickly,
    // then inspect and apply a verified patch without blocking the original response.

@@ -5,7 +5,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const src=fs.readFileSync(path.resolve(__dirname,'../mutation_state.ts'),'utf8');
 const start=src.indexOf('  function canonPromptText(value) {');
-const stop=src.indexOf('  async function beforeRequest(messages) {',start);
+const stop=src.indexOf('  async function beforeRequest(messages, requestModel) {',start);
 assert.ok(start>=0 && stop>start,'Missing exact Mutation World Canon request scope helper');
 const helper=src.slice(start,stop);
 const id='mutation-world-global-sample';
@@ -108,7 +108,7 @@ test('empty input and non-array input are returned safely',async()=>{
   assert.equal((await s.fn([],'unselected')).removed,0);
 });
 test('beforeRequest isolates canon before any original/ntr/unselected return',()=>{
-  const before=src.slice(src.indexOf('  async function beforeRequest(messages) {'));
+  const before=src.slice(src.indexOf('  async function beforeRequest(messages, requestModel) {'));
   assert.match(before,/const activeTarget = await syncTarget\(\)/);
   const scopeAt=before.indexOf('await scopeMutationWorldCanon(messages, worldMode)');
   const ntrAt=before.indexOf('if (worldMode === "ntr")');

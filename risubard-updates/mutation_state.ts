@@ -6479,7 +6479,21 @@
     return {messages:removed ? filtered : messages,removed,chars,status:'scoped'};
   }
 
-  async function beforeRequest(messages) {
+  // Shared marker written by plugins that run their own structured main-model
+  // call (e.g. World Editor Lab). Story hooks must not treat those as story turns.
+  async function internalCallActive() {
+    try {
+      const v = await risuai.pluginStorage.getItem('risubard_internal_call_v1');
+      const age = Date.now() - Number(v && v.at);
+      return !!(v && v.owner) && age >= 0 && age < 240000;
+    } catch (_) { return false; }
+  }
+
+  async function beforeRequest(messages, requestModel) {
+    // Replacers also receive editor, memory, translation and emotion tasks.
+    // Those inputs must never change story state or receive fiction directives.
+    if (requestModel && requestModel !== 'model') return messages;
+    if (await internalCallActive()) return messages;
     const promptDiag = {
       capturedAt: Date.now(),
       before: summarizePromptMessages(messages),
@@ -6510,6 +6524,7 @@
       // from an entirely different chat. Strip it before any model request.
       const worldMode = activeTarget ? storyWorldMode() : 'unselected';
       const scoped = await scopeMutationWorldCanon(messages, worldMode);
+      messages = scoped.messages;
       promptDiag.worldCanonScope = {
         mode:worldMode,status:scoped.status,
         removed:scoped.removed,chars:scoped.chars,
