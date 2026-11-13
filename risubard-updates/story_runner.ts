@@ -4607,6 +4607,7 @@
     if (requestModel && requestModel !== 'model') return messages;
     if (hasInternalCallToken(messages)) return messages;
     const isHostRequest = !directRunInProgress && internalLLMCallDepth === 0;
+    if (isHostRequest) afterRequestQualityHandled = false; // new host request: nothing has been quality-gated yet
     const perf = isHostRequest ? {
       id: ++perfSequence,
       startedAt: Date.now(),
@@ -4715,6 +4716,21 @@
       .replace(new RegExp("\\s*" + escaped + "\\s*$"), "");
   }
 
+  // Premium (max quality) rewrite shared by the non-streaming afterRequest path and the streaming
+  // committed-output path, so both run exactly the same quality logic.
+  async function runPremiumRewrite(cleanResult) {
+    const ctx = await readPlanningContext('premium output check',false);
+    const recent = Array.isArray(ctx.recentMessages) ? ctx.recentMessages : [];
+    return await rewriteDraftForQuality(cleanResult,ctx,effectiveCurrentEpisode(project.planningOutline),
+      project.modernDirection,activeHostPacingMode || 'adaptive',
+      extractRoleplayIdentity(recent),lastRoleplayStatus(recent));
+  }
+
+  // RisuBard runs afterRequest only for non-streaming replies. This flag records that the quality gate
+  // already ran for the CURRENT host request, so the output listener repeats it only for streamed replies
+  // (no double rewrite). It is plugin-local, reset at the start of every host request and consumed once.
+  let afterRequestQualityHandled = false;
+
   async function afterRequest(content, requestKind) {
     // Preserve auxiliary structured responses, including status-looking text.
     // Direct Story Runner execution deliberately uses its own sentinel.
@@ -4723,13 +4739,10 @@
     let cleanResult = stripStatusMarkers(content);
     const nativeAIRequest = project.experienceMode === 'ai' && project.running
       && !directRunInProgress && internalLLMCallDepth === 0 && requestKind !== '__sr_direct__';
+    if (nativeAIRequest) afterRequestQualityHandled = true; // the committed-output listener must not repeat this
     if (nativeAIRequest && project.writerQualityMode === 'max' && cleanResult.trim()) {
       try {
-        const ctx = await readPlanningContext('premium output check',false);
-        const recent = Array.isArray(ctx.recentMessages) ? ctx.recentMessages : [];
-        cleanResult = await rewriteDraftForQuality(cleanResult,ctx,effectiveCurrentEpisode(project.planningOutline),
-          project.modernDirection,activeHostPacingMode || 'adaptive',
-          extractRoleplayIdentity(recent),lastRoleplayStatus(recent));
+        cleanResult = await runPremiumRewrite(cleanResult);
       } catch(error) { console.log('[StoryRunner] native premium fallback to original draft',error); }
     }
     if (nativeAIRequest) {
@@ -4889,14 +4902,36 @@
       const message = arg && arg.chat && arg.chat.message && arg.chat.message[arg.messageIndex];
       // Only completed assistant story outputs can become continuity facts.
       if(message && message.role!=='char' && message.role!=='assistant')return;
-      const content = text(message && message.data);
+      let content = text(message && message.data);
       if (!content) return;
       if(arg && Number.isInteger(arg.characterIndex) && arg.characterIndex !== activeTarget.characterIndex) return;
       if(arg && Number.isInteger(arg.chatIndex) && arg.chatIndex !== activeTarget.chatIndex) return;
-      // Streaming replies skip afterRequest: apply the same marker cleanup to the committed message.
-      // (Analysis below intentionally keeps using `content`, which still carries the marker.)
+      // Streaming replies skip afterRequest, so do here what afterRequest does for normal replies:
+      // (1) clean status markers, (2) the premium (max quality) rewrite. The flag below tells us whether
+      // afterRequest already handled THIS request (normal reply) so nothing is done twice.
       const cleanedCommitted = stripStatusMarkers(content);
-      if (cleanedCommitted && cleanedCommitted !== content) void persistCleanedCommittedOutput(arg, content, cleanedCommitted);
+      const qualityHandled = afterRequestQualityHandled;
+      afterRequestQualityHandled = false;
+      const streamedNative = !qualityHandled && project.experienceMode === 'ai' && project.running
+        && !directRunInProgress && internalLLMCallDepth === 0;
+      let finalCommitted = cleanedCommitted;
+      if (streamedNative && project.writerQualityMode === 'max' && cleanedCommitted.trim()) {
+        try {
+          const rewritten = text(await runPremiumRewrite(cleanedCommitted)).trim();
+          if (rewritten && rewritten !== cleanedCommitted.trim()) finalCommitted = rewritten;
+        } catch (error) { console.log('[StoryRunner] streaming premium rewrite fell back to the streamed text', error); }
+      }
+      // One guarded save: only if the message is still exactly what the listener saw. Awaited on purpose:
+      // the host keeps the chat busy until listeners return, so the user cannot start a new turn (or edit)
+      // while the replacement is in flight. Already-clean normal replies are never saved again.
+      if (finalCommitted && finalCommitted !== content) {
+        const saved = await persistCleanedCommittedOutput(arg, content, finalCommitted);
+        if (saved) {
+          // rewriteDraftForQuality already wrote the editorial receipt (recordRunnerReview) for the text it
+          // returned, so Bard Editor Lab will not revise this same passage again.
+          content = finalCommitted;
+        }
+      }
       if (project.experienceMode === 'ai' && project.running) {
         const verdict = await storyQualityVerdict(content);
         if (!verdict.ok) {

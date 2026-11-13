@@ -157,7 +157,7 @@ test('streaming: the cleanup never overwrites a message that changed in the mean
 
 // ---- 7. update regression: protections must survive a plugin update ----
 const REQUIRED={
-  'story_runner.ts':['hasInternalCallToken','hasInternalResultToken',"requestKind !== 'model' && requestKind !== '__sr_direct__'",'recordRunnerReview','risubard_editorial_receipt_v1:','editorialSignature','stripStatusMarkers','persistCleanedCommittedOutput'],
+  'story_runner.ts':['hasInternalCallToken','hasInternalResultToken',"requestKind !== 'model' && requestKind !== '__sr_direct__'",'recordRunnerReview','risubard_editorial_receipt_v1:','editorialSignature','stripStatusMarkers','persistCleanedCommittedOutput','runPremiumRewrite','afterRequestQualityHandled'],
   'mutation_state.ts':["requestModel && requestModel !== 'model'",'hasInternalCallToken','messages = scoped.messages'],
   'bard_editor_lab.js':['hasInternalCallToken','hasInternalResultToken','runnerAlreadyReviewed','risubard_editorial_receipt_v1:','if(collabActive||state.busy)return messages','await watcherSeed','stripRunnerMarkers'],
   'world_editor_lab.js':['pluginBlocked','[[RISUBARD_INTERNAL_CALL:','[[RISUBARD_INTERNAL_RESULT:','withTimeout'],
@@ -172,4 +172,77 @@ test('update guard: versioned copies stay identical to the live plugin files',()
   const read=f=>readSrc(f).replace(/\r\n/g,'\n');
   assert.equal(read('bard_editor_lab_v0.3.10.ts'),read('bard_editor_lab.js'));
   assert.equal(read('World_Editor_Lab_v0.1.1.ts'),read('world_editor_lab.js'));
+});
+
+// ---- 8. streaming: the premium (max quality) rewrite also runs for streamed replies, exactly once ----
+const LONG='현수는 낡은 문을 밀었다. 먼지가 흩날렸고, 오래된 종이 냄새가 코끝을 찔렀다. 그는 잠시 숨을 고른 뒤 안으로 걸음을 옮겼다. 책상 위에는 누군가 급히 남긴 메모가 놓여 있었다. '.repeat(8);
+const BETTER_LONG=LONG.replace('먼지가 흩날렸고','먼지가 햇빛 속에서 천천히 흩날렸고');
+async function premiumHarness({quality='max',running=true,committed=LONG+'\n'+MARKER,editBeforeSave=false}={}){
+  const msg={role:'char',data:committed,chatId:'m1'};
+  const chatObj={id:'c1',message:[{role:'user',data:'hi'},msg]};
+  const charObj={chaId:'cha1',name:'테스트',chats:[chatObj],chatPage:0};
+  const store=new Map([['storyrunner_plugin_v1_cha1_c1',JSON.stringify({experienceMode:'ai',running,autoRun:false,writerQualityMode:quality})]]);
+  const saved=[],critic=[],writer=[];let llmCount=0;
+  const sr=await loadPlugin('story_runner.ts',{store,extra:{
+    getCurrentCharacterIndex:async()=>0,getCurrentChatIndex:async()=>0,
+    getCharacterFromIndex:async()=>charObj,getCharacter:async()=>charObj,getChat:async()=>chatObj,
+    getChatFromIndex:async()=>editBeforeSave&&llmCount>=2?{id:'c1',message:[{role:'user',data:'hi'},{role:'char',data:'사용자가 그 사이에 직접 고친 본문',chatId:'m1'}]}:chatObj,
+    setChatToIndex:async(ci,ti,next)=>{saved.push(next.message[1].data);},
+    runLLMModel:async o=>{
+      llmCount++;const sys=String(o.messages[0].content);
+      if(/strict fiction critic/.test(sys)){critic.push(1);return {type:'success',result:'{"revise":true,"issues":["반복되는 묘사"]}'};}
+      if(/revising a Korean fiction draft/.test(sys)){writer.push(1);return {type:'success',result:'<SR_STORY>'+BETTER_LONG+'</SR_STORY>'};}
+      return {type:'success',result:'{"ok":true,"complete":false}'};}
+  }});
+  const fire=async()=>{await sr.listeners.output({characterIndex:0,chatIndex:0,messageIndex:1,chat:chatObj,char:charObj});await wait(150);};
+  return {sr,store,saved,critic,writer,fire};
+}
+test('streaming + max quality: the streamed reply is rewritten once, saved once, marker removed, receipt written',async()=>{
+  const h=await premiumHarness();
+  await h.fire();
+  assert.equal(h.critic.length,1);
+  assert.equal(h.writer.length,1);
+  assert.equal(h.saved.length,1,'exactly one save');
+  assert.ok(h.saved[0].includes('햇빛 속에서 천천히'),'the revised text replaced the streamed text');
+  assert.ok(!h.saved[0].includes(MARKER));
+  assert.ok([...h.store.keys()].some(k=>k.startsWith('risubard_editorial_receipt_v1:')),'receipt lets Bard Editor Lab skip this passage');
+});
+test('normal (non-streaming) reply: afterRequest does the rewrite and the output listener does NOT repeat it or save again',async()=>{
+  const h=await premiumHarness({committed:BETTER_LONG});
+  await h.sr.replacers.beforeRequest(chat(),'model');
+  const out=await h.sr.replacers.afterRequest(LONG+'\n'+MARKER,'model');
+  assert.ok(out.includes('햇빛 속에서 천천히'));
+  assert.equal(h.critic.length,1);
+  await h.fire(); // the committed message is what afterRequest returned
+  assert.equal(h.critic.length,1,'no second critic pass');
+  assert.equal(h.writer.length,1,'no second rewrite');
+  assert.deepEqual(h.saved,[],'no second save');
+});
+test('a new host request resets a stale handled flag (afterRequest ran but nothing was committed)',async()=>{
+  const h=await premiumHarness({committed:BETTER_LONG});
+  await h.sr.replacers.beforeRequest(chat(),'model');
+  await h.sr.replacers.afterRequest(LONG,'model');   // sets the flag; the reply is never committed, so no listener consumes it
+  const before=h.critic.length;
+  await h.sr.replacers.beforeRequest(chat(),'model'); // next turn is streamed: no afterRequest, flag must have been reset
+  await h.fire();
+  assert.equal(h.critic.length,before+1,'the streamed reply was still quality-gated');
+});
+test('streaming + not max quality: only the marker is cleaned, no critic or rewrite call',async()=>{
+  const h=await premiumHarness({quality:'strong'});
+  await h.fire();
+  assert.equal(h.critic.length,0);
+  assert.equal(h.writer.length,0);
+  assert.deepEqual(h.saved,[LONG.trim()]);
+});
+test('streaming + story runner not running: nothing is rewritten',async()=>{
+  const h=await premiumHarness({running:false,committed:LONG});
+  await h.fire();
+  assert.equal(h.critic.length,0);
+  assert.deepEqual(h.saved,[]);
+});
+test('streaming rewrite never overwrites a message the user edited while it was running',async()=>{
+  const h=await premiumHarness({editBeforeSave:true});
+  await h.fire();
+  assert.equal(h.writer.length,1,'the rewrite ran');
+  assert.deepEqual(h.saved,[],'but the edited message was not overwritten');
 });
