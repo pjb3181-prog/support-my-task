@@ -1,7 +1,7 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.10
+//@version 0.3.11
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
 //@description Opt-in main-writer / auxiliary-editor surgical collaboration with limited review rounds, plus original Bard Editor Lab features.
 (async () => {
@@ -1234,7 +1234,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.10 · Writer ↔ Editor</h2>
+  </style><main><h2>Bard Editor Lab v0.3.11 · Writer ↔ Editor</h2>
   <p class="muted">본체·프리셋 수정 없음 · 메인 채팅에 짧은 편집 지침 삽입 + 모델을 이용한 선택적 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
@@ -1251,7 +1251,7 @@
     </select>
   </div>
   <section class="status" style="margin:12px 0;border:1px solid #52617f">
-    <strong>🤝 작가↔편집자 협업 설정 (v0.3.10)</strong>
+    <strong>🤝 작가↔편집자 협업 설정 (v0.3.11)</strong>
     <p class="muted">상단 '협업' 모드에서만 작동. 기존 RisuBard 모델 슬롯을 이용해 새 API 키가 필요하지 않아.
     검토 모델을 위에서 선택해. memory는 RisuBard 기억 슬롯 모델을 사용해. 그 슬롯에 DeepSeek가 연결돼 있으면 DeepSeek가 검토하며, 다른 모델 슬롯은 변경하지 않아.</p>
     <div class="top">

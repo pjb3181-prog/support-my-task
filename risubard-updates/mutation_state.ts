@@ -2,12 +2,12 @@
 //@display-name Mutation State Router
 //@api 3.0
 //@allowed-ipc story_runner
-//@version 0.79.5
+//@version 0.79.6
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/mutation_state.ts
 //@description Adds full-Lore conflict sweep and resolved-canon shielding so dense Lorebooks cannot silently restore stale pre-mutation facts; keeps staged world/feature switches and explicit recompilation.
 
 (async () => {
-  const VERSION = "0.79.5";
+  const VERSION = "0.79.6";
   // v0.71: classic-module-style staged controls. Pack/feature/frame/first-message
   // switches only change the pending configuration; Character/Lore/World Canon are
   // rewritten once when the user presses the explicit apply button. Each visible

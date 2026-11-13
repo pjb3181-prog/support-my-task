@@ -118,6 +118,6 @@ test('beforeRequest isolates canon before any original/ntr/unselected return',()
   assert.match(src,/storyWorldMode: "unselected"/);
 });
 test('version is aligned in the v3 extension header and runtime',()=>{
-  assert.match(src,/\/\/@version 0\.79\.5/);
-  assert.match(src,/const VERSION = "0\.79\.5"/);
+  assert.match(src,/\/\/@version 0\.79\.6/);
+  assert.match(src,/const VERSION = "0\.79\.6"/);
 });

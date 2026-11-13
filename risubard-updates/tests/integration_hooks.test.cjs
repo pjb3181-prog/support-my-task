@@ -170,8 +170,8 @@ for(const [file,needles] of Object.entries(REQUIRED)){
 }
 test('update guard: versioned copies stay identical to the live plugin files',()=>{
   const read=f=>readSrc(f).replace(/\r\n/g,'\n');
-  assert.equal(read('bard_editor_lab_v0.3.10.ts'),read('bard_editor_lab.js'));
-  assert.equal(read('World_Editor_Lab_v0.1.1.ts'),read('world_editor_lab.js'));
+  assert.equal(read('bard_editor_lab_v0.3.11.ts'),read('bard_editor_lab.js'));
+  assert.equal(read('World_Editor_Lab_v0.1.2.ts'),read('world_editor_lab.js'));
 });
 
 // ---- 8. streaming: the premium (max quality) rewrite also runs for streamed replies, exactly once ----

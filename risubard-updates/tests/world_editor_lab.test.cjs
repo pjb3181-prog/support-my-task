@@ -7,7 +7,7 @@ test('valid RisuBard API 3 plugin with stable self-update URL',()=>{
  new vm.Script(src);
  assert.match(src,/^\/\/@name world_editor_lab/m);
  assert.match(src,/^\/\/@api 3.0/m);
- assert.match(src,/^\/\/@version 0.1.1/m);
+ assert.match(src,/^\/\/@version 0.1.2/m);
  assert.match(src,/^\/\/@update-url https:\/\/raw\.githubusercontent\.com\/pjb3181-prog\/support-my-task\/main\/risubard-updates\/world_editor_lab\.js/m);
 });
 const base=src.slice(src.indexOf('const NAME='),src.indexOf('async function readStore('));

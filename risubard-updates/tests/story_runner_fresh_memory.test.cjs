@@ -117,8 +117,8 @@ test('memory extraction sends only visible fiction, preserves raw saved equality
   assert.match(reader,/text\(rows\[index\]\.data\)\.trim\(\)===source/);
 });
 test('plugin version is bumped and UI explains a stale memory',()=>{
-  assert.match(src,/\/\/@version 0\.95\.9/);
-  assert.match(src,/const VERSION = "0\.95\.9"/);
+  assert.match(src,/\/\/@version 0\.95\.10/);
+  assert.match(src,/const VERSION = "0\.95\.10"/);
   assert.match(src,/기억이 최신 대화와 달라 주입을 중단했어/);
 });
 

@@ -55,43 +55,9 @@ function sourceSummary(c){
  lore:snap.globalLore.slice(0,50).map((x,i)=>({index:i,comment:cut(x.comment||x.name,90),key:cut(x.key,120),content:cut(x.content,1600)})),
  totalLore:snap.globalLore.length,truncated:snap.globalLore.length>50};
 }
-const CALL_TIMEOUT_MS=120000;
-// RisuBard answers {type:'fail', result:'Plugin calls are blocked by the caller.'} BEFORE any
-// network request when the selected model is plugin-provided and allowPlugins is false.
-// Only that compatibility failure is retried (no request was sent, so there is no duplicate
-// cost). API/network/rate-limit/empty-response failures are never retried here.
-function pluginBlocked(r){return r?.type==='fail'&&/blocked by the caller/i.test(str(r.result));}
-function withTimeout(promise,ms,label){
- let timer;
- return Promise.race([promise,new Promise((_,rej)=>{timer=setTimeout(()=>rej(Error(label+' 시간 초과')),ms);})]).finally(()=>clearTimeout(timer));
-}
-async function callModel(messages){
- let r=await risuai.runLLMModel({mode:model,messages,allowPlugins:false});
- if(pluginBlocked(r))r=await risuai.runLLMModel({mode:model,messages,allowPlugins:true});
- return r;
-}
 async function ai(messages){
- // Per-request tokens, no shared state and no polling. The CALL token lets story hooks recognise this
- // exact request in beforeRequest; the model is asked to begin its reply with the RESULT token so
- // afterRequest (which cannot see the prompt) recognises this exact response. A normal chat that
- // finishes meanwhile carries neither token and is processed as usual. If a model ignores the echo
- // instruction the response is simply processed like a normal one (fails open, never loses chat).
- const callId='wel-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
- const echo='[[RISUBARD_INTERNAL_RESULT:'+callId+']]';
- const tagged=messages.map((m,i)=>i===0&&m.role==='system'
-  ?{...m,content:str(m.content)+'\n[[RISUBARD_INTERNAL_CALL:'+callId+']]\nBegin your reply with this exact line, then continue as instructed: '+echo}
-  :m);
- const out=await withTimeout(aiInner(tagged),CALL_TIMEOUT_MS,'AI 호출');
- const clean=out.replace(/\[\[RISUBARD_INTERNAL_RESULT:[^\]\n]*\]\]/g,'').replace(/^\s+/,'');
- if(!clean.trim())throw Error('AI 응답이 비어 있어');
- return clean;
-}
-async function aiInner(messages){
- const r=await callModel(messages);
- if(r?.type==='success'&&typeof r.result==='string'){
-  if(!r.result.trim())throw Error('AI 응답이 비어 있어');
-  return r.result;
- }
+ const r=await risuai.runLLMModel({mode:model,messages,allowPlugins:false});
+ if(r?.type==='success'&&typeof r.result==='string')return r.result;
  if(r?.type==='streaming'&&r.result?.getReader){
   const reader=r.result.getReader();let text='';
   try{while(true){
@@ -100,7 +66,6 @@ async function aiInner(messages){
    if(typeof v==='string')text=v.startsWith(text)?v:text+v;
    if(text.length>90000)throw Error('AI 응답 길이 제한 초과');
   }}finally{try{await reader.cancel();}catch(_){}}
-  if(!text.trim())throw Error('AI 응답이 비어 있어 (스트림이 중간에 끊겼을 수 있어)');
   return text;
  }
  throw Error('RisuBard 모델 호출 실패: '+cut(r?.type||r?.result,150));
@@ -196,13 +161,6 @@ function materialize(origin,proposal){
  }
  return out;
 }
-async function freshBeforeWrite(ci0){
- const {ci,char}=await live();
- if(ci!==ci0)throw Error('캐릭터가 변경됐어. 편집실을 다시 열어줘.');
- const conflict=await mutationLock(char);
- if(conflict)throw Error(conflict+' 원작 모드로 복귀한 다음 적용해줘.');
- return char;
-}
 async function applyDraft(versionName){
  if(!draft)throw Error('승인할 수정안이 없어');
  const {ci,char}=await live(),conflict=await mutationLock(char);
@@ -216,13 +174,7 @@ async function applyDraft(versionName){
  const created={id:'world-'+timestamp,name,createdAt:new Date().toISOString(),snapshot:next,summary:draft.summary};
  const previous=versions;versions=[created,before,...versions].slice(0,12);
  await persist();
- try{
-  // Re-verify right before writing: Mutation State Router or the user may have changed the card while the
-  // backup was being saved. A whole-card write from a stale read would silently undo that change.
-  const fresh=await freshBeforeWrite(ci);
-  if(fingerprint(snapshot(fresh))!==draftHash)throw Error('적용 직전에 캐릭터 데이터가 변경됐어. 수정안을 다시 생성해줘.');
-  await risuai.setCharacterToIndex(ci,{...cp(fresh),...next});
- }
+ try{await risuai.setCharacterToIndex(ci,{...cp(char),...next});}
  catch(e){versions=previous;await persist();throw e;}
  character=await risuai.getCharacterFromIndex(ci);draft=null;activeVersion=created.id;
  status='설정 적용 완료 · 직전 상태 자동 백업됨';
@@ -235,11 +187,7 @@ async function restore(id){
  versions=[{id:'backup-'+timestamp,name:'전환 전 백업 '+new Date().toLocaleString(),
   createdAt:new Date().toISOString(),snapshot:snapshot(char)},...versions].slice(0,12);
  await persist();
- try{
-  const fresh=await freshBeforeWrite(ci);
-  if(fingerprint(snapshot(fresh))!==fingerprint(snapshot(char)))throw Error('적용 직전에 캐릭터 데이터가 변경됐어. 다시 시도해줘.');
-  await risuai.setCharacterToIndex(ci,{...cp(fresh),...cp(target.snapshot)});
- }
+ try{await risuai.setCharacterToIndex(ci,{...cp(char),...cp(target.snapshot)});}
  catch(e){versions=previous;await persist();throw e;}
  character=await risuai.getCharacterFromIndex(ci);draft=null;activeVersion=id;
  status='세계관 '+target.name+' 적용 완료 · 이전 상태도 백업함';

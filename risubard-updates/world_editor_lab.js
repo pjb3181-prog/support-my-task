@@ -1,7 +1,7 @@
 //@name world_editor_lab
 //@display-name World Editor Lab
 //@api 3.0
-//@version 0.1.1
+//@version 0.1.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/world_editor_lab.js
 //@description Opt-in AI worldbuilding discussion, reviewed Lore and character edits, snapshot versions and rollback.
 (async()=>{
@@ -261,7 +261,7 @@ function render(){
  const turns=dialogue.map(x=>'<article class="'+x.role+'"><b>'+(x.role==='user'?'나':'AI')+'</b><pre>'+esc(x.content)+'</pre></article>').join('');
  document.body.innerHTML='<style>'+
  'body{margin:0;padding:15px;background:#182033;color:#eaf0ff;font:14px/1.6 system-ui}main{max-width:1050px;margin:auto}section{background:#223047;padding:15px;border-radius:12px;border:1px solid #42516c;margin:12px 0}button,textarea,input,select{background:#30425e;border:1px solid #6b7a95;color:#fff;padding:9px;border-radius:8px;font:inherit}button{cursor:pointer;margin:4px}button:disabled{opacity:.5}.primary{background:#32639e}textarea{box-sizing:border-box;width:100%;min-height:85px}article{margin:8px 0;padding:10px;background:#17243b;border-radius:8px}article.user{border-left:3px solid #87aaf7}article.assistant{border-left:3px solid #7ad6b3}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:330px;overflow:auto;font:13px/1.5 system-ui}.muted{color:#aabdd7;font-size:12px}.warning{color:#ffcf84}.cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}.cols>div{min-width:0}details{border:1px solid #56708b;padding:8px;margin:9px 0;border-radius:8px}summary{cursor:pointer}@media(max-width:700px){.cols{grid-template-columns:1fr}}</style>'+
- '<main><h2>🌐 World Editor Lab v0.1.1</h2>'+
+ '<main><h2>🌐 World Editor Lab v0.1.2</h2>'+
  '<p class="muted">대상: '+esc(character?.name)+' · 평소 채팅에서는 아무 작업도 하지 않아</p>'+
  '<p class="warning">'+esc(status||'세계관을 자유롭게 논의하고 승인한 변경만 반영해.')+'</p>'+
  '<button id="wel-close">닫기</button>'+
