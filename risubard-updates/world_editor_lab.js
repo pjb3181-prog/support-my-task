@@ -55,30 +55,48 @@ function sourceSummary(c){
  lore:snap.globalLore.slice(0,50).map((x,i)=>({index:i,comment:cut(x.comment||x.name,90),key:cut(x.key,120),content:cut(x.content,1600)})),
  totalLore:snap.globalLore.length,truncated:snap.globalLore.length>50};
 }
-const MARK='risubard_internal_call_v1';
+const MARK='risubard_internal_call_v1',CALL_TTL_MS=150000,CALL_TIMEOUT_MS=120000;
+// RisuBard answers {type:'fail', result:'Plugin calls are blocked by the caller.'} BEFORE any
+// network request when the selected model is plugin-provided and allowPlugins is false.
+// Only that compatibility failure is retried (no request was sent, so there is no duplicate
+// cost). API/network/rate-limit/empty-response failures are never retried here.
+function pluginBlocked(r){return r?.type==='fail'&&/blocked by the caller/i.test(str(r.result));}
+let markQueue=Promise.resolve();
+function markUpdate(fn){
+ // Serialize read-modify-write so overlapping internal calls cannot drop each other's entry.
+ markQueue=markQueue.then(async()=>{
+  const cur=await risuai.pluginStorage.getItem(MARK).catch(()=>null),now=Date.now(),calls={};
+  for(const [id,c] of Object.entries(cur?.calls||{}))if(Number(c?.expires)>now)calls[id]=c;
+  fn(calls,now);
+  await risuai.pluginStorage.setItem(MARK,Object.keys(calls).length?{calls}:null);
+ }).catch(()=>{});
+ return markQueue;
+}
+function withTimeout(promise,ms,label){
+ let timer;
+ return Promise.race([promise,new Promise((_,rej)=>{timer=setTimeout(()=>rej(Error(label+' 시간 초과')),ms);})]).finally(()=>clearTimeout(timer));
+}
 async function callModel(messages){
- // Isolated call first; plugin-provided models are blocked unless allowPlugins
- // is true, so retry once with it (same policy as Story Runner).
- let last=null;
- for(const allowPlugins of [false,true]){
-  try{
-   const r=await risuai.runLLMModel({mode:model,messages,allowPlugins});
-   if(r?.type==='success'||r?.type==='streaming')return r;
-   last=r;
-  }catch(e){last={type:'error',result:e?.message||e};}
- }
- return last;
+ let r=await risuai.runLLMModel({mode:model,messages,allowPlugins:false});
+ if(pluginBlocked(r))r=await risuai.runLLMModel({mode:model,messages,allowPlugins:true});
+ return r;
 }
 async function ai(messages){
- // Tell story hooks (Mutation / Story Runner / Bard Editor Lab) this structured
- // call is not a story turn, even when the main model is selected.
- try{await risuai.pluginStorage.setItem(MARK,{owner:'world_editor_lab',at:Date.now()});}catch(_){}
- try{return await aiInner(messages);}
- finally{try{await risuai.pluginStorage.setItem(MARK,null);}catch(_){}}
+ // Per-call token lets story hooks recognise exactly this request in beforeRequest even if a
+ // normal chat runs at the same time. The registry entry covers afterRequest (which cannot
+ // see the prompt); it expires by itself, is removed in finally, and tolerates overlapping calls.
+ const callId='wel-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
+ const tagged=messages.map((m,i)=>i===0&&m.role==='system'?{...m,content:str(m.content)+'\n[[RISUBARD_INTERNAL_CALL:'+callId+']]'}:m);
+ await markUpdate((calls,now)=>{calls[callId]={owner:'world_editor_lab',at:now,expires:now+CALL_TTL_MS};});
+ try{return await withTimeout(aiInner(tagged),CALL_TIMEOUT_MS,'AI 호출');}
+ finally{await markUpdate(calls=>{delete calls[callId];});}
 }
 async function aiInner(messages){
  const r=await callModel(messages);
- if(r?.type==='success'&&typeof r.result==='string')return r.result;
+ if(r?.type==='success'&&typeof r.result==='string'){
+  if(!r.result.trim())throw Error('AI 응답이 비어 있어');
+  return r.result;
+ }
  if(r?.type==='streaming'&&r.result?.getReader){
   const reader=r.result.getReader();let text='';
   try{while(true){
@@ -87,6 +105,7 @@ async function aiInner(messages){
    if(typeof v==='string')text=v.startsWith(text)?v:text+v;
    if(text.length>90000)throw Error('AI 응답 길이 제한 초과');
   }}finally{try{await reader.cancel();}catch(_){}}
+  if(!text.trim())throw Error('AI 응답이 비어 있어 (스트림이 중간에 끊겼을 수 있어)');
   return text;
  }
  throw Error('RisuBard 모델 호출 실패: '+cut(r?.type||r?.result,150));

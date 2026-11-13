@@ -4586,13 +4586,22 @@
     }
   }
 
-  // Shared marker written by plugins that run their own structured main-model
-  // call (e.g. World Editor Lab). Story hooks must not treat those as story turns.
+  // Internal-call protocol (shared by World Editor Lab and the story hooks).
+  // Requests: the caller embeds a per-call token in its prompt, so beforeRequest can
+  // identify exactly that request even while a normal chat runs concurrently.
+  // Responses: afterRequest cannot see the prompt, so it falls back to a registry of
+  // active calls with expiry (`risubard_internal_call_v1`). Limitation: while an
+  // internal call is active, a concurrent story response is also left untouched.
+  function hasInternalCallToken(messages) {
+    try {
+      return Array.isArray(messages) && messages.some((m) => m && typeof m.content === 'string' && m.content.includes('[[RISUBARD_INTERNAL_CALL:'));
+    } catch (_) { return false; }
+  }
   async function internalCallActive() {
     try {
       const v = await risuai.pluginStorage.getItem('risubard_internal_call_v1');
-      const age = Date.now() - Number(v && v.at);
-      return !!(v && v.owner) && age >= 0 && age < 240000;
+      const now = Date.now();
+      return Object.values((v && v.calls) || {}).some((c) => c && Number(c.expires) > now);
     } catch (_) { return false; }
   }
 
@@ -4601,7 +4610,7 @@
     // Story Runner must NEVER inject writer/notebook guidance into BardWiki
     // memory maintenance, emotion, translation or other auxiliary calls.
     if (requestModel && requestModel !== 'model') return messages;
-    if (await internalCallActive()) return messages;
+    if (hasInternalCallToken(messages)) return messages;
     const isHostRequest = !directRunInProgress && internalLLMCallDepth === 0;
     const perf = isHostRequest ? {
       id: ++perfSequence,
@@ -7648,6 +7657,22 @@
     }
   }
 
+
+  function editorialSignature(value) {
+    const source = text(value).trim();
+    let a=2166136261,b=5381;
+    for(let i=0;i<source.length;i++){a=Math.imul(a^source.charCodeAt(i),16777619);b=Math.imul(b,33)^source.charCodeAt(i);}
+    return source.length+':'+(a>>>0).toString(16)+':'+(b>>>0).toString(16);
+  }
+  async function recordRunnerReview(content) {
+    const chatId=text(currentTarget && currentTarget.chatId);
+    if(!chatId)return content;
+    try{await risuai.pluginStorage.setItem('risubard_editorial_receipt_v1:'+chatId,
+      {owner:'story_runner',signature:editorialSignature(content),at:Date.now()});}
+    catch(error){console.log('[StoryRunner] editorial receipt unavailable',error);}
+    return content;
+  }
+
   async function rewriteDraftForQuality(draft, ctx, ep, additionalDirection, pacingMode, identity, priorSheet) {
     const source = text(draft).trim();
     if (!source || project.writerQualityMode !== "max") return source;
@@ -7662,7 +7687,7 @@
     let issues = [];
     try {
       const result = await runInternalLLM({
-        mode: "otherAx", allowPlugins: false,
+        mode: "otherAx", allowPlugins: true,
         messages: [
           {role: "system", content: [
             "You are a strict fiction critic. Do not rewrite prose in this pass.",
@@ -7676,9 +7701,10 @@
       });
       if (result && result.type && result.type !== "success") return source;
       const verdict = extractJson(stripThoughts(normalizeModelText(result)));
-      if (!verdict || verdict.revise !== true || !Array.isArray(verdict.issues)) return source;
+      if (!verdict || typeof verdict.revise !== 'boolean' || !Array.isArray(verdict.issues)) return source;
+      if (verdict.revise === false) return await recordRunnerReview(source);
       issues = verdict.issues.filter(x => typeof x === 'string' && x.trim()).slice(0, 4);
-      if (!issues.length) return source;
+      if (!issues.length) return await recordRunnerReview(source);
     } catch (error) {
       console.log("[StoryRunner] premium critic skipped", error);
       return source;
@@ -7702,7 +7728,7 @@
       if (!revisedQuality.ok) return source;
       // Prevent broad plot changes masquerading as an editorial repair.
       if (cleaned.length < source.length * 0.55 || cleaned.length > source.length * 1.65) return source;
-      return cleaned;
+      return await recordRunnerReview(cleaned);
     } catch (error) {
       console.log("[StoryRunner] premium revision skipped", error);
       return source;

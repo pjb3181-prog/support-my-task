@@ -129,16 +129,18 @@ test('memory, otherAx and emotion hooks return the same prompt without any injec
   assert.ok(firstLine>start,'Expected isHostRequest after model-type guard');
   // Evaluate the actual early-return code, without running the full Story Runner host.
   const early=src.slice(start,firstLine)+'    return {onlyForWriter:true};\n  }';
-  const sandbox={internalCallActive:async()=>false};
-  vm.runInNewContext(early,sandbox,{filename:'story_runner.ts',timeout:4000});
+  const helperStart=src.indexOf('  // Internal-call protocol');
+  assert.ok(helperStart>=0&&helperStart<start,'Expected internal-call helpers before beforeRequest');
+  const sandbox={risuai:{pluginStorage:{getItem:async()=>null}},Date,Object,Array,Number};
+  vm.runInNewContext(src.slice(helperStart,start)+early,sandbox,{filename:'story_runner.ts',timeout:4000});
   const testPrompt=[{role:'system',content:'keep original'},{role:'user',content:'note'}];
   for(const model of ['memory','otherAx','emotion','translate']){
     const result=await sandbox.beforeRequest(testPrompt,model);
     assert.equal(result,testPrompt,'auxiliary mode must receive original reference');
   }
   assert.equal((await sandbox.beforeRequest(testPrompt,'model')).onlyForWriter,true);
-  sandbox.internalCallActive=async()=>true;
-  assert.equal(await sandbox.beforeRequest(testPrompt,'model'),testPrompt,'internal plugin call must bypass story injection');
+  const tagged=[{role:'system',content:'x [[RISUBARD_INTERNAL_CALL:wel-1]]'},{role:'user',content:'u'}];
+  assert.equal(await sandbox.beforeRequest(tagged,'model'),tagged,'internal plugin call must bypass story injection');
 });
 
 const reconcileCode=extractBlock('  function reconcileNotebookOpenThreads(');

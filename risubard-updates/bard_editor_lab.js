@@ -619,12 +619,14 @@
    if(uiOpen&&activityView==='auto')void render().catch(()=>{});
  }
 
+ // Internal-call protocol: see Story Runner. Token = exact request; registry = responses.
+ function hasInternalCallToken(messages){try{return Array.isArray(messages)&&messages.some(m=>m&&typeof m.content==='string'&&m.content.includes('[[RISUBARD_INTERNAL_CALL:'));}catch(_){return false;}}
  async function internalCallActive(){
-   try{const v=await risuai.pluginStorage.getItem('risubard_internal_call_v1');const age=Date.now()-Number(v&&v.at);return !!(v&&v.owner)&&age>=0&&age<240000;}catch(_){return false;}
+   try{const v=await risuai.pluginStorage.getItem('risubard_internal_call_v1');const now=Date.now();return Object.values((v&&v.calls)||{}).some(c=>c&&Number(c.expires)>now);}catch(_){return false;}
  }
  async function injectStyleBeforeRequest(messages,type){
    if(collabActive||state.busy)return messages;
-   if(await internalCallActive())return messages;
+   if(hasInternalCallToken(messages))return messages;
    if(unloaded||!conf.auto||!conf.promptAssist||type!=='model'||!Array.isArray(messages))return messages;
    // Only amend normal text-chat model prompts, not a structured task.
    if(messages.length<2||!messages.some(x=>x?.role==='user' && typeof x.content==='string'))return messages;
@@ -653,6 +655,22 @@
    return amended;
  }
 
+
+ function editorialSignature(value) {
+   const source=txt(value).trim();let a=2166136261,b=5381;
+   for(let i=0;i<source.length;i++){a=Math.imul(a^source.charCodeAt(i),16777619);b=Math.imul(b,33)^source.charCodeAt(i);}
+   return source.length+':'+(a>>>0).toString(16)+':'+(b>>>0).toString(16);
+ }
+ async function runnerAlreadyReviewed(content,chatId) {
+   if(!chatId)return false;
+   try{
+     const receipt=await risuai.pluginStorage.getItem('risubard_editorial_receipt_v1:'+chatId);
+     const age=Date.now()-Number(receipt?.at);
+     return receipt?.owner==='story_runner'&&age>=0&&age<900000
+       &&receipt.signature===editorialSignature(content);
+   }catch(_){return false;}
+ }
+
  async function reviseBeforeSave(response,type){
    if(collabActive||state.busy)return response;
    if(await internalCallActive())return response;
@@ -660,6 +678,7 @@
    // Collaboration is deliberately post-save: deliver the first draft quickly,
    // then inspect and apply a verified patch without blocking the original response.
    if(conf.mode==='collab')return response;
+   try{const live=await current();if(await runnerAlreadyReviewed(response,live.id))return response;}catch(_){}
    if(alreadyPreSaved(response))return response;
    try{
      let reference={};
@@ -1088,12 +1107,20 @@
    await commit(state.target,state.original,state.revised);
    state.original=state.revised;state.revised='';state.status='사용자 승인 퇴고본 적용 · 원문 백업됨';
  }
+ let watcherSeed=Promise.resolve();
  async function automatic(arg,sourceLabel){
    if(unloaded||!arg||!Number.isInteger(arg.messageIndex)||!Array.isArray(arg.chat?.message))return;
+   // The load-time seed marks the pre-existing last message as handled. Wait for it so that
+   // outcome is deterministic (not dependent on how many awaits precede the `seen` check).
+   await watcherSeed;
    const i=arg.messageIndex,m=arg.chat.message[i],ci=arg.characterIndex,ti=arg.chatIndex;
    if(!Number.isInteger(ci)||!Number.isInteger(ti)||!m||!['char','assistant'].includes(m.role)||i!==arg.chat.message.length-1)return;
    if(!conf.auto){void refreshSceneFromEvent(arg);return}
    const original=txt(m.data);
+   if(await runnerAlreadyReviewed(original,txt(arg.chat?.id))){
+     await recordAutomatic({phase:sourceLabel,outcome:'skipped',reason:'Story Runner 검수 완료 · 동일 원고의 자동 중복 퇴고 생략',original,calls:0});
+     void refreshSceneFromEvent(arg);return;
+   }
    if(alreadyPreSaved(original)){
      await confirmAutoCommitted(original);
      void refreshSceneFromEvent(arg);
@@ -1438,7 +1465,7 @@
     }
     return automatic(arg,'일반 채팅');
   });
- if(conf.mode==='collab')void seedStoryRunnerWatcher();
+ if(conf.mode==='collab')watcherSeed=seedStoryRunnerWatcher();
   pollTimer=setInterval(()=>{void pollStoryRunner();void updateScenePanel()},2800);
  await risuai.onUnload(async()=>{
    unloaded=true;

@@ -6479,13 +6479,22 @@
     return {messages:removed ? filtered : messages,removed,chars,status:'scoped'};
   }
 
-  // Shared marker written by plugins that run their own structured main-model
-  // call (e.g. World Editor Lab). Story hooks must not treat those as story turns.
+  // Internal-call protocol (shared by World Editor Lab and the story hooks).
+  // Requests: the caller embeds a per-call token in its prompt, so beforeRequest can
+  // identify exactly that request even while a normal chat runs concurrently.
+  // Responses: afterRequest cannot see the prompt, so it falls back to a registry of
+  // active calls with expiry (`risubard_internal_call_v1`). Limitation: while an
+  // internal call is active, a concurrent story response is also left untouched.
+  function hasInternalCallToken(messages) {
+    try {
+      return Array.isArray(messages) && messages.some((m) => m && typeof m.content === 'string' && m.content.includes('[[RISUBARD_INTERNAL_CALL:'));
+    } catch (_) { return false; }
+  }
   async function internalCallActive() {
     try {
       const v = await risuai.pluginStorage.getItem('risubard_internal_call_v1');
-      const age = Date.now() - Number(v && v.at);
-      return !!(v && v.owner) && age >= 0 && age < 240000;
+      const now = Date.now();
+      return Object.values((v && v.calls) || {}).some((c) => c && Number(c.expires) > now);
     } catch (_) { return false; }
   }
 
@@ -6493,7 +6502,7 @@
     // Replacers also receive editor, memory, translation and emotion tasks.
     // Those inputs must never change story state or receive fiction directives.
     if (requestModel && requestModel !== 'model') return messages;
-    if (await internalCallActive()) return messages;
+    if (hasInternalCallToken(messages)) return messages;
     const promptDiag = {
       capturedAt: Date.now(),
       before: summarizePromptMessages(messages),
