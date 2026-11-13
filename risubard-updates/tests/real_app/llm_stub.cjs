@@ -5,7 +5,7 @@
 //   GET  /log                   -> request log (JSONL)   POST /ctl {...} -> change scenario (merged, persists)
 //   POST /v1/chat/completions   -> scripted reply chosen from the prompt text + current scenario
 // Scenario (POST /ctl): main:'long'|'short', mainChars, srCritic:'ok'|'revise'|'garbage', bard:'ok'|'revise',
-//   echo:'follow'|'drop'|'mangle', chunk, delayMs (streaming), mainDelayMs, auxDelayMs (critic/writer/editor latency), tag
+//   memory:'empty'|'valid'|'poison' (BardWiki memory-writer reply), echo:'follow'|'drop'|'mangle', chunk, delayMs (streaming), mainDelayMs, auxDelayMs (critic/writer/editor latency), tag
 const http = require('http'), fs = require('fs'), path = require('path');
 const LOG = process.env.STUB_LOG || path.join(process.cwd(), 'llm_stub.log.jsonl');
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -71,6 +71,12 @@ http.createServer((req, res) => {
     } else if (/surgical Korean-fiction editor/.test(all)) {
       kind = 'bard-revision';
       rbody = after(all, '# ORIGINAL DRAFT\n').replace('천천히', '조용히');
+    } else if (/bardwiki-memory-writer/.test(all) && cfg.memory && cfg.memory !== 'empty') {
+      kind = 'bardwiki-' + cfg.memory;
+      const cand = (title, type) => ({ type, title, reason: '등장', action: 'create', targetDocumentId: null, confidence: 0.95 });
+      const list = [cand('카이', 'character'), cand('리나', 'character'), cand('도윤', 'character'), cand('서하', 'character'), cand('하준', 'character')];
+      if (cfg.memory === 'poison') list.push(cand('큰 전투', 'event'));
+      rbody = JSON.stringify({ schemaVersion: 1, title: '만남', establishedEvents: ['여섯 명이 만났다.'], stateChanges: [], characterKnowledge: [], persistentFacts: [], openContinuity: [], canonicalUpdateCandidates: list });
     } else if (/CONTINUITY READER|STRICT INDEPENDENT Korean fiction|bardwiki-memory-writer/.test(all)) {
       kind = 'aux';
       rbody = '{}';
