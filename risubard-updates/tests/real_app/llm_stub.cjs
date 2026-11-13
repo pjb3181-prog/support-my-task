@@ -26,6 +26,23 @@ function longText(chars, seed) {
 }
 const textOf = m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content));
 const after = (s, marker) => { const k = s.lastIndexOf(marker); return k < 0 ? '' : s.slice(k + marker.length); };
+const NAMES = ['카이', '리나', '도윤', '서하', '하준'];
+const H = { currentState: '현재 상태', history: '작중 행적' };
+const turnIds = [];
+function turnOf(msgs) {
+  const last = [...(msgs || [])].reverse().find((m) => m.role === 'assistant');
+  const id = last ? last.messageId : 'none';
+  let i = turnIds.indexOf(id); if (i < 0) { turnIds.push(id); i = turnIds.length - 1; }
+  return i + 1;
+}
+// Replacement sections for a canonical document: current state replaced, history appended (old history preserved).
+function canonSections(markdown, turn) {
+  const old = ((String(markdown || '').match(new RegExp('### ' + H.history + '\n+([\s\S]*?)(?=\n### |$)')) || [])[1] || '').trim();
+  return [
+    { heading: H.currentState, operation: 'upsert', content: '- 마지막 확인: 턴 ' + turn },
+    { heading: H.history, operation: 'upsert', content: (old ? old + '\n' : '') + '- 턴 ' + turn + ': 등장' },
+  ];
+}
 const log = o => fs.appendFileSync(LOG, JSON.stringify(o) + '\n');
 
 http.createServer((req, res) => {
@@ -71,12 +88,24 @@ http.createServer((req, res) => {
     } else if (/surgical Korean-fiction editor/.test(all)) {
       kind = 'bard-revision';
       rbody = after(all, '# ORIGINAL DRAFT\n').replace('천천히', '조용히');
+    } else if (/Return only changed H3 sections for every requested canonical/.test(all)) {
+      kind = 'bardwiki-canonical-batch';
+      let inp = {}; try { inp = JSON.parse(textOf(msgs[msgs.length - 1])); } catch {}
+      const turn = turnOf(inp.confirmedMessages);
+      rbody = JSON.stringify({ documents: (inp.targets || []).map((t) => ({ candidateIndex: t.candidateIndex, sections: canonSections(t.target && t.target.markdown, turn) })) });
     } else if (/bardwiki-memory-writer/.test(all) && cfg.memory && cfg.memory !== 'empty') {
       kind = 'bardwiki-' + cfg.memory;
-      const cand = (title, type) => ({ type, title, reason: '등장', action: 'create', targetDocumentId: null, confidence: 0.95 });
-      const list = [cand('카이', 'character'), cand('리나', 'character'), cand('도윤', 'character'), cand('서하', 'character'), cand('하준', 'character')];
-      if (cfg.memory === 'poison') list.push(cand('큰 전투', 'event'));
-      rbody = JSON.stringify({ schemaVersion: 1, title: '만남', establishedEvents: ['여섯 명이 만났다.'], stateChanges: [], characterKnowledge: [], persistentFacts: [], openContinuity: [], canonicalUpdateCandidates: list });
+      let inp = {}; try { inp = JSON.parse(textOf(msgs[msgs.length - 1])); } catch {}
+      const turn = turnOf(inp.confirmedMessages);
+      const existing = inp.completeCanonicalDocuments || [];
+      const cands = [], patches = [];
+      NAMES.forEach((name, i) => {
+        const ex = existing.find((d) => d.title === name);
+        cands.push({ type: 'character', title: name, reason: '등장', action: ex ? 'update' : 'create', targetDocumentId: ex ? ex.id : null, confidence: 0.95 });
+        patches.push({ candidateIndex: i, sections: canonSections(ex && ex.completeText, turn) });
+      });
+      if (cfg.memory === 'poison') cands.push({ type: 'event', title: '큰 전투', reason: '전투', action: 'create', targetDocumentId: null, confidence: 0.95 });
+      rbody = JSON.stringify({ schemaVersion: 1, title: '만남 ' + turn, establishedEvents: ['여섯 명이 만났다. (턴 ' + turn + ')'], stateChanges: [], characterKnowledge: [], persistentFacts: [], openContinuity: [], canonicalUpdateCandidates: cands, canonicalPatches: patches });
     } else if (/CONTINUITY READER|STRICT INDEPENDENT Korean fiction|bardwiki-memory-writer/.test(all)) {
       kind = 'aux';
       rbody = '{}';
