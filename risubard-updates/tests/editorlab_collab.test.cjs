@@ -268,3 +268,25 @@ test('editor still applies its revision when Story Runner already cleaned the ma
   await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
   assert.equal(app.chat.message[1].data,STORY.replace(EXCERPT,BETTER));
 });
+
+// ---- review-pending announcement from Story Runner (listener order between plugins is a startup race) ----
+test('a fresh pending announcement from Story Runner defers Bard Editor Lab for any text',async()=>{
+  const app=await launch('patch');
+  app.storage.set(RECEIPT_KEY,{owner:'story_runner',state:'pending',at:Date.now(),ttlMs:600000});
+  app.emit();
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.equal(app.calls.length,0,'no editor/writer model call while Story Runner will review');
+  assert.equal(app.chat.message[1].data,STORY);
+});
+test('an expired or released pending announcement, or one from another owner, does not defer',async()=>{
+  for(const receipt of [
+    {owner:'story_runner',state:'pending',at:Date.now()-601000,ttlMs:600000},
+    {owner:'story_runner',state:'released',at:Date.now()},
+    {owner:'someone_else',state:'pending',at:Date.now()}]){
+    const app=await launch('pass');
+    app.storage.set(RECEIPT_KEY,receipt);
+    app.emit();
+    await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+    assert.ok(app.calls.length>=1,'revision must run for '+JSON.stringify(receipt));
+  }
+});

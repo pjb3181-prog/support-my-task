@@ -4634,6 +4634,9 @@
       perf.syncMs = Date.now() - t;
       perf.stage = activeTarget ? "target-synced" : "no-target";
       if (!activeTarget) return messages;
+      // Tell Bard Editor Lab (via the shared per-chat receipt key) whether this reply will get a Story Runner review.
+      if (project.experienceMode === 'ai' && project.running && project.writerQualityMode === 'max') await markRunnerReviewPending();
+      else await releaseRunnerReviewPending();
       if (project.experienceMode !== 'ai') {
         // Direct play: track and preserve actual story continuity, but NEVER impose an episode/node plan.
         const verifiedNotebook = await freshNotebookForTarget(activeTarget);
@@ -4719,11 +4722,16 @@
   // Premium (max quality) rewrite shared by the non-streaming afterRequest path and the streaming
   // committed-output path, so both run exactly the same quality logic.
   async function runPremiumRewrite(cleanResult) {
-    const ctx = await readPlanningContext('premium output check',false);
-    const recent = Array.isArray(ctx.recentMessages) ? ctx.recentMessages : [];
-    return await rewriteDraftForQuality(cleanResult,ctx,effectiveCurrentEpisode(project.planningOutline),
-      project.modernDirection,activeHostPacingMode || 'adaptive',
-      extractRoleplayIdentity(recent),lastRoleplayStatus(recent));
+    try {
+      const ctx = await readPlanningContext('premium output check',false);
+      const recent = Array.isArray(ctx.recentMessages) ? ctx.recentMessages : [];
+      return await rewriteDraftForQuality(cleanResult,ctx,effectiveCurrentEpisode(project.planningOutline),
+        project.modernDirection,activeHostPacingMode || 'adaptive',
+        extractRoleplayIdentity(recent),lastRoleplayStatus(recent));
+    } finally {
+      // The review is over (receipt written, or the critic/writer failed): Bard Editor Lab may proceed.
+      await releaseRunnerReviewPending();
+    }
   }
 
   // RisuBard runs afterRequest only for non-streaming replies. This flag records that the quality gate
@@ -7727,9 +7735,36 @@
     const chatId=text(currentTarget && currentTarget.chatId);
     if(!chatId)return content;
     try{await risuai.pluginStorage.setItem('risubard_editorial_receipt_v1:'+chatId,
-      {owner:'story_runner',signature:editorialSignature(content),at:Date.now()});}
+      {owner:'story_runner',state:'reviewed',signature:editorialSignature(content),at:Date.now()});}
     catch(error){console.log('[StoryRunner] editorial receipt unavailable',error);}
     return content;
+  }
+  // Streamed replies are reviewed from the committed-output listener, and RisuBard runs the listeners of
+  // different plugins sequentially in plugin-registration order (which is a startup race). If Bard Editor Lab's
+  // listener runs first it would revise the same passage before this plugin's review. To make the receipt
+  // order-independent, this plugin announces on the SAME per-chat receipt key that a review is pending
+  // (written when a reviewable host request starts) and Bard Editor Lab defers while it is fresh.
+  // The record is released when the review ends, cleared by the next request that will not be reviewed,
+  // and ignored by Bard after RUNNER_PENDING_TTL_MS, so a lost request can never block editing for long.
+  const RUNNER_PENDING_TTL_MS = 10 * 60 * 1000;
+  async function markRunnerReviewPending() {
+    const chatId = text(currentTarget && currentTarget.chatId);
+    if (!chatId) return;
+    try {
+      await risuai.pluginStorage.setItem('risubard_editorial_receipt_v1:' + chatId,
+        {owner:'story_runner',state:'pending',at:Date.now(),ttlMs:RUNNER_PENDING_TTL_MS});
+    } catch (error) { console.log('[StoryRunner] review-pending marker unavailable', error); }
+  }
+  async function releaseRunnerReviewPending() {
+    const chatId = text(currentTarget && currentTarget.chatId);
+    if (!chatId) return;
+    try {
+      const key = 'risubard_editorial_receipt_v1:' + chatId;
+      const cur = await risuai.pluginStorage.getItem(key);
+      if (cur && cur.owner === 'story_runner' && cur.state === 'pending') {
+        await risuai.pluginStorage.setItem(key, {owner:'story_runner',state:'released',at:Date.now()});
+      }
+    } catch (error) { console.log('[StoryRunner] review-pending release failed', error); }
   }
 
   async function rewriteDraftForQuality(draft, ctx, ep, additionalDirection, pacingMode, identity, priorSheet) {

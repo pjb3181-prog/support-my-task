@@ -177,7 +177,7 @@ test('update guard: versioned copies stay identical to the live plugin files',()
 // ---- 8. streaming: the premium (max quality) rewrite also runs for streamed replies, exactly once ----
 const LONG='현수는 낡은 문을 밀었다. 먼지가 흩날렸고, 오래된 종이 냄새가 코끝을 찔렀다. 그는 잠시 숨을 고른 뒤 안으로 걸음을 옮겼다. 책상 위에는 누군가 급히 남긴 메모가 놓여 있었다. '.repeat(8);
 const BETTER_LONG=LONG.replace('먼지가 흩날렸고','먼지가 햇빛 속에서 천천히 흩날렸고');
-async function premiumHarness({quality='max',running=true,committed=LONG+'\n'+MARKER,editBeforeSave=false}={}){
+async function premiumHarness({quality='max',running=true,committed=LONG+'\n'+MARKER,editBeforeSave=false,criticReply='{"revise":true,"issues":["반복되는 묘사"]}'}={}){
   const msg={role:'char',data:committed,chatId:'m1'};
   const chatObj={id:'c1',message:[{role:'user',data:'hi'},msg]};
   const charObj={chaId:'cha1',name:'테스트',chats:[chatObj],chatPage:0};
@@ -190,7 +190,7 @@ async function premiumHarness({quality='max',running=true,committed=LONG+'\n'+MA
     setChatToIndex:async(ci,ti,next)=>{saved.push(next.message[1].data);},
     runLLMModel:async o=>{
       llmCount++;const sys=String(o.messages[0].content);
-      if(/strict fiction critic/.test(sys)){critic.push(1);return {type:'success',result:'{"revise":true,"issues":["반복되는 묘사"]}'};}
+      if(/strict fiction critic/.test(sys)){critic.push(1);return {type:'success',result:criticReply};}
       if(/revising a Korean fiction draft/.test(sys)){writer.push(1);return {type:'success',result:'<SR_STORY>'+BETTER_LONG+'</SR_STORY>'};}
       return {type:'success',result:'{"ok":true,"complete":false}'};}
   }});
@@ -245,4 +245,35 @@ test('streaming rewrite never overwrites a message the user edited while it was 
   await h.fire();
   assert.equal(h.writer.length,1,'the rewrite ran');
   assert.deepEqual(h.saved,[],'but the edited message was not overwritten');
+});
+
+// ---- 9. review-pending announcement (Bard Editor Lab defers while Story Runner will review this reply) ----
+const RKEY='risubard_editorial_receipt_v1:c1';
+const rec=h=>JSON.parse(h.store.get(RKEY)||'null');
+test('max quality + AI running: a host request announces a pending review, released as reviewed after the streamed review',async()=>{
+  const h=await premiumHarness();
+  await h.sr.replacers.beforeRequest(chat(),'model');
+  assert.equal(rec(h)?.state,'pending');
+  assert.equal(rec(h)?.owner,'story_runner');
+  await h.fire();
+  assert.equal(rec(h)?.state,'reviewed','the receipt replaced the pending announcement');
+  assert.ok(rec(h).signature);
+});
+test('a failed critic still releases the pending announcement so Bard Editor Lab can proceed',async()=>{
+  const h=await premiumHarness({criticReply:'JSON 아님'});
+  await h.sr.replacers.beforeRequest(chat(),'model');
+  assert.equal(rec(h)?.state,'pending');
+  await h.fire();
+  assert.equal(rec(h)?.state,'released');
+});
+test('a request that will not be reviewed clears a stale pending announcement',async()=>{
+  const h=await premiumHarness({quality:'strong'});
+  h.store.set(RKEY,JSON.stringify({owner:'story_runner',state:'pending',at:Date.now()}));
+  await h.sr.replacers.beforeRequest(chat(),'model');
+  assert.equal(rec(h)?.state,'released');
+});
+test('auxiliary requests do not announce a review',async()=>{
+  const h=await premiumHarness();
+  await h.sr.replacers.beforeRequest(chat(),'memory');
+  assert.equal(rec(h),null);
 });

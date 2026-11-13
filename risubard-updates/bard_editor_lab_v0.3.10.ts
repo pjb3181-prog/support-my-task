@@ -668,8 +668,11 @@
    try{
      const receipt=await risuai.pluginStorage.getItem('risubard_editorial_receipt_v1:'+chatId);
      const age=Date.now()-Number(receipt?.at);
-     return receipt?.owner==='story_runner'&&age>=0&&age<900000
-       &&receipt.signature===editorialSignature(content);
+     if(receipt?.owner!=='story_runner'||!(age>=0))return false;
+     // Story Runner announced a review of the reply that is being produced right now (listener order between
+     // plugins is a startup race): defer to it. The announcement expires so a lost request cannot block editing.
+     if(receipt.state==='pending')return age<(Number(receipt.ttlMs)||600000);
+     return age<900000&&receipt.signature===editorialSignature(content);
    }catch(_){return false;}
  }
 
