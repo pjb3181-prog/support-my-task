@@ -2,10 +2,9 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const {loadPlugin,TOKEN,chat}=require('./helpers/plugin_vm.cjs');
 const MARKER='<SR_SCENE_COMPLETE/>';
-const active=(id='x')=>({calls:{[id]:{owner:'world_editor_lab',at:Date.now(),expires:Date.now()+60000}}});
-const expired=()=>({calls:{old:{owner:'world_editor_lab',at:1,expires:2}}});
-const put=(store,v)=>store.set('risubard_internal_call_v1',JSON.stringify(v));
+const RESULT='[[RISUBARD_INTERNAL_RESULT:wel-test]]';
 const readSrc=f=>fs.readFileSync(path.join(__dirname,'..',f),'utf8');
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
 
 // ---- 1. Story Runner alone ----
 test('Story Runner alone: normal reply keeps working and its status marker is stripped',async()=>{
@@ -47,52 +46,61 @@ test('Mutation + Story Runner together: a normal main-model chat still runs both
   assert.ok(Array.isArray(out)&&out.length>=2);
 });
 
-// ---- 3. Internal call vs concurrent normal chat ----
-test('afterRequest bypass lasts only while an internal call is registered (expired entries are ignored)',async()=>{
-  const store=new Map(),sr=await loadPlugin('story_runner.ts',{store});
-  put(store,active());
-  assert.equal(await sr.replacers.afterRequest('본문'+MARKER,'model'),'본문'+MARKER,'documented limitation: a concurrent story reply is left untouched');
-  put(store,expired());
-  assert.equal(await sr.replacers.afterRequest('본문'+MARKER,'model'),'본문');
-  store.delete('risubard_internal_call_v1');
-  assert.equal(await sr.replacers.afterRequest('본문'+MARKER,'model'),'본문');
+// ---- 3. Internal call vs concurrent normal chat (per-request tokens, no shared state) ----
+test('afterRequest: only the response carrying the internal result token is bypassed',async()=>{
+  const sr=await loadPlugin('story_runner.ts');
+  assert.equal(await sr.replacers.afterRequest(RESULT+'\n{"ok":1}'+MARKER,'model'),RESULT+'\n{"ok":1}'+MARKER);
+  assert.equal(await sr.replacers.afterRequest('본문'+MARKER,'model'),'본문','a normal reply without the token is processed');
 });
-test('beforeRequest is per request: normal chat during an internal call is still processed, the tagged request is not',async()=>{
-  const store=new Map(),bard=await loadPlugin('bard_editor_lab.js',{store});
-  put(store,active());
+test('beforeRequest is per request: a normal chat is processed, only the tagged request is skipped',async()=>{
+  const bard=await loadPlugin('bard_editor_lab.js');
   const normal=chat();
   assert.notEqual(await bard.replacers.beforeRequest(normal,'model'),normal,'normal chat still receives editor guidance');
   const tagged=chat('\n'+TOKEN);
   assert.equal(await bard.replacers.beforeRequest(tagged,'model'),tagged);
 });
-test('Bard Editor Lab afterRequest does not revise a reply while an internal call is registered',async()=>{
-  const store=new Map(),bard=await loadPlugin('bard_editor_lab.js',{store});
-  put(store,active());
-  const reply='그녀는 어김없이 고개를 숙였다. '.repeat(30);
+test('Bard Editor Lab afterRequest leaves an internal-call response alone',async()=>{
+  const bard=await loadPlugin('bard_editor_lab.js');
+  const reply=RESULT+'\n'+'그녀는 어김없이 고개를 숙였다. '.repeat(30);
   assert.equal(await bard.replacers.afterRequest(reply,'model'),reply);
 });
+test('no shared state: the hooks neither read nor write the old internal-call registry',()=>{
+  for(const f of ['story_runner.ts','mutation_state.ts','bard_editor_lab.js','world_editor_lab.js'])
+    assert.ok(!readSrc(f).includes('risubard_internal_call_v1'),f);
+});
 
-// ---- 4. real World Editor Lab call path with the real hooks sharing one store ----
-test('World Editor Lab call: the real hooks recognise it while it runs; the registry is empty afterwards',async()=>{
+// ---- 4. World Editor Lab real call path while a normal chat finishes ----
+function welHarness(store,runLLMModel){
   const src=readSrc('world_editor_lab.js');
-  const start=src.indexOf('const MARK='),end=src.indexOf('function jsonResult(',start);
+  const start=src.indexOf('const CALL_TIMEOUT_MS='),end=src.indexOf('function jsonResult(',start);
+  const env={str:x=>String(x??''),setTimeout,clearTimeout,Date,Math,Object,Promise,Error,JSON,cut:(x,n=12000)=>String(x??'').slice(0,n),
+    risuai:{runLLMModel},model:'model',dialogue:[],notes:'',status:'',sourceSummary:()=>({}),character:{},persist:async()=>{}};
+  return vm.runInNewContext(src.slice(start,end)+'({ai})',env);
+}
+test('World Editor Lab call: concurrent normal chat is processed, the internal call is not, echo token is removed',async()=>{
   const store=new Map(),sr=await loadPlugin('story_runner.ts',{store}),mut=await loadPlugin('mutation_state.ts',{store});
   const seen={};
-  const env={str:x=>String(x??''),setTimeout,clearTimeout,Date,Math,Object,Promise,Error,JSON,cut:(x,n=12000)=>String(x??'').slice(0,n),
-    risuai:{pluginStorage:{getItem:async k=>store.has(k)?JSON.parse(store.get(k)):null,setItem:async(k,v)=>{if(v===null)store.delete(k);else store.set(k,JSON.stringify(v));}},
-      runLLMModel:async opts=>{
-        seen.messages=opts.messages;
-        seen.before=[await mut.replacers.beforeRequest(opts.messages,'model'),await sr.replacers.beforeRequest(opts.messages,'model')];
-        seen.after=await sr.replacers.afterRequest('JSON{"a":1}'+MARKER,'model');
-        return {type:'success',result:'{"ok":true}'};}},
-    model:'model',dialogue:[],notes:'',status:'',sourceSummary:()=>({}),character:{},persist:async()=>{}};
-  const fn=vm.runInNewContext(src.slice(start,end)+'({ai})',env);
-  await fn.ai([{role:'system',content:'JSON editor'},{role:'user',content:'edit'}]);
+  const fn=welHarness(store,async opts=>{
+    seen.messages=opts.messages;
+    const echo=opts.messages[0].content.match(/\[\[RISUBARD_INTERNAL_RESULT:[^\]]+\]\]/)[0];
+    seen.before=[await mut.replacers.beforeRequest(opts.messages,'model'),await sr.replacers.beforeRequest(opts.messages,'model')];
+    // a normal chat reply completes WHILE the internal call is in flight
+    seen.normal=await sr.replacers.afterRequest('일반 채팅 응답'+MARKER,'model');
+    // the internal response (model echoes the token)
+    seen.internal=await sr.replacers.afterRequest(echo+'\n{"ok":true}'+MARKER,'model');
+    return {type:'success',result:echo+'\n{"ok":true}'};
+  });
+  const out=await fn.ai([{role:'system',content:'JSON editor'},{role:'user',content:'edit'}]);
   assert.equal(seen.before[0],seen.messages);
   assert.equal(seen.before[1],seen.messages);
-  assert.equal(seen.after,'JSON{"a":1}'+MARKER,'Story Runner must not strip or rewrite the internal JSON response');
-  assert.equal(store.has('risubard_internal_call_v1'),false);
-  assert.equal(await sr.replacers.afterRequest('본문'+MARKER,'model'),'본문','normal processing resumes');
+  assert.equal(seen.normal,'일반 채팅 응답','the concurrent normal reply must still be post-processed (marker stripped)');
+  assert.match(seen.internal,/\{"ok":true\}<SR_SCENE_COMPLETE\/>/,'the internal response must be left untouched');
+  assert.equal(out,'{"ok":true}','the echo token never reaches the editor');
+  assert.ok(![...store.keys()].some(k=>/internal_call/i.test(k)),'no internal-call state was written');
+});
+test('World Editor Lab call: a model that ignores the echo instruction still works',async()=>{
+  const fn=welHarness(new Map(),async()=>({type:'success',result:'{"ok":true}'}));
+  assert.equal(await fn.ai([{role:'system',content:'s'}]),'{"ok":true}');
 });
 
 // ---- 5. first message choices and image tags survive World Editor proposals ----
@@ -108,12 +116,51 @@ test('World Editor Lab refuses a first-message rewrite that drops choices or ima
   assert.ok(ok.fields.firstMessage);
 });
 
-// ---- 6. update regression: protections must survive a plugin update ----
+// ---- 6. streaming: afterRequest never runs, the committed-output listener must do the same work ----
+async function streamHarness(messageData,{roleData}={}){
+  const msg={role:'char',data:messageData,chatId:'m1'};
+  const chatObj={id:'c1',message:[{role:'user',data:'hi'},msg]};
+  const charObj={chaId:'cha1',name:'테스트',chats:[chatObj],chatPage:0};
+  const saved=[];
+  const sr=await loadPlugin('story_runner.ts',{extra:{
+    getCurrentCharacterIndex:async()=>0,getCurrentChatIndex:async()=>0,
+    getCharacterFromIndex:async()=>charObj,getChatFromIndex:async()=>chatObj,getCharacter:async()=>charObj,getChat:async()=>chatObj,
+    setChatToIndex:async(ci,ti,next)=>{saved.push(next.message[1].data);},
+  }});
+  const fire=async()=>{await sr.listeners.output({characterIndex:0,chatIndex:0,messageIndex:1,chat:chatObj,char:charObj});await wait(80);};
+  return {sr,saved,fire,msg};
+}
+test('streaming: Story Runner status markers left in a streamed reply are removed from the committed message',async()=>{
+  const h=await streamHarness('스트리밍으로 받은 본문입니다.\n'+MARKER);
+  await h.fire();
+  assert.deepEqual(h.saved,['스트리밍으로 받은 본문입니다.']);
+});
+test('streaming: the episode status comment is removed too',async()=>{
+  const h=await streamHarness('본문입니다.\n<!--SR_EPISODE_STATUS {"episode":1} -->');
+  await h.fire();
+  assert.deepEqual(h.saved,['본문입니다.']);
+});
+test('streaming: an already clean message (normal reply path) is not saved again (no double save)',async()=>{
+  const h=await streamHarness('이미 정리된 본문입니다.');
+  await h.fire();
+  assert.deepEqual(h.saved,[]);
+});
+test('streaming: the cleanup never overwrites a message that changed in the meantime',async()=>{
+  const h=await streamHarness('본문입니다.\n'+MARKER);
+  // the committed message is edited (by the user or another plugin) before the cleanup runs
+  const orig=h.sr.risuai.getChatFromIndex;
+  h.sr.risuai.getChatFromIndex=async()=>({id:'c1',message:[{role:'user',data:'hi'},{role:'char',data:'다른 플러그인이 이미 고친 본문',chatId:'m1'}]});
+  await h.fire();
+  assert.deepEqual(h.saved,[]);
+  assert.ok(orig);
+});
+
+// ---- 7. update regression: protections must survive a plugin update ----
 const REQUIRED={
-  'story_runner.ts':['hasInternalCallToken','internalCallActive',"requestKind !== 'model' && requestKind !== '__sr_direct__'",'recordRunnerReview','risubard_editorial_receipt_v1:','editorialSignature'],
+  'story_runner.ts':['hasInternalCallToken','hasInternalResultToken',"requestKind !== 'model' && requestKind !== '__sr_direct__'",'recordRunnerReview','risubard_editorial_receipt_v1:','editorialSignature','stripStatusMarkers','persistCleanedCommittedOutput'],
   'mutation_state.ts':["requestModel && requestModel !== 'model'",'hasInternalCallToken','messages = scoped.messages'],
-  'bard_editor_lab.js':['hasInternalCallToken','internalCallActive','runnerAlreadyReviewed','risubard_editorial_receipt_v1:','if(collabActive||state.busy)return messages','await watcherSeed'],
-  'world_editor_lab.js':['pluginBlocked','[[RISUBARD_INTERNAL_CALL:','risubard_internal_call_v1','withTimeout'],
+  'bard_editor_lab.js':['hasInternalCallToken','hasInternalResultToken','runnerAlreadyReviewed','risubard_editorial_receipt_v1:','if(collabActive||state.busy)return messages','await watcherSeed','stripRunnerMarkers'],
+  'world_editor_lab.js':['pluginBlocked','[[RISUBARD_INTERNAL_CALL:','[[RISUBARD_INTERNAL_RESULT:','withTimeout'],
 };
 for(const [file,needles] of Object.entries(REQUIRED)){
   test('update guard: '+file+' keeps every required protection',()=>{

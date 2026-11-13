@@ -619,11 +619,13 @@
    if(uiOpen&&activityView==='auto')void render().catch(()=>{});
  }
 
- // Internal-call protocol: see Story Runner. Token = exact request; registry = responses.
+ // Story Runner status markers are cleaned from the saved text by Story Runner (afterRequest for normal
+ // replies, its output listener for streaming). Compare and revise the marker-free text so the result is the
+ // same whichever plugin touches the committed message first.
+ const stripRunnerMarkers=v=>txt(v).replace(/\s*<!--SR_EPISODE_STATUS\s+[\s\S]*?-->\s*$/i,'').replace(/\s*<SR_SCENE_COMPLETE\/>\s*$/,'');
+ // Internal-call protocol (see Story Runner): per-request tokens, no shared state.
  function hasInternalCallToken(messages){try{return Array.isArray(messages)&&messages.some(m=>m&&typeof m.content==='string'&&m.content.includes('[[RISUBARD_INTERNAL_CALL:'));}catch(_){return false;}}
- async function internalCallActive(){
-   try{const v=await risuai.pluginStorage.getItem('risubard_internal_call_v1');const now=Date.now();return Object.values((v&&v.calls)||{}).some(c=>c&&Number(c.expires)>now);}catch(_){return false;}
- }
+ function hasInternalResultToken(content){return typeof content==='string'&&content.includes('[[RISUBARD_INTERNAL_RESULT:');}
  async function injectStyleBeforeRequest(messages,type){
    if(collabActive||state.busy)return messages;
    if(hasInternalCallToken(messages))return messages;
@@ -673,7 +675,7 @@
 
  async function reviseBeforeSave(response,type){
    if(collabActive||state.busy)return response;
-   if(await internalCallActive())return response;
+   if(hasInternalResultToken(response))return response;
    if(unloaded||!conf.auto||!conf.realEditor||type!=='model'||typeof response!=='string')return response;
    // Collaboration is deliberately post-save: deliver the first draft quickly,
    // then inspect and apply a verified patch without blocking the original response.
@@ -1077,7 +1079,7 @@
    const messages=live.chat?.message;
    if(!Array.isArray(messages)||meta.index!==messages.length-1)throw Error('뒤에 새 메시지가 추가되어 적용하지 않았어');
    const m=messages[meta.index];
-   if(!m||!['char','assistant'].includes(m.role)||txt(m.data)!==original)throw Error('원문이 변경되어 적용하지 않았어');
+   if(!m||!['char','assistant'].includes(m.role)||stripRunnerMarkers(m.data)!==stripRunnerMarkers(original))throw Error('원문이 변경되어 적용하지 않았어');
    if(meta.messageId&&txt(m.chatId||m.time)!==meta.messageId)throw Error('메시지 식별자 변경');
    if(!knownRestore){const fail=verify(original,revised);if(fail)throw Error('검증 실패 · '+fail);}
    // Fail closed if safe storage fails: do not alter chat before backup succeeds.
@@ -1116,7 +1118,7 @@
    const i=arg.messageIndex,m=arg.chat.message[i],ci=arg.characterIndex,ti=arg.chatIndex;
    if(!Number.isInteger(ci)||!Number.isInteger(ti)||!m||!['char','assistant'].includes(m.role)||i!==arg.chat.message.length-1)return;
    if(!conf.auto){void refreshSceneFromEvent(arg);return}
-   const original=txt(m.data);
+   const original=stripRunnerMarkers(m.data);
    if(await runnerAlreadyReviewed(original,txt(arg.chat?.id))){
      await recordAutomatic({phase:sourceLabel,outcome:'skipped',reason:'Story Runner 검수 완료 · 동일 원고의 자동 중복 퇴고 생략',original,calls:0});
      void refreshSceneFromEvent(arg);return;

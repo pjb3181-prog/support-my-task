@@ -4586,23 +4586,18 @@
     }
   }
 
-  // Internal-call protocol (shared by World Editor Lab and the story hooks).
-  // Requests: the caller embeds a per-call token in its prompt, so beforeRequest can
-  // identify exactly that request even while a normal chat runs concurrently.
-  // Responses: afterRequest cannot see the prompt, so it falls back to a registry of
-  // active calls with expiry (`risubard_internal_call_v1`). Limitation: while an
-  // internal call is active, a concurrent story response is also left untouched.
+  // Internal-call protocol (World Editor Lab and the story hooks). No shared state, no polling:
+  // - request: the caller puts [[RISUBARD_INTERNAL_CALL:<id>]] in its prompt, so beforeRequest sees exactly that request;
+  // - response: the caller asks the model to start its reply with [[RISUBARD_INTERNAL_RESULT:<id>]], so afterRequest
+  //   (which cannot see the prompt) recognises exactly that response. A concurrent normal chat has neither token and
+  //   is always processed. If a model ignores the echo instruction the response is processed like a normal one.
   function hasInternalCallToken(messages) {
     try {
       return Array.isArray(messages) && messages.some((m) => m && typeof m.content === 'string' && m.content.includes('[[RISUBARD_INTERNAL_CALL:'));
     } catch (_) { return false; }
   }
-  async function internalCallActive() {
-    try {
-      const v = await risuai.pluginStorage.getItem('risubard_internal_call_v1');
-      const now = Date.now();
-      return Object.values((v && v.calls) || {}).some((c) => c && Number(c.expires) > now);
-    } catch (_) { return false; }
+  function hasInternalResultToken(content) {
+    return typeof content === 'string' && content.includes('[[RISUBARD_INTERNAL_RESULT:');
   }
 
   async function beforeRequest(messages, requestModel) {
@@ -4710,15 +4705,22 @@
     }
   }
 
+  // Trailing status markers are removed from non-streaming replies in afterRequest. RisuBard never
+  // calls afterRequest for streaming replies (request.ts only runs it for type 'success'), so
+  // onChatOutput applies this same cleanup to the committed message. Idempotent: clean text is unchanged.
+  function stripStatusMarkers(value) {
+    const escaped = COMPLETE_MARKER.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+    return text(value)
+      .replace(/\s*<!--SR_EPISODE_STATUS\s+[\s\S]*?-->\s*$/i, "")
+      .replace(new RegExp("\\s*" + escaped + "\\s*$"), "");
+  }
+
   async function afterRequest(content, requestKind) {
     // Preserve auxiliary structured responses, including status-looking text.
     // Direct Story Runner execution deliberately uses its own sentinel.
     if (requestKind && requestKind !== 'model' && requestKind !== '__sr_direct__') return content;
-    if (requestKind !== '__sr_direct__' && await internalCallActive()) return content;
-    const escaped = COMPLETE_MARKER.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
-    let cleanResult = text(content)
-      .replace(/\s*<!--SR_EPISODE_STATUS\s+[\s\S]*?-->\s*$/i, "")
-      .replace(new RegExp("\\s*" + escaped + "\\s*$"), "");
+    if (requestKind !== '__sr_direct__' && hasInternalResultToken(content)) return content;
+    let cleanResult = stripStatusMarkers(content);
     const nativeAIRequest = project.experienceMode === 'ai' && project.running
       && !directRunInProgress && internalLLMCallDepth === 0 && requestKind !== '__sr_direct__';
     if (nativeAIRequest && project.writerQualityMode === 'max' && cleanResult.trim()) {
@@ -4861,6 +4863,24 @@
     }, AUTO_RUN_DELAY_MS);
   }
 
+  // Writes the marker-free text back to ONE committed message, only if that message is still exactly
+  // what the listener saw (never overwrites a user edit, a newer turn or another plugin's revision).
+  async function persistCleanedCommittedOutput(arg, original, cleaned) {
+    try {
+      if (!arg || !Number.isInteger(arg.characterIndex) || !Number.isInteger(arg.chatIndex) || !Number.isInteger(arg.messageIndex)) return false;
+      const chat = await risuai.getChatFromIndex(arg.characterIndex, arg.chatIndex);
+      const msg = chat && Array.isArray(chat.message) && chat.message[arg.messageIndex];
+      if (!msg || text(msg.data) !== original) return false;
+      const next = JSON.parse(JSON.stringify(chat));
+      next.message[arg.messageIndex].data = cleaned;
+      await risuai.setChatToIndex(arg.characterIndex, arg.chatIndex, next);
+      return true;
+    } catch (error) {
+      console.log('[StoryRunner] committed-output cleanup skipped', error);
+      return false;
+    }
+  }
+
   async function onChatOutput(arg) {
     try {
       const activeTarget = await syncTarget();
@@ -4873,6 +4893,10 @@
       if (!content) return;
       if(arg && Number.isInteger(arg.characterIndex) && arg.characterIndex !== activeTarget.characterIndex) return;
       if(arg && Number.isInteger(arg.chatIndex) && arg.chatIndex !== activeTarget.chatIndex) return;
+      // Streaming replies skip afterRequest: apply the same marker cleanup to the committed message.
+      // (Analysis below intentionally keeps using `content`, which still carries the marker.)
+      const cleanedCommitted = stripStatusMarkers(content);
+      if (cleanedCommitted && cleanedCommitted !== content) void persistCleanedCommittedOutput(arg, content, cleanedCommitted);
       if (project.experienceMode === 'ai' && project.running) {
         const verdict = await storyQualityVerdict(content);
         if (!verdict.ok) {

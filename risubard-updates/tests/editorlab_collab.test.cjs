@@ -94,7 +94,7 @@ async function launch(scenario,initialModel='otherAx'){
   assert.ok(replacers.has('afterRequest'),'afterRequest hook must be registered');
   await wait(25); // let the load-time watcher seed finish before any new turn arrives
   return {
-    calls,storage,replacers, get chat(){return chat},
+    calls,storage,replacers,listeners, get chat(){return chat},
     get html(){return document.body.innerHTML},
     openUI:()=>uiCallbacks.get('Bard Editor Lab')(),
     control:id=>document.getElementById(id),
@@ -248,4 +248,23 @@ test('an event without a chat id is handled without throwing and without a bogus
   app.emit();
   await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
   assert.ok(app.calls.length>=1);
+});
+
+// ---- streaming: Story Runner may clean its status markers before or after the editor runs ----
+const SR_MARK='\n<SR_SCENE_COMPLETE/>';
+test('editor revises a streamed message that still carries a Story Runner marker, and the marker is gone afterwards',async()=>{
+  const app=await launch('patch');
+  app.chat.message.splice(1,0,{role:'char',chatId:'gen1',data:STORY+SR_MARK});
+  app.emit();
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.equal(app.chat.message[1].data,STORY.replace(EXCERPT,BETTER));
+});
+test('editor still applies its revision when Story Runner already cleaned the marker before the editor commit',async()=>{
+  const app=await launch('patch');
+  // the listener snapshot still has the marker, the live chat is already clean (Story Runner finished first)
+  app.chat.message.splice(1,0,{role:'char',chatId:'gen1',data:STORY});
+  const snapshot={...app.chat,message:app.chat.message.map(m=>m.chatId==='gen1'?{...m,data:STORY+SR_MARK}:m)};
+  await app.listeners.get('output')({characterIndex:0,chatIndex:0,chat:snapshot,messageIndex:1,char:{name:'유나'}});
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.equal(app.chat.message[1].data,STORY.replace(EXCERPT,BETTER));
 });

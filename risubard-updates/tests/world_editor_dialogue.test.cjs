@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
 const src=fs.readFileSync(path.join(__dirname,'..','world_editor_lab.js'),'utf8');
-const start=src.indexOf('const MARK='),end=src.indexOf('function jsonResult(',start);
+const start=src.indexOf('const CALL_TIMEOUT_MS='),end=src.indexOf('function jsonResult(',start);
 assert.ok(start>0&&end>start);
 const BLOCKED={type:'fail',result:'Plugin calls are blocked by the caller.'};
 // `respond(opts, n)` decides each model response; n is the 1-based call number.
@@ -25,7 +25,6 @@ function harness(initial=[],respond){
  const fn=vm.runInNewContext(src.slice(start,end)+'({ai,discuss,callModel,pluginBlocked})',env);
  return {fn,env,requests,saved,store,writes};
 }
-const registry=h=>h.store.get('risubard_internal_call_v1');
 
 test('first user input invokes RisuBard model and creates an assistant discussion turn',async()=>{
  const h=harness();
@@ -103,52 +102,32 @@ test('an empty stream is rejected',async()=>{
  await assert.rejects(()=>h.fn.ai([{role:'system',content:'s'}]),/비어/);
 });
 
-// ---- internal-call token and registry ----
-test('the request carries a per-call token and the registry is set during the call then cleared',async()=>{
- let during;
- const h=harness([],async(opts,n,store)=>{during=JSON.parse(store.get('risubard_internal_call_v1'));return {type:'success',result:'ok'};});
- await h.fn.ai([{role:'system',content:'system prompt'},{role:'user',content:'u'}]);
+// ---- internal-call tokens (no shared state) ----
+test('the request carries a per-call token and asks the model to echo a result token, which is stripped',async()=>{
+ const h=harness([],async opts=>{
+  const echo=opts.messages[0].content.match(/\[\[RISUBARD_INTERNAL_RESULT:[^\]]+\]\]/)[0];
+  return {type:'success',result:echo+'\n본문 응답'};
+ });
+ const out=await h.fn.ai([{role:'system',content:'system prompt'},{role:'user',content:'u'}]);
  const sys=h.requests[0].messages[0].content;
  assert.match(sys,/\[\[RISUBARD_INTERNAL_CALL:wel-[a-z0-9-]+\]\]/);
+ assert.match(sys,/\[\[RISUBARD_INTERNAL_RESULT:wel-[a-z0-9-]+\]\]/);
  assert.equal(h.requests[0].messages[1].content,'u');
- const entries=Object.values(during.calls);
- assert.equal(entries.length,1);
- assert.equal(entries[0].owner,'world_editor_lab');
- assert.ok(entries[0].expires>Date.now());
- assert.equal(registry(h),undefined,'registry cleared after success');
+ assert.equal(out,'본문 응답');
+ assert.equal(h.store.size,0,'no shared state is written');
 });
-test('the registry is cleared when the call throws',async()=>{
- const h=harness([],async()=>{throw Error('boom');});
- await assert.rejects(()=>h.fn.ai([{role:'system',content:'s'}]));
- assert.equal(registry(h),undefined);
-});
-test('a hung model call times out, rejects and still clears the registry',async()=>{
- const timers=[];
+test('a hung model call times out and rejects',async()=>{
  const h=harness([],()=>new Promise(()=>{}));
- // shrink the timeout by wrapping setTimeout so the 120 s guard fires immediately
  h.env.setTimeout=(fn,ms)=>setTimeout(fn,ms>=120000?5:ms);
  await assert.rejects(()=>h.fn.ai([{role:'system',content:'s'}]),/시간 초과/);
- assert.equal(registry(h),undefined);
 });
-test('overlapping internal calls keep independent registry entries',async()=>{
- let release;const gate=new Promise(r=>{release=r;});
- const seen=[];
- const h=harness([],async(opts,n,store)=>{
-  if(n===1)await gate;
-  seen.push(Object.keys(JSON.parse(store.get('risubard_internal_call_v1')).calls).length);
-  return {type:'success',result:'ok'};});
- const first=h.fn.ai([{role:'system',content:'a'}]);
- await new Promise(r=>setTimeout(r,10));
- const second=h.fn.ai([{role:'system',content:'b'}]);
- await new Promise(r=>setTimeout(r,10));
- release();
- await Promise.all([first,second]);
- assert.ok(seen.includes(2),'second call sees both entries: '+seen);
- assert.equal(registry(h),undefined,'both entries removed at the end');
+test('overlapping internal calls get distinct tokens',async()=>{
+ const h=harness([],async()=>({type:'success',result:'ok'}));
+ await Promise.all([h.fn.ai([{role:'system',content:'a'}]),h.fn.ai([{role:'system',content:'b'}])]);
+ const ids=h.requests.map(r=>r.messages[0].content.match(/CALL:(wel-[a-z0-9-]+)/)[1]);
+ assert.equal(new Set(ids).size,2);
 });
-test('an expired stale entry from a crashed earlier call is pruned on the next call',async()=>{
- const h=harness();
- h.store.set('risubard_internal_call_v1',JSON.stringify({calls:{old:{owner:'world_editor_lab',at:1,expires:2}}}));
- await h.fn.ai([{role:'system',content:'s'}]);
- assert.equal(registry(h),undefined);
+test('an echo-only response is rejected as empty',async()=>{
+ const h=harness([],async opts=>({type:'success',result:opts.messages[0].content.match(/\[\[RISUBARD_INTERNAL_RESULT:[^\]]+\]\]/)[0]}));
+ await assert.rejects(()=>h.fn.ai([{role:'system',content:'s'}]),/비어/);
 });

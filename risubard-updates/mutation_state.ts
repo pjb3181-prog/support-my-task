@@ -6479,23 +6479,18 @@
     return {messages:removed ? filtered : messages,removed,chars,status:'scoped'};
   }
 
-  // Internal-call protocol (shared by World Editor Lab and the story hooks).
-  // Requests: the caller embeds a per-call token in its prompt, so beforeRequest can
-  // identify exactly that request even while a normal chat runs concurrently.
-  // Responses: afterRequest cannot see the prompt, so it falls back to a registry of
-  // active calls with expiry (`risubard_internal_call_v1`). Limitation: while an
-  // internal call is active, a concurrent story response is also left untouched.
+  // Internal-call protocol (World Editor Lab and the story hooks). No shared state, no polling:
+  // - request: the caller puts [[RISUBARD_INTERNAL_CALL:<id>]] in its prompt, so beforeRequest sees exactly that request;
+  // - response: the caller asks the model to start its reply with [[RISUBARD_INTERNAL_RESULT:<id>]], so afterRequest
+  //   (which cannot see the prompt) recognises exactly that response. A concurrent normal chat has neither token and
+  //   is always processed. If a model ignores the echo instruction the response is processed like a normal one.
   function hasInternalCallToken(messages) {
     try {
       return Array.isArray(messages) && messages.some((m) => m && typeof m.content === 'string' && m.content.includes('[[RISUBARD_INTERNAL_CALL:'));
     } catch (_) { return false; }
   }
-  async function internalCallActive() {
-    try {
-      const v = await risuai.pluginStorage.getItem('risubard_internal_call_v1');
-      const now = Date.now();
-      return Object.values((v && v.calls) || {}).some((c) => c && Number(c.expires) > now);
-    } catch (_) { return false; }
+  function hasInternalResultToken(content) {
+    return typeof content === 'string' && content.includes('[[RISUBARD_INTERNAL_RESULT:');
   }
 
   async function beforeRequest(messages, requestModel) {

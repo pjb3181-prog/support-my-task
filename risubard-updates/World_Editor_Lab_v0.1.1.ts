@@ -55,23 +55,12 @@ function sourceSummary(c){
  lore:snap.globalLore.slice(0,50).map((x,i)=>({index:i,comment:cut(x.comment||x.name,90),key:cut(x.key,120),content:cut(x.content,1600)})),
  totalLore:snap.globalLore.length,truncated:snap.globalLore.length>50};
 }
-const MARK='risubard_internal_call_v1',CALL_TTL_MS=150000,CALL_TIMEOUT_MS=120000;
+const CALL_TIMEOUT_MS=120000;
 // RisuBard answers {type:'fail', result:'Plugin calls are blocked by the caller.'} BEFORE any
 // network request when the selected model is plugin-provided and allowPlugins is false.
 // Only that compatibility failure is retried (no request was sent, so there is no duplicate
 // cost). API/network/rate-limit/empty-response failures are never retried here.
 function pluginBlocked(r){return r?.type==='fail'&&/blocked by the caller/i.test(str(r.result));}
-let markQueue=Promise.resolve();
-function markUpdate(fn){
- // Serialize read-modify-write so overlapping internal calls cannot drop each other's entry.
- markQueue=markQueue.then(async()=>{
-  const cur=await risuai.pluginStorage.getItem(MARK).catch(()=>null),now=Date.now(),calls={};
-  for(const [id,c] of Object.entries(cur?.calls||{}))if(Number(c?.expires)>now)calls[id]=c;
-  fn(calls,now);
-  await risuai.pluginStorage.setItem(MARK,Object.keys(calls).length?{calls}:null);
- }).catch(()=>{});
- return markQueue;
-}
 function withTimeout(promise,ms,label){
  let timer;
  return Promise.race([promise,new Promise((_,rej)=>{timer=setTimeout(()=>rej(Error(label+' 시간 초과')),ms);})]).finally(()=>clearTimeout(timer));
@@ -82,14 +71,20 @@ async function callModel(messages){
  return r;
 }
 async function ai(messages){
- // Per-call token lets story hooks recognise exactly this request in beforeRequest even if a
- // normal chat runs at the same time. The registry entry covers afterRequest (which cannot
- // see the prompt); it expires by itself, is removed in finally, and tolerates overlapping calls.
+ // Per-request tokens, no shared state and no polling. The CALL token lets story hooks recognise this
+ // exact request in beforeRequest; the model is asked to begin its reply with the RESULT token so
+ // afterRequest (which cannot see the prompt) recognises this exact response. A normal chat that
+ // finishes meanwhile carries neither token and is processed as usual. If a model ignores the echo
+ // instruction the response is simply processed like a normal one (fails open, never loses chat).
  const callId='wel-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
- const tagged=messages.map((m,i)=>i===0&&m.role==='system'?{...m,content:str(m.content)+'\n[[RISUBARD_INTERNAL_CALL:'+callId+']]'}:m);
- await markUpdate((calls,now)=>{calls[callId]={owner:'world_editor_lab',at:now,expires:now+CALL_TTL_MS};});
- try{return await withTimeout(aiInner(tagged),CALL_TIMEOUT_MS,'AI 호출');}
- finally{await markUpdate(calls=>{delete calls[callId];});}
+ const echo='[[RISUBARD_INTERNAL_RESULT:'+callId+']]';
+ const tagged=messages.map((m,i)=>i===0&&m.role==='system'
+  ?{...m,content:str(m.content)+'\n[[RISUBARD_INTERNAL_CALL:'+callId+']]\nBegin your reply with this exact line, then continue as instructed: '+echo}
+  :m);
+ const out=await withTimeout(aiInner(tagged),CALL_TIMEOUT_MS,'AI 호출');
+ const clean=out.replace(/\[\[RISUBARD_INTERNAL_RESULT:[^\]\n]*\]\]/g,'').replace(/^\s+/,'');
+ if(!clean.trim())throw Error('AI 응답이 비어 있어');
+ return clean;
 }
 async function aiInner(messages){
  const r=await callModel(messages);
