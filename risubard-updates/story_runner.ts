@@ -4721,14 +4721,26 @@
 
   // Premium (max quality) rewrite shared by the non-streaming afterRequest path and the streaming
   // committed-output path, so both run exactly the same quality logic.
+  // RisuBard awaits afterRequest and the committed-output listeners and keeps the chat busy meanwhile, so a critic or
+  // writer call that never answers must not hold the chat forever: after this limit the original text is kept.
+  const PREMIUM_REVIEW_TIMEOUT_MS = 4 * 60 * 1000;
   async function runPremiumRewrite(cleanResult) {
+    let timer;
     try {
-      const ctx = await readPlanningContext('premium output check',false);
-      const recent = Array.isArray(ctx.recentMessages) ? ctx.recentMessages : [];
-      return await rewriteDraftForQuality(cleanResult,ctx,effectiveCurrentEpisode(project.planningOutline),
-        project.modernDirection,activeHostPacingMode || 'adaptive',
-        extractRoleplayIdentity(recent),lastRoleplayStatus(recent));
+      const limit = Number(risuai && risuai.__testReviewTimeoutMs) || PREMIUM_REVIEW_TIMEOUT_MS; // test seam
+      const review = (async () => {
+        const ctx = await readPlanningContext('premium output check',false);
+        const recent = Array.isArray(ctx.recentMessages) ? ctx.recentMessages : [];
+        return await rewriteDraftForQuality(cleanResult,ctx,effectiveCurrentEpisode(project.planningOutline),
+          project.modernDirection,activeHostPacingMode || 'adaptive',
+          extractRoleplayIdentity(recent),lastRoleplayStatus(recent));
+      })();
+      review.catch(() => {}); // a late failure after the timeout must not surface as an unhandled rejection
+      return await Promise.race([review, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('premium review timed out')), limit);
+      })]);
     } finally {
+      clearTimeout(timer);
       // The review is over (receipt written, or the critic/writer failed): Bard Editor Lab may proceed.
       await releaseRunnerReviewPending();
     }

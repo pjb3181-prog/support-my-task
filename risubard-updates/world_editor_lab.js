@@ -196,6 +196,13 @@ function materialize(origin,proposal){
  }
  return out;
 }
+async function freshBeforeWrite(ci0){
+ const {ci,char}=await live();
+ if(ci!==ci0)throw Error('캐릭터가 변경됐어. 편집실을 다시 열어줘.');
+ const conflict=await mutationLock(char);
+ if(conflict)throw Error(conflict+' 원작 모드로 복귀한 다음 적용해줘.');
+ return char;
+}
 async function applyDraft(versionName){
  if(!draft)throw Error('승인할 수정안이 없어');
  const {ci,char}=await live(),conflict=await mutationLock(char);
@@ -209,7 +216,13 @@ async function applyDraft(versionName){
  const created={id:'world-'+timestamp,name,createdAt:new Date().toISOString(),snapshot:next,summary:draft.summary};
  const previous=versions;versions=[created,before,...versions].slice(0,12);
  await persist();
- try{await risuai.setCharacterToIndex(ci,{...cp(char),...next});}
+ try{
+  // Re-verify right before writing: Mutation State Router or the user may have changed the card while the
+  // backup was being saved. A whole-card write from a stale read would silently undo that change.
+  const fresh=await freshBeforeWrite(ci);
+  if(fingerprint(snapshot(fresh))!==draftHash)throw Error('적용 직전에 캐릭터 데이터가 변경됐어. 수정안을 다시 생성해줘.');
+  await risuai.setCharacterToIndex(ci,{...cp(fresh),...next});
+ }
  catch(e){versions=previous;await persist();throw e;}
  character=await risuai.getCharacterFromIndex(ci);draft=null;activeVersion=created.id;
  status='설정 적용 완료 · 직전 상태 자동 백업됨';
@@ -222,7 +235,11 @@ async function restore(id){
  versions=[{id:'backup-'+timestamp,name:'전환 전 백업 '+new Date().toLocaleString(),
   createdAt:new Date().toISOString(),snapshot:snapshot(char)},...versions].slice(0,12);
  await persist();
- try{await risuai.setCharacterToIndex(ci,{...cp(char),...cp(target.snapshot)});}
+ try{
+  const fresh=await freshBeforeWrite(ci);
+  if(fingerprint(snapshot(fresh))!==fingerprint(snapshot(char)))throw Error('적용 직전에 캐릭터 데이터가 변경됐어. 다시 시도해줘.');
+  await risuai.setCharacterToIndex(ci,{...cp(fresh),...cp(target.snapshot)});
+ }
  catch(e){versions=previous;await persist();throw e;}
  character=await risuai.getCharacterFromIndex(ci);draft=null;activeVersion=id;
  status='세계관 '+target.name+' 적용 완료 · 이전 상태도 백업함';

@@ -159,7 +159,7 @@ test('streaming: the cleanup never overwrites a message that changed in the mean
 const REQUIRED={
   'story_runner.ts':['hasInternalCallToken','hasInternalResultToken',"requestKind !== 'model' && requestKind !== '__sr_direct__'",'recordRunnerReview','risubard_editorial_receipt_v1:','editorialSignature','stripStatusMarkers','persistCleanedCommittedOutput','runPremiumRewrite','afterRequestQualityHandled'],
   'mutation_state.ts':["requestModel && requestModel !== 'model'",'hasInternalCallToken','messages = scoped.messages'],
-  'bard_editor_lab.js':['hasInternalCallToken','hasInternalResultToken','runnerAlreadyReviewed','risubard_editorial_receipt_v1:','if(collabActive||state.busy)return messages','await watcherSeed','stripRunnerMarkers'],
+  'bard_editor_lab.js':['hasInternalCallToken','hasInternalResultToken','runnerAlreadyReviewed','risubard_editorial_receipt_v1:','if(collabActive||state.busy)return messages','Promise.race([watcherSeed','stripRunnerMarkers'],
   'world_editor_lab.js':['pluginBlocked','[[RISUBARD_INTERNAL_CALL:','[[RISUBARD_INTERNAL_RESULT:','withTimeout'],
 };
 for(const [file,needles] of Object.entries(REQUIRED)){
@@ -177,13 +177,13 @@ test('update guard: versioned copies stay identical to the live plugin files',()
 // ---- 8. streaming: the premium (max quality) rewrite also runs for streamed replies, exactly once ----
 const LONG='현수는 낡은 문을 밀었다. 먼지가 흩날렸고, 오래된 종이 냄새가 코끝을 찔렀다. 그는 잠시 숨을 고른 뒤 안으로 걸음을 옮겼다. 책상 위에는 누군가 급히 남긴 메모가 놓여 있었다. '.repeat(8);
 const BETTER_LONG=LONG.replace('먼지가 흩날렸고','먼지가 햇빛 속에서 천천히 흩날렸고');
-async function premiumHarness({quality='max',running=true,committed=LONG+'\n'+MARKER,editBeforeSave=false,criticReply='{"revise":true,"issues":["반복되는 묘사"]}'}={}){
+async function premiumHarness({quality='max',running=true,committed=LONG+'\n'+MARKER,editBeforeSave=false,hangWriter=false,criticReply='{"revise":true,"issues":["반복되는 묘사"]}'}={}){
   const msg={role:'char',data:committed,chatId:'m1'};
   const chatObj={id:'c1',message:[{role:'user',data:'hi'},msg]};
   const charObj={chaId:'cha1',name:'테스트',chats:[chatObj],chatPage:0};
   const store=new Map([['storyrunner_plugin_v1_cha1_c1',JSON.stringify({experienceMode:'ai',running,autoRun:false,writerQualityMode:quality})]]);
   const saved=[],critic=[],writer=[];let llmCount=0;
-  const sr=await loadPlugin('story_runner.ts',{store,extra:{
+  const sr=await loadPlugin('story_runner.ts',{store,extra:{__testReviewTimeoutMs:hangWriter?4000:0,
     getCurrentCharacterIndex:async()=>0,getCurrentChatIndex:async()=>0,
     getCharacterFromIndex:async()=>charObj,getCharacter:async()=>charObj,getChat:async()=>chatObj,
     getChatFromIndex:async()=>editBeforeSave&&llmCount>=2?{id:'c1',message:[{role:'user',data:'hi'},{role:'char',data:'사용자가 그 사이에 직접 고친 본문',chatId:'m1'}]}:chatObj,
@@ -191,7 +191,7 @@ async function premiumHarness({quality='max',running=true,committed=LONG+'\n'+MA
     runLLMModel:async o=>{
       llmCount++;const sys=String(o.messages[0].content);
       if(/strict fiction critic/.test(sys)){critic.push(1);return {type:'success',result:criticReply};}
-      if(/revising a Korean fiction draft/.test(sys)){writer.push(1);return {type:'success',result:'<SR_STORY>'+BETTER_LONG+'</SR_STORY>'};}
+      if(/revising a Korean fiction draft/.test(sys)){writer.push(1);if(hangWriter)return new Promise(()=>{});return {type:'success',result:'<SR_STORY>'+BETTER_LONG+'</SR_STORY>'};}
       return {type:'success',result:'{"ok":true,"complete":false}'};}
   }});
   const fire=async()=>{await sr.listeners.output({characterIndex:0,chatIndex:0,messageIndex:1,chat:chatObj,char:charObj});await wait(150);};
@@ -276,4 +276,16 @@ test('auxiliary requests do not announce a review',async()=>{
   const h=await premiumHarness();
   await h.sr.replacers.beforeRequest(chat(),'memory');
   assert.equal(rec(h),null);
+});
+
+test('a hung writer model cannot hold the chat: the listener returns, keeps the streamed text and releases the pending announcement',async()=>{
+  const h=await premiumHarness({hangWriter:true});
+  h.store.set(RKEY,JSON.stringify({owner:'story_runner',state:'pending',at:Date.now()}));
+  const t0=Date.now();
+  await h.fire();
+  assert.ok(Date.now()-t0<9000,'returned after the review limit instead of hanging');
+  assert.equal(h.writer.length,1,'the writer was called');
+  assert.equal(rec(h)?.state,'released');
+  assert.ok(h.saved.length<=1,'at most the marker cleanup was saved');
+  assert.ok(!h.saved.some(x=>x.includes('햇빛 속에서 천천히')),'no rewritten text was applied');
 });

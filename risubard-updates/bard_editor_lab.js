@@ -1117,7 +1117,8 @@
    if(unloaded||!arg||!Number.isInteger(arg.messageIndex)||!Array.isArray(arg.chat?.message))return;
    // The load-time seed marks the pre-existing last message as handled. Wait for it so that
    // outcome is deterministic (not dependent on how many awaits precede the `seen` check).
-   await watcherSeed;
+   // Bounded: a seed that never settles must not block every output (the host awaits listeners one by one).
+   await Promise.race([watcherSeed,new Promise(r=>setTimeout(r,5000))]);
    const i=arg.messageIndex,m=arg.chat.message[i],ci=arg.characterIndex,ti=arg.chatIndex;
    if(!Number.isInteger(ci)||!Number.isInteger(ti)||!m||!['char','assistant'].includes(m.role)||i!==arg.chat.message.length-1)return;
    if(!conf.auto){void refreshSceneFromEvent(arg);return}

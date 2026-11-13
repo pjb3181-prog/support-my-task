@@ -56,7 +56,7 @@ test('first message requires opt-in but is still diffed precisely',()=>{
 test('apply prevents stale source writes and snapshots before saving',()=>{
  assert.match(src,/fingerprint\(current\)!==draftHash/);
  assert.match(src,/const before=\{id:'backup-'/);
- assert.match(src,/await persist\(\);\s*try\{await risuai.setCharacterToIndex\(ci,\{\.\.\.cp\(char\),\.\.\.next\}\);\}/);
+ assert.match(src,/await persist\(\);\s*try\{[\s\S]*?freshBeforeWrite\(ci\)[\s\S]*?setCharacterToIndex\(ci,\{\.\.\.cp\(fresh\),\.\.\.next\}\);/);
  assert.match(src,/catch\(e\)\{versions=previous;await persist\(\);throw e;\}/);
 });
 test('version switch backs up current card and never edits chat or shared module database',()=>{
