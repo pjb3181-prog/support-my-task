@@ -117,8 +117,8 @@ test('memory extraction sends only visible fiction, preserves raw saved equality
   assert.match(reader,/text\(rows\[index\]\.data\)\.trim\(\)===source/);
 });
 test('plugin version is bumped and UI explains a stale memory',()=>{
-  assert.match(src,/\/\/@version 0\.95\.9/);
-  assert.match(src,/const VERSION = "0\.95\.9"/);
+  assert.match(src,/\/\/@version 0\.95\.10/);
+  assert.match(src,/const VERSION = "0\.95\.10"/);
   assert.match(src,/기억이 최신 대화와 달라 주입을 중단했어/);
 });
 
@@ -129,14 +129,18 @@ test('memory, otherAx and emotion hooks return the same prompt without any injec
   assert.ok(firstLine>start,'Expected isHostRequest after model-type guard');
   // Evaluate the actual early-return code, without running the full Story Runner host.
   const early=src.slice(start,firstLine)+'    return {onlyForWriter:true};\n  }';
-  const sandbox={};
-  vm.runInNewContext(early,sandbox,{filename:'story_runner.ts',timeout:4000});
+  const helperStart=src.indexOf('  // Internal-call protocol');
+  assert.ok(helperStart>=0&&helperStart<start,'Expected internal-call helpers before beforeRequest');
+  const sandbox={risuai:{pluginStorage:{getItem:async()=>null}},Date,Object,Array,Number};
+  vm.runInNewContext(src.slice(helperStart,start)+early,sandbox,{filename:'story_runner.ts',timeout:4000});
   const testPrompt=[{role:'system',content:'keep original'},{role:'user',content:'note'}];
   for(const model of ['memory','otherAx','emotion','translate']){
     const result=await sandbox.beforeRequest(testPrompt,model);
     assert.equal(result,testPrompt,'auxiliary mode must receive original reference');
   }
   assert.equal((await sandbox.beforeRequest(testPrompt,'model')).onlyForWriter,true);
+  const tagged=[{role:'system',content:'x [[RISUBARD_INTERNAL_CALL:wel-1]]'},{role:'user',content:'u'}];
+  assert.equal(await sandbox.beforeRequest(tagged,'model'),tagged,'internal plugin call must bypass story injection');
 });
 
 const reconcileCode=extractBlock('  function reconcileNotebookOpenThreads(');

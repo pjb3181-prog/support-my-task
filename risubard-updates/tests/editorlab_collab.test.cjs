@@ -22,9 +22,10 @@ async function until(fn,ms=1000){
   throw Error('test timeout');
 }
 async function launch(scenario,initialModel='otherAx'){
-  let chat={id:'test-chat',message:[{role:'user',data:'다음 장면을 써 줘'},{
-    role:'char',chatId:'gen1',data:STORY
-  }]};
+  // The new assistant turn is appended by emit(): the plugin seeds (marks as handled)
+  // whatever message is already last when it loads, so a pre-existing last message
+  // is correctly NOT re-edited.
+  let chat={id:'test-chat',message:[{role:'user',data:'다음 장면을 써 줘'}]};
   const existing={
     mode:'collab',model:initialModel,collabWriter:'model',collabProfile:'balanced',
     collabRounds:2,collabBudgetSec:60,collabPatchPct:20,collabMaxIssues:3,
@@ -91,12 +92,16 @@ async function launch(scenario,initialModel='otherAx'){
   await evaluated;
   assert.ok(listeners.has('output'),'output listener must be registered');
   assert.ok(replacers.has('afterRequest'),'afterRequest hook must be registered');
+  await wait(25); // let the load-time watcher seed finish before any new turn arrives
   return {
-    calls,storage,replacers, get chat(){return chat},
+    calls,storage,replacers,listeners, get chat(){return chat},
     get html(){return document.body.innerHTML},
     openUI:()=>uiCallbacks.get('Bard Editor Lab')(),
     control:id=>document.getElementById(id),
-    emit:()=>listeners.get('output')({characterIndex:0,chatIndex:0,chat,messageIndex:1,char:{name:'유나'}})
+    emit:()=>{
+      if(!chat.message.some(x=>x.chatId==='gen1'))chat.message.splice(1,0,{role:'char',chatId:'gen1',data:STORY});
+      return listeners.get('output')({characterIndex:0,chatIndex:0,chat,messageIndex:1,char:{name:'유나'}});
+    }
   };
 }
 test('collaboration mode does not block the initial afterRequest',async()=>{
@@ -206,4 +211,82 @@ test('memory reviewer and main writer take separate routes through targeted patc
   assert.deepEqual(app.calls.map(x=>x.mode),['memory','model','memory']);
   assert.ok(app.calls.every(x=>x.allowPlugins===true));
   assert.equal(app.chat.message[1].data,STORY.replace(EXCERPT,BETTER));
+});
+
+// ---- Story Runner editorial receipt (duplicate-revision prevention) ----
+function sig(value){
+  const source=String(value??'').trim();let a=2166136261,b=5381;
+  for(let i=0;i<source.length;i++){a=Math.imul(a^source.charCodeAt(i),16777619);b=Math.imul(b,33)^source.charCodeAt(i);}
+  return source.length+':'+(a>>>0).toString(16)+':'+(b>>>0).toString(16);
+}
+const RECEIPT_KEY='risubard_editorial_receipt_v1:test-chat';
+test('a fresh Story Runner receipt for the same text skips the duplicate revision',async()=>{
+  const app=await launch('patch');
+  app.storage.set(RECEIPT_KEY,{owner:'story_runner',signature:sig(STORY),at:Date.now()});
+  app.emit();
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.equal(app.calls.length,0,'no editor/writer model call must happen');
+  assert.equal(app.chat.message[1].data,STORY);
+  assert.match(JSON.stringify(app.storage.get('bard_editor_lab_v034_activity')),/Story Runner/);
+});
+test('a receipt for different text, an old receipt, or another owner does NOT suppress revision',async()=>{
+  for(const receipt of [
+    {owner:'story_runner',signature:sig(STORY+'x'),at:Date.now()},
+    {owner:'story_runner',signature:sig(STORY),at:Date.now()-901000},
+    {owner:'someone_else',signature:sig(STORY),at:Date.now()}]){
+    const app=await launch('pass');
+    app.storage.set(RECEIPT_KEY,receipt);
+    app.emit();
+    await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+    assert.ok(app.calls.length>=1,'revision pipeline must still run: '+JSON.stringify(receipt).slice(0,60));
+  }
+});
+test('an event without a chat id is handled without throwing and without a bogus skip',async()=>{
+  const app=await launch('pass');
+  app.storage.set('risubard_editorial_receipt_v1:',{owner:'story_runner',signature:sig(STORY),at:Date.now()});
+  app.chat.id='';
+  app.emit();
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.ok(app.calls.length>=1);
+});
+
+// ---- streaming: Story Runner may clean its status markers before or after the editor runs ----
+const SR_MARK='\n<SR_SCENE_COMPLETE/>';
+test('editor revises a streamed message that still carries a Story Runner marker, and the marker is gone afterwards',async()=>{
+  const app=await launch('patch');
+  app.chat.message.splice(1,0,{role:'char',chatId:'gen1',data:STORY+SR_MARK});
+  app.emit();
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.equal(app.chat.message[1].data,STORY.replace(EXCERPT,BETTER));
+});
+test('editor still applies its revision when Story Runner already cleaned the marker before the editor commit',async()=>{
+  const app=await launch('patch');
+  // the listener snapshot still has the marker, the live chat is already clean (Story Runner finished first)
+  app.chat.message.splice(1,0,{role:'char',chatId:'gen1',data:STORY});
+  const snapshot={...app.chat,message:app.chat.message.map(m=>m.chatId==='gen1'?{...m,data:STORY+SR_MARK}:m)};
+  await app.listeners.get('output')({characterIndex:0,chatIndex:0,chat:snapshot,messageIndex:1,char:{name:'유나'}});
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.equal(app.chat.message[1].data,STORY.replace(EXCERPT,BETTER));
+});
+
+// ---- review-pending announcement from Story Runner (listener order between plugins is a startup race) ----
+test('a fresh pending announcement from Story Runner defers Bard Editor Lab for any text',async()=>{
+  const app=await launch('patch');
+  app.storage.set(RECEIPT_KEY,{owner:'story_runner',state:'pending',at:Date.now(),ttlMs:600000});
+  app.emit();
+  await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+  assert.equal(app.calls.length,0,'no editor/writer model call while Story Runner will review');
+  assert.equal(app.chat.message[1].data,STORY);
+});
+test('an expired or released pending announcement, or one from another owner, does not defer',async()=>{
+  for(const receipt of [
+    {owner:'story_runner',state:'pending',at:Date.now()-601000,ttlMs:600000},
+    {owner:'story_runner',state:'released',at:Date.now()},
+    {owner:'someone_else',state:'pending',at:Date.now()}]){
+    const app=await launch('pass');
+    app.storage.set(RECEIPT_KEY,receipt);
+    app.emit();
+    await until(()=>app.storage.get('bard_editor_lab_v034_activity')?.length);
+    assert.ok(app.calls.length>=1,'revision must run for '+JSON.stringify(receipt));
+  }
 });

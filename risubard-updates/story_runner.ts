@@ -2,12 +2,12 @@
 //@display-name Story Runner
 //@api 3.0
 //@allowed-ipc mutation_state_router_v2
-//@version 0.95.9
+//@version 0.95.10
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_runner.ts
 //@description Story Workspace: evidence-based output safety; no legacy prose recheck lockout; self-updating story studio.
 
 (async () => {
-  const VERSION = "0.95.9";
+  const VERSION = "0.95.10";
   const STORAGE_PREFIX = "storyrunner_plugin_v1";
   const SCENE_LIBRARY_KEY = STORAGE_PREFIX + "_scene_library";
   const CAMEO_LIBRARY_KEY = STORAGE_PREFIX + "_cameo_character_lore_library";
@@ -4586,12 +4586,28 @@
     }
   }
 
+  // Internal-call protocol (World Editor Lab and the story hooks). No shared state, no polling:
+  // - request: the caller puts [[RISUBARD_INTERNAL_CALL:<id>]] in its prompt, so beforeRequest sees exactly that request;
+  // - response: the caller asks the model to start its reply with [[RISUBARD_INTERNAL_RESULT:<id>]], so afterRequest
+  //   (which cannot see the prompt) recognises exactly that response. A concurrent normal chat has neither token and
+  //   is always processed. If a model ignores the echo instruction the response is processed like a normal one.
+  function hasInternalCallToken(messages) {
+    try {
+      return Array.isArray(messages) && messages.some((m) => m && typeof m.content === 'string' && m.content.includes('[[RISUBARD_INTERNAL_CALL:'));
+    } catch (_) { return false; }
+  }
+  function hasInternalResultToken(content) {
+    return typeof content === 'string' && content.includes('[[RISUBARD_INTERNAL_RESULT:');
+  }
+
   async function beforeRequest(messages, requestModel) {
     // RisuBard passes model usage in the replacer callback's second argument.
     // Story Runner must NEVER inject writer/notebook guidance into BardWiki
     // memory maintenance, emotion, translation or other auxiliary calls.
     if (requestModel && requestModel !== 'model') return messages;
+    if (hasInternalCallToken(messages)) return messages;
     const isHostRequest = !directRunInProgress && internalLLMCallDepth === 0;
+    if (isHostRequest) afterRequestQualityHandled = false; // new host request: nothing has been quality-gated yet
     const perf = isHostRequest ? {
       id: ++perfSequence,
       startedAt: Date.now(),
@@ -4618,6 +4634,9 @@
       perf.syncMs = Date.now() - t;
       perf.stage = activeTarget ? "target-synced" : "no-target";
       if (!activeTarget) return messages;
+      // Tell Bard Editor Lab (via the shared per-chat receipt key) whether this reply will get a Story Runner review.
+      if (project.experienceMode === 'ai' && project.running && project.writerQualityMode === 'max') await markRunnerReviewPending();
+      else await releaseRunnerReviewPending();
       if (project.experienceMode !== 'ai') {
         // Direct play: track and preserve actual story continuity, but NEVER impose an episode/node plan.
         const verifiedNotebook = await freshNotebookForTarget(activeTarget);
@@ -4690,20 +4709,60 @@
     }
   }
 
-  async function afterRequest(content, requestKind) {
+  // Trailing status markers are removed from non-streaming replies in afterRequest. RisuBard never
+  // calls afterRequest for streaming replies (request.ts only runs it for type 'success'), so
+  // onChatOutput applies this same cleanup to the committed message. Idempotent: clean text is unchanged.
+  function stripStatusMarkers(value) {
     const escaped = COMPLETE_MARKER.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
-    let cleanResult = text(content)
+    return text(value)
       .replace(/\s*<!--SR_EPISODE_STATUS\s+[\s\S]*?-->\s*$/i, "")
       .replace(new RegExp("\\s*" + escaped + "\\s*$"), "");
-    const nativeAIRequest = project.experienceMode === 'ai' && project.running
-      && !directRunInProgress && internalLLMCallDepth === 0 && requestKind !== '__sr_direct__';
-    if (nativeAIRequest && project.writerQualityMode === 'max' && cleanResult.trim()) {
-      try {
+  }
+
+  // Premium (max quality) rewrite shared by the non-streaming afterRequest path and the streaming
+  // committed-output path, so both run exactly the same quality logic.
+  // RisuBard awaits afterRequest and the committed-output listeners and keeps the chat busy meanwhile, so a critic or
+  // writer call that never answers must not hold the chat forever: after this limit the original text is kept.
+  const PREMIUM_REVIEW_TIMEOUT_MS = 4 * 60 * 1000;
+  async function runPremiumRewrite(cleanResult) {
+    let timer;
+    try {
+      const limit = Number(risuai && risuai.__testReviewTimeoutMs) || PREMIUM_REVIEW_TIMEOUT_MS; // test seam
+      const review = (async () => {
         const ctx = await readPlanningContext('premium output check',false);
         const recent = Array.isArray(ctx.recentMessages) ? ctx.recentMessages : [];
-        cleanResult = await rewriteDraftForQuality(cleanResult,ctx,effectiveCurrentEpisode(project.planningOutline),
+        return await rewriteDraftForQuality(cleanResult,ctx,effectiveCurrentEpisode(project.planningOutline),
           project.modernDirection,activeHostPacingMode || 'adaptive',
           extractRoleplayIdentity(recent),lastRoleplayStatus(recent));
+      })();
+      review.catch(() => {}); // a late failure after the timeout must not surface as an unhandled rejection
+      return await Promise.race([review, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('premium review timed out')), limit);
+      })]);
+    } finally {
+      clearTimeout(timer);
+      // The review is over (receipt written, or the critic/writer failed): Bard Editor Lab may proceed.
+      await releaseRunnerReviewPending();
+    }
+  }
+
+  // RisuBard runs afterRequest only for non-streaming replies. This flag records that the quality gate
+  // already ran for the CURRENT host request, so the output listener repeats it only for streamed replies
+  // (no double rewrite). It is plugin-local, reset at the start of every host request and consumed once.
+  let afterRequestQualityHandled = false;
+
+  async function afterRequest(content, requestKind) {
+    // Preserve auxiliary structured responses, including status-looking text.
+    // Direct Story Runner execution deliberately uses its own sentinel.
+    if (requestKind && requestKind !== 'model' && requestKind !== '__sr_direct__') return content;
+    if (requestKind !== '__sr_direct__' && hasInternalResultToken(content)) return content;
+    let cleanResult = stripStatusMarkers(content);
+    const nativeAIRequest = project.experienceMode === 'ai' && project.running
+      && !directRunInProgress && internalLLMCallDepth === 0 && requestKind !== '__sr_direct__';
+    if (nativeAIRequest) afterRequestQualityHandled = true; // the committed-output listener must not repeat this
+    if (nativeAIRequest && project.writerQualityMode === 'max' && cleanResult.trim()) {
+      try {
+        cleanResult = await runPremiumRewrite(cleanResult);
       } catch(error) { console.log('[StoryRunner] native premium fallback to original draft',error); }
     }
     if (nativeAIRequest) {
@@ -4837,6 +4896,24 @@
     }, AUTO_RUN_DELAY_MS);
   }
 
+  // Writes the marker-free text back to ONE committed message, only if that message is still exactly
+  // what the listener saw (never overwrites a user edit, a newer turn or another plugin's revision).
+  async function persistCleanedCommittedOutput(arg, original, cleaned) {
+    try {
+      if (!arg || !Number.isInteger(arg.characterIndex) || !Number.isInteger(arg.chatIndex) || !Number.isInteger(arg.messageIndex)) return false;
+      const chat = await risuai.getChatFromIndex(arg.characterIndex, arg.chatIndex);
+      const msg = chat && Array.isArray(chat.message) && chat.message[arg.messageIndex];
+      if (!msg || text(msg.data) !== original) return false;
+      const next = JSON.parse(JSON.stringify(chat));
+      next.message[arg.messageIndex].data = cleaned;
+      await risuai.setChatToIndex(arg.characterIndex, arg.chatIndex, next);
+      return true;
+    } catch (error) {
+      console.log('[StoryRunner] committed-output cleanup skipped', error);
+      return false;
+    }
+  }
+
   async function onChatOutput(arg) {
     try {
       const activeTarget = await syncTarget();
@@ -4845,10 +4922,36 @@
       const message = arg && arg.chat && arg.chat.message && arg.chat.message[arg.messageIndex];
       // Only completed assistant story outputs can become continuity facts.
       if(message && message.role!=='char' && message.role!=='assistant')return;
-      const content = text(message && message.data);
+      let content = text(message && message.data);
       if (!content) return;
       if(arg && Number.isInteger(arg.characterIndex) && arg.characterIndex !== activeTarget.characterIndex) return;
       if(arg && Number.isInteger(arg.chatIndex) && arg.chatIndex !== activeTarget.chatIndex) return;
+      // Streaming replies skip afterRequest, so do here what afterRequest does for normal replies:
+      // (1) clean status markers, (2) the premium (max quality) rewrite. The flag below tells us whether
+      // afterRequest already handled THIS request (normal reply) so nothing is done twice.
+      const cleanedCommitted = stripStatusMarkers(content);
+      const qualityHandled = afterRequestQualityHandled;
+      afterRequestQualityHandled = false;
+      const streamedNative = !qualityHandled && project.experienceMode === 'ai' && project.running
+        && !directRunInProgress && internalLLMCallDepth === 0;
+      let finalCommitted = cleanedCommitted;
+      if (streamedNative && project.writerQualityMode === 'max' && cleanedCommitted.trim()) {
+        try {
+          const rewritten = text(await runPremiumRewrite(cleanedCommitted)).trim();
+          if (rewritten && rewritten !== cleanedCommitted.trim()) finalCommitted = rewritten;
+        } catch (error) { console.log('[StoryRunner] streaming premium rewrite fell back to the streamed text', error); }
+      }
+      // One guarded save: only if the message is still exactly what the listener saw. Awaited on purpose:
+      // the host keeps the chat busy until listeners return, so the user cannot start a new turn (or edit)
+      // while the replacement is in flight. Already-clean normal replies are never saved again.
+      if (finalCommitted && finalCommitted !== content) {
+        const saved = await persistCleanedCommittedOutput(arg, content, finalCommitted);
+        if (saved) {
+          // rewriteDraftForQuality already wrote the editorial receipt (recordRunnerReview) for the text it
+          // returned, so Bard Editor Lab will not revise this same passage again.
+          content = finalCommitted;
+        }
+      }
       if (project.experienceMode === 'ai' && project.running) {
         const verdict = await storyQualityVerdict(content);
         if (!verdict.ok) {
@@ -7633,6 +7736,49 @@
     }
   }
 
+
+  function editorialSignature(value) {
+    const source = text(value).trim();
+    let a=2166136261,b=5381;
+    for(let i=0;i<source.length;i++){a=Math.imul(a^source.charCodeAt(i),16777619);b=Math.imul(b,33)^source.charCodeAt(i);}
+    return source.length+':'+(a>>>0).toString(16)+':'+(b>>>0).toString(16);
+  }
+  async function recordRunnerReview(content) {
+    const chatId=text(currentTarget && currentTarget.chatId);
+    if(!chatId)return content;
+    try{await risuai.pluginStorage.setItem('risubard_editorial_receipt_v1:'+chatId,
+      {owner:'story_runner',state:'reviewed',signature:editorialSignature(content),at:Date.now()});}
+    catch(error){console.log('[StoryRunner] editorial receipt unavailable',error);}
+    return content;
+  }
+  // Streamed replies are reviewed from the committed-output listener, and RisuBard runs the listeners of
+  // different plugins sequentially in plugin-registration order (which is a startup race). If Bard Editor Lab's
+  // listener runs first it would revise the same passage before this plugin's review. To make the receipt
+  // order-independent, this plugin announces on the SAME per-chat receipt key that a review is pending
+  // (written when a reviewable host request starts) and Bard Editor Lab defers while it is fresh.
+  // The record is released when the review ends, cleared by the next request that will not be reviewed,
+  // and ignored by Bard after RUNNER_PENDING_TTL_MS, so a lost request can never block editing for long.
+  const RUNNER_PENDING_TTL_MS = 10 * 60 * 1000;
+  async function markRunnerReviewPending() {
+    const chatId = text(currentTarget && currentTarget.chatId);
+    if (!chatId) return;
+    try {
+      await risuai.pluginStorage.setItem('risubard_editorial_receipt_v1:' + chatId,
+        {owner:'story_runner',state:'pending',at:Date.now(),ttlMs:RUNNER_PENDING_TTL_MS});
+    } catch (error) { console.log('[StoryRunner] review-pending marker unavailable', error); }
+  }
+  async function releaseRunnerReviewPending() {
+    const chatId = text(currentTarget && currentTarget.chatId);
+    if (!chatId) return;
+    try {
+      const key = 'risubard_editorial_receipt_v1:' + chatId;
+      const cur = await risuai.pluginStorage.getItem(key);
+      if (cur && cur.owner === 'story_runner' && cur.state === 'pending') {
+        await risuai.pluginStorage.setItem(key, {owner:'story_runner',state:'released',at:Date.now()});
+      }
+    } catch (error) { console.log('[StoryRunner] review-pending release failed', error); }
+  }
+
   async function rewriteDraftForQuality(draft, ctx, ep, additionalDirection, pacingMode, identity, priorSheet) {
     const source = text(draft).trim();
     if (!source || project.writerQualityMode !== "max") return source;
@@ -7647,7 +7793,7 @@
     let issues = [];
     try {
       const result = await runInternalLLM({
-        mode: "otherAx", allowPlugins: false,
+        mode: "otherAx", allowPlugins: true,
         messages: [
           {role: "system", content: [
             "You are a strict fiction critic. Do not rewrite prose in this pass.",
@@ -7661,9 +7807,10 @@
       });
       if (result && result.type && result.type !== "success") return source;
       const verdict = extractJson(stripThoughts(normalizeModelText(result)));
-      if (!verdict || verdict.revise !== true || !Array.isArray(verdict.issues)) return source;
+      if (!verdict || typeof verdict.revise !== 'boolean' || !Array.isArray(verdict.issues)) return source;
+      if (verdict.revise === false) return await recordRunnerReview(source);
       issues = verdict.issues.filter(x => typeof x === 'string' && x.trim()).slice(0, 4);
-      if (!issues.length) return source;
+      if (!issues.length) return await recordRunnerReview(source);
     } catch (error) {
       console.log("[StoryRunner] premium critic skipped", error);
       return source;
@@ -7687,7 +7834,7 @@
       if (!revisedQuality.ok) return source;
       // Prevent broad plot changes masquerading as an editorial repair.
       if (cleaned.length < source.length * 0.55 || cleaned.length > source.length * 1.65) return source;
-      return cleaned;
+      return await recordRunnerReview(cleaned);
     } catch (error) {
       console.log("[StoryRunner] premium revision skipped", error);
       return source;

@@ -7,7 +7,7 @@ test('valid RisuBard API 3 plugin with stable self-update URL',()=>{
  new vm.Script(src);
  assert.match(src,/^\/\/@name world_editor_lab/m);
  assert.match(src,/^\/\/@api 3.0/m);
- assert.match(src,/^\/\/@version 0.1.1/m);
+ assert.match(src,/^\/\/@version 0.1.2/m);
  assert.match(src,/^\/\/@update-url https:\/\/raw\.githubusercontent\.com\/pjb3181-prog\/support-my-task\/main\/risubard-updates\/world_editor_lab\.js/m);
 });
 const base=src.slice(src.indexOf('const NAME='),src.indexOf('async function readStore('));
@@ -56,7 +56,7 @@ test('first message requires opt-in but is still diffed precisely',()=>{
 test('apply prevents stale source writes and snapshots before saving',()=>{
  assert.match(src,/fingerprint\(current\)!==draftHash/);
  assert.match(src,/const before=\{id:'backup-'/);
- assert.match(src,/await persist\(\);\s*try\{await risuai.setCharacterToIndex\(ci,\{\.\.\.cp\(char\),\.\.\.next\}\);\}/);
+ assert.match(src,/await persist\(\);\s*try\{[\s\S]*?freshBeforeWrite\(ci\)[\s\S]*?setCharacterToIndex\(ci,\{\.\.\.cp\(fresh\),\.\.\.next\}\);/);
  assert.match(src,/catch\(e\)\{versions=previous;await persist\(\);throw e;\}/);
 });
 test('version switch backs up current card and never edits chat or shared module database',()=>{
@@ -113,6 +113,7 @@ test('reopening the editor switches character scope without corrupting another c
 
 test('dialogue uses chosen model instead of an undefined variable',()=>{
  assert.match(src,/runLLMModel\(\{mode:model,messages,allowPlugins:false\}\)/);
+ assert.match(src,/pluginBlocked\(r\)\)r=await risuai\.runLLMModel\(\{mode:model,messages,allowPlugins:true\}\)/);
  assert.doesNotMatch(src,/runLLMModel\(\{mode,messages/);
 });
 test('failed AI call retains unanswered user messages and explicit retry control',()=>{

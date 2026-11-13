@@ -1,7 +1,7 @@
 //@name world_editor_lab
 //@display-name World Editor Lab
 //@api 3.0
-//@version 0.1.1
+//@version 0.1.2
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/world_editor_lab.js
 //@description Opt-in AI worldbuilding discussion, reviewed Lore and character edits, snapshot versions and rollback.
 (async()=>{
@@ -55,9 +55,43 @@ function sourceSummary(c){
  lore:snap.globalLore.slice(0,50).map((x,i)=>({index:i,comment:cut(x.comment||x.name,90),key:cut(x.key,120),content:cut(x.content,1600)})),
  totalLore:snap.globalLore.length,truncated:snap.globalLore.length>50};
 }
+const CALL_TIMEOUT_MS=120000;
+// RisuBard answers {type:'fail', result:'Plugin calls are blocked by the caller.'} BEFORE any
+// network request when the selected model is plugin-provided and allowPlugins is false.
+// Only that compatibility failure is retried (no request was sent, so there is no duplicate
+// cost). API/network/rate-limit/empty-response failures are never retried here.
+function pluginBlocked(r){return r?.type==='fail'&&/blocked by the caller/i.test(str(r.result));}
+function withTimeout(promise,ms,label){
+ let timer;
+ return Promise.race([promise,new Promise((_,rej)=>{timer=setTimeout(()=>rej(Error(label+' 시간 초과')),ms);})]).finally(()=>clearTimeout(timer));
+}
+async function callModel(messages){
+ let r=await risuai.runLLMModel({mode:model,messages,allowPlugins:false});
+ if(pluginBlocked(r))r=await risuai.runLLMModel({mode:model,messages,allowPlugins:true});
+ return r;
+}
 async function ai(messages){
- const r=await risuai.runLLMModel({mode:model,messages,allowPlugins:false});
- if(r?.type==='success'&&typeof r.result==='string')return r.result;
+ // Per-request tokens, no shared state and no polling. The CALL token lets story hooks recognise this
+ // exact request in beforeRequest; the model is asked to begin its reply with the RESULT token so
+ // afterRequest (which cannot see the prompt) recognises this exact response. A normal chat that
+ // finishes meanwhile carries neither token and is processed as usual. If a model ignores the echo
+ // instruction the response is simply processed like a normal one (fails open, never loses chat).
+ const callId='wel-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8);
+ const echo='[[RISUBARD_INTERNAL_RESULT:'+callId+']]';
+ const tagged=messages.map((m,i)=>i===0&&m.role==='system'
+  ?{...m,content:str(m.content)+'\n[[RISUBARD_INTERNAL_CALL:'+callId+']]\nBegin your reply with this exact line, then continue as instructed: '+echo}
+  :m);
+ const out=await withTimeout(aiInner(tagged),CALL_TIMEOUT_MS,'AI 호출');
+ const clean=out.replace(/\[\[RISUBARD_INTERNAL_RESULT:[^\]\n]*\]\]/g,'').replace(/^\s+/,'');
+ if(!clean.trim())throw Error('AI 응답이 비어 있어');
+ return clean;
+}
+async function aiInner(messages){
+ const r=await callModel(messages);
+ if(r?.type==='success'&&typeof r.result==='string'){
+  if(!r.result.trim())throw Error('AI 응답이 비어 있어');
+  return r.result;
+ }
  if(r?.type==='streaming'&&r.result?.getReader){
   const reader=r.result.getReader();let text='';
   try{while(true){
@@ -66,6 +100,7 @@ async function ai(messages){
    if(typeof v==='string')text=v.startsWith(text)?v:text+v;
    if(text.length>90000)throw Error('AI 응답 길이 제한 초과');
   }}finally{try{await reader.cancel();}catch(_){}}
+  if(!text.trim())throw Error('AI 응답이 비어 있어 (스트림이 중간에 끊겼을 수 있어)');
   return text;
  }
  throw Error('RisuBard 모델 호출 실패: '+cut(r?.type||r?.result,150));
@@ -161,6 +196,13 @@ function materialize(origin,proposal){
  }
  return out;
 }
+async function freshBeforeWrite(ci0){
+ const {ci,char}=await live();
+ if(ci!==ci0)throw Error('캐릭터가 변경됐어. 편집실을 다시 열어줘.');
+ const conflict=await mutationLock(char);
+ if(conflict)throw Error(conflict+' 원작 모드로 복귀한 다음 적용해줘.');
+ return char;
+}
 async function applyDraft(versionName){
  if(!draft)throw Error('승인할 수정안이 없어');
  const {ci,char}=await live(),conflict=await mutationLock(char);
@@ -174,7 +216,13 @@ async function applyDraft(versionName){
  const created={id:'world-'+timestamp,name,createdAt:new Date().toISOString(),snapshot:next,summary:draft.summary};
  const previous=versions;versions=[created,before,...versions].slice(0,12);
  await persist();
- try{await risuai.setCharacterToIndex(ci,{...cp(char),...next});}
+ try{
+  // Re-verify right before writing: Mutation State Router or the user may have changed the card while the
+  // backup was being saved. A whole-card write from a stale read would silently undo that change.
+  const fresh=await freshBeforeWrite(ci);
+  if(fingerprint(snapshot(fresh))!==draftHash)throw Error('적용 직전에 캐릭터 데이터가 변경됐어. 수정안을 다시 생성해줘.');
+  await risuai.setCharacterToIndex(ci,{...cp(fresh),...next});
+ }
  catch(e){versions=previous;await persist();throw e;}
  character=await risuai.getCharacterFromIndex(ci);draft=null;activeVersion=created.id;
  status='설정 적용 완료 · 직전 상태 자동 백업됨';
@@ -187,7 +235,11 @@ async function restore(id){
  versions=[{id:'backup-'+timestamp,name:'전환 전 백업 '+new Date().toLocaleString(),
   createdAt:new Date().toISOString(),snapshot:snapshot(char)},...versions].slice(0,12);
  await persist();
- try{await risuai.setCharacterToIndex(ci,{...cp(char),...cp(target.snapshot)});}
+ try{
+  const fresh=await freshBeforeWrite(ci);
+  if(fingerprint(snapshot(fresh))!==fingerprint(snapshot(char)))throw Error('적용 직전에 캐릭터 데이터가 변경됐어. 다시 시도해줘.');
+  await risuai.setCharacterToIndex(ci,{...cp(fresh),...cp(target.snapshot)});
+ }
  catch(e){versions=previous;await persist();throw e;}
  character=await risuai.getCharacterFromIndex(ci);draft=null;activeVersion=id;
  status='세계관 '+target.name+' 적용 완료 · 이전 상태도 백업함';
@@ -209,7 +261,7 @@ function render(){
  const turns=dialogue.map(x=>'<article class="'+x.role+'"><b>'+(x.role==='user'?'나':'AI')+'</b><pre>'+esc(x.content)+'</pre></article>').join('');
  document.body.innerHTML='<style>'+
  'body{margin:0;padding:15px;background:#182033;color:#eaf0ff;font:14px/1.6 system-ui}main{max-width:1050px;margin:auto}section{background:#223047;padding:15px;border-radius:12px;border:1px solid #42516c;margin:12px 0}button,textarea,input,select{background:#30425e;border:1px solid #6b7a95;color:#fff;padding:9px;border-radius:8px;font:inherit}button{cursor:pointer;margin:4px}button:disabled{opacity:.5}.primary{background:#32639e}textarea{box-sizing:border-box;width:100%;min-height:85px}article{margin:8px 0;padding:10px;background:#17243b;border-radius:8px}article.user{border-left:3px solid #87aaf7}article.assistant{border-left:3px solid #7ad6b3}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:330px;overflow:auto;font:13px/1.5 system-ui}.muted{color:#aabdd7;font-size:12px}.warning{color:#ffcf84}.cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}.cols>div{min-width:0}details{border:1px solid #56708b;padding:8px;margin:9px 0;border-radius:8px}summary{cursor:pointer}@media(max-width:700px){.cols{grid-template-columns:1fr}}</style>'+
- '<main><h2>🌐 World Editor Lab v0.1.1</h2>'+
+ '<main><h2>🌐 World Editor Lab v0.1.2</h2>'+
  '<p class="muted">대상: '+esc(character?.name)+' · 평소 채팅에서는 아무 작업도 하지 않아</p>'+
  '<p class="warning">'+esc(status||'세계관을 자유롭게 논의하고 승인한 변경만 반영해.')+'</p>'+
  '<button id="wel-close">닫기</button>'+

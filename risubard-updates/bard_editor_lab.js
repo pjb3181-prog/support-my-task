@@ -1,7 +1,7 @@
 //@name bard_editor_lab
 //@display-name Bard Editor Lab
 //@api 3.0
-//@version 0.3.10
+//@version 0.3.11
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js
 //@description Opt-in main-writer / auxiliary-editor surgical collaboration with limited review rounds, plus original Bard Editor Lab features.
 (async () => {
@@ -619,7 +619,16 @@
    if(uiOpen&&activityView==='auto')void render().catch(()=>{});
  }
 
+ // Story Runner status markers are cleaned from the saved text by Story Runner (afterRequest for normal
+ // replies, its output listener for streaming). Compare and revise the marker-free text so the result is the
+ // same whichever plugin touches the committed message first.
+ const stripRunnerMarkers=v=>txt(v).replace(/\s*<!--SR_EPISODE_STATUS\s+[\s\S]*?-->\s*$/i,'').replace(/\s*<SR_SCENE_COMPLETE\/>\s*$/,'');
+ // Internal-call protocol (see Story Runner): per-request tokens, no shared state.
+ function hasInternalCallToken(messages){try{return Array.isArray(messages)&&messages.some(m=>m&&typeof m.content==='string'&&m.content.includes('[[RISUBARD_INTERNAL_CALL:'));}catch(_){return false;}}
+ function hasInternalResultToken(content){return typeof content==='string'&&content.includes('[[RISUBARD_INTERNAL_RESULT:');}
  async function injectStyleBeforeRequest(messages,type){
+   if(collabActive||state.busy)return messages;
+   if(hasInternalCallToken(messages))return messages;
    if(unloaded||!conf.auto||!conf.promptAssist||type!=='model'||!Array.isArray(messages))return messages;
    // Only amend normal text-chat model prompts, not a structured task.
    if(messages.length<2||!messages.some(x=>x?.role==='user' && typeof x.content==='string'))return messages;
@@ -648,11 +657,33 @@
    return amended;
  }
 
+
+ function editorialSignature(value) {
+   const source=txt(value).trim();let a=2166136261,b=5381;
+   for(let i=0;i<source.length;i++){a=Math.imul(a^source.charCodeAt(i),16777619);b=Math.imul(b,33)^source.charCodeAt(i);}
+   return source.length+':'+(a>>>0).toString(16)+':'+(b>>>0).toString(16);
+ }
+ async function runnerAlreadyReviewed(content,chatId) {
+   if(!chatId)return false;
+   try{
+     const receipt=await risuai.pluginStorage.getItem('risubard_editorial_receipt_v1:'+chatId);
+     const age=Date.now()-Number(receipt?.at);
+     if(receipt?.owner!=='story_runner'||!(age>=0))return false;
+     // Story Runner announced a review of the reply that is being produced right now (listener order between
+     // plugins is a startup race): defer to it. The announcement expires so a lost request cannot block editing.
+     if(receipt.state==='pending')return age<(Number(receipt.ttlMs)||600000);
+     return age<900000&&receipt.signature===editorialSignature(content);
+   }catch(_){return false;}
+ }
+
  async function reviseBeforeSave(response,type){
+   if(collabActive||state.busy)return response;
+   if(hasInternalResultToken(response))return response;
    if(unloaded||!conf.auto||!conf.realEditor||type!=='model'||typeof response!=='string')return response;
    // Collaboration is deliberately post-save: deliver the first draft quickly,
    // then inspect and apply a verified patch without blocking the original response.
    if(conf.mode==='collab')return response;
+   try{const live=await current();if(await runnerAlreadyReviewed(response,live.id))return response;}catch(_){}
    if(alreadyPreSaved(response))return response;
    try{
      let reference={};
@@ -1051,7 +1082,7 @@
    const messages=live.chat?.message;
    if(!Array.isArray(messages)||meta.index!==messages.length-1)throw Error('뒤에 새 메시지가 추가되어 적용하지 않았어');
    const m=messages[meta.index];
-   if(!m||!['char','assistant'].includes(m.role)||txt(m.data)!==original)throw Error('원문이 변경되어 적용하지 않았어');
+   if(!m||!['char','assistant'].includes(m.role)||stripRunnerMarkers(m.data)!==stripRunnerMarkers(original))throw Error('원문이 변경되어 적용하지 않았어');
    if(meta.messageId&&txt(m.chatId||m.time)!==meta.messageId)throw Error('메시지 식별자 변경');
    if(!knownRestore){const fail=verify(original,revised);if(fail)throw Error('검증 실패 · '+fail);}
    // Fail closed if safe storage fails: do not alter chat before backup succeeds.
@@ -1081,12 +1112,21 @@
    await commit(state.target,state.original,state.revised);
    state.original=state.revised;state.revised='';state.status='사용자 승인 퇴고본 적용 · 원문 백업됨';
  }
+ let watcherSeed=Promise.resolve();
  async function automatic(arg,sourceLabel){
    if(unloaded||!arg||!Number.isInteger(arg.messageIndex)||!Array.isArray(arg.chat?.message))return;
+   // The load-time seed marks the pre-existing last message as handled. Wait for it so that
+   // outcome is deterministic (not dependent on how many awaits precede the `seen` check).
+   // Bounded: a seed that never settles must not block every output (the host awaits listeners one by one).
+   await Promise.race([watcherSeed,new Promise(r=>setTimeout(r,5000))]);
    const i=arg.messageIndex,m=arg.chat.message[i],ci=arg.characterIndex,ti=arg.chatIndex;
    if(!Number.isInteger(ci)||!Number.isInteger(ti)||!m||!['char','assistant'].includes(m.role)||i!==arg.chat.message.length-1)return;
    if(!conf.auto){void refreshSceneFromEvent(arg);return}
-   const original=txt(m.data);
+   const original=stripRunnerMarkers(m.data);
+   if(await runnerAlreadyReviewed(original,txt(arg.chat?.id))){
+     await recordAutomatic({phase:sourceLabel,outcome:'skipped',reason:'Story Runner 검수 완료 · 동일 원고의 자동 중복 퇴고 생략',original,calls:0});
+     void refreshSceneFromEvent(arg);return;
+   }
    if(alreadyPreSaved(original)){
      await confirmAutoCommitted(original);
      void refreshSceneFromEvent(arg);
@@ -1194,7 +1234,7 @@
     .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
     .status{padding:12px;background:#243046;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
     .muted{color:#afbedb;font-size:12px}@media(max-width:720px){.pair{grid-template-columns:1fr}body{padding:11px}}
-  </style><main><h2>Bard Editor Lab v0.3.10 · Writer ↔ Editor</h2>
+  </style><main><h2>Bard Editor Lab v0.3.11 · Writer ↔ Editor</h2>
   <p class="muted">본체·프리셋 수정 없음 · 메인 채팅에 짧은 편집 지침 삽입 + 모델을 이용한 선택적 퇴고</p>
   <div class="top">
     <button id="auto">${conf.auto?'자동 퇴고 ON — 끄기':'자동 퇴고 OFF — 켜기'}</button>
@@ -1211,7 +1251,7 @@
     </select>
   </div>
   <section class="status" style="margin:12px 0;border:1px solid #52617f">
-    <strong>🤝 작가↔편집자 협업 설정 (v0.3.10)</strong>
+    <strong>🤝 작가↔편집자 협업 설정 (v0.3.11)</strong>
     <p class="muted">상단 '협업' 모드에서만 작동. 기존 RisuBard 모델 슬롯을 이용해 새 API 키가 필요하지 않아.
     검토 모델을 위에서 선택해. memory는 RisuBard 기억 슬롯 모델을 사용해. 그 슬롯에 DeepSeek가 연결돼 있으면 DeepSeek가 검토하며, 다른 모델 슬롯은 변경하지 않아.</p>
     <div class="top">
@@ -1431,7 +1471,7 @@
     }
     return automatic(arg,'일반 채팅');
   });
- if(conf.mode==='collab')void seedStoryRunnerWatcher();
+ if(conf.mode==='collab')watcherSeed=seedStoryRunnerWatcher();
   pollTimer=setInterval(()=>{void pollStoryRunner();void updateScenePanel()},2800);
  await risuai.onUnload(async()=>{
    unloaded=true;

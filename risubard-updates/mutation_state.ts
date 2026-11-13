@@ -2,12 +2,12 @@
 //@display-name Mutation State Router
 //@api 3.0
 //@allowed-ipc story_runner
-//@version 0.79.5
+//@version 0.79.6
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/mutation_state.ts
 //@description Adds full-Lore conflict sweep and resolved-canon shielding so dense Lorebooks cannot silently restore stale pre-mutation facts; keeps staged world/feature switches and explicit recompilation.
 
 (async () => {
-  const VERSION = "0.79.5";
+  const VERSION = "0.79.6";
   // v0.71: classic-module-style staged controls. Pack/feature/frame/first-message
   // switches only change the pending configuration; Character/Lore/World Canon are
   // rewritten once when the user presses the explicit apply button. Each visible
@@ -6479,7 +6479,25 @@
     return {messages:removed ? filtered : messages,removed,chars,status:'scoped'};
   }
 
-  async function beforeRequest(messages) {
+  // Internal-call protocol (World Editor Lab and the story hooks). No shared state, no polling:
+  // - request: the caller puts [[RISUBARD_INTERNAL_CALL:<id>]] in its prompt, so beforeRequest sees exactly that request;
+  // - response: the caller asks the model to start its reply with [[RISUBARD_INTERNAL_RESULT:<id>]], so afterRequest
+  //   (which cannot see the prompt) recognises exactly that response. A concurrent normal chat has neither token and
+  //   is always processed. If a model ignores the echo instruction the response is processed like a normal one.
+  function hasInternalCallToken(messages) {
+    try {
+      return Array.isArray(messages) && messages.some((m) => m && typeof m.content === 'string' && m.content.includes('[[RISUBARD_INTERNAL_CALL:'));
+    } catch (_) { return false; }
+  }
+  function hasInternalResultToken(content) {
+    return typeof content === 'string' && content.includes('[[RISUBARD_INTERNAL_RESULT:');
+  }
+
+  async function beforeRequest(messages, requestModel) {
+    // Replacers also receive editor, memory, translation and emotion tasks.
+    // Those inputs must never change story state or receive fiction directives.
+    if (requestModel && requestModel !== 'model') return messages;
+    if (hasInternalCallToken(messages)) return messages;
     const promptDiag = {
       capturedAt: Date.now(),
       before: summarizePromptMessages(messages),
@@ -6510,6 +6528,7 @@
       // from an entirely different chat. Strip it before any model request.
       const worldMode = activeTarget ? storyWorldMode() : 'unselected';
       const scoped = await scopeMutationWorldCanon(messages, worldMode);
+      messages = scoped.messages;
       promptDiag.worldCanonScope = {
         mode:worldMode,status:scoped.status,
         removed:scoped.removed,chars:scoped.chars,
