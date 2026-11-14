@@ -1,7 +1,7 @@
 //@name character_mixer
 //@display-name Character Mixer
 //@api 3.0
-//@version 0.10.4
+//@version 0.10.5
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js
 //@description Character packs, automatic scene images, Gelbooru downloader credential import and image feedback.
 (async () => {
@@ -614,12 +614,34 @@
       seen.add(key);return true;
     }).slice(0,4);
   }
+  // Fail closed when the image filename/tags contradict the actual local beat.
+  // Prior chat, neighboring passages and character profiles are not evidence.
+  function sceneImageConflict(asset,beat){
+    const body=str(beat?.text||'').toLowerCase();
+    const tags=new Set(asArray(asset?.tags).map(x=>str(x).toLowerCase()));
+    const filename=str(asset?.name||'').toLowerCase();
+    const imageText=filename+' '+[...tags].join(' ');
+    const sexualImage=/(?:sex|intercourse|ejaculat|after_sex|orgasm|masturbat|fellatio|cunnilingus|penetrat|doggystyle|mating_press|missionary|anal_|vaginal|cumshot|sexual_intercourse)/i.test(imageText);
+    const sexualBeat=/(?:성관계(?:를|가|중|했|하는)|성교(?:를|했|하는)|섹스(?:를|했|하는)|삽입(?:했|하는|된)|교미(?:했|하는)|사정(?:했|하는)|키스(?:했|하는)|입맞춤|sex(?:ual_intercourse)?|intercourse|ejaculat|penetrat)/i.test(body);
+    if(sexualImage&&!sexualBeat)return true;
+    // A medical consultation about sex is not itself an intimate action.
+    if(sexualImage&&/(?:산부인과|의사|처방|피임약|콘돔|약국|대기실|진료|설명했|말했)/i.test(body)&&!/(?:서로|몸을|침대에서|입술을|껴안|안겼|만졌)/i.test(body))return true;
+    const swimImage=/(?:swimsuit|bikini|swimwear|one_piece_swimsuit|school_swimsuit)/i.test(imageText);
+    if(swimImage&&!/(?:수영복|비키니|수영장|해변|바닷가|swimsuit|bikini|swimwear)/i.test(body))return true;
+    const nakedImage=/(?:^|[_ ])(?:nude|naked|completely_nude|topless|bottomless)(?:$|[_ ])/i.test(imageText);
+    if(nakedImage&&/(?:옷을 입|니트|치마|코트|교복|정장|바지|셔츠)/i.test(body))return true;
+    if(tags.has('sleeping')&&/(?:걸어|걷|뛰|운전|게임|대화|말했)/i.test(body))return true;
+    if(tags.has('outdoors')&&/(?:대기실|진료실|욕실|샤워부스|방 안|식당 안|pc방)/i.test(body))return true;
+    return false;
+  }
   function assetMatchesLocalBeat(asset,pack,beat){
-    if(!asset||!beat||!safeAutoIllustrationPost(asset,pack))return false;
+    if(!asset||!beat||!safeAutoIllustrationPost(asset,pack)||sceneImageConflict(asset,beat))return false;
     if(!allowsRating(asset.rating||'general',sceneRatingMode(beat.context||beat.text)))return false;
     const tags=new Set(asArray(asset.tags).map(x=>str(x).toLowerCase()));
     const actor=sceneActorTags(beat)[0];
-    if(!strongSceneSignals(beat.text).some(x=>x.tags.some(t=>tags.has(t))))return false;
+    const required=strongSceneSignals(beat.text).filter(x=>x.tags.some(t=>!WEAK_SCENE_TAGS.has(t)));
+    if(!required.length||!required.some(x=>x.tags.some(t=>tags.has(t))))return false;
+    if(sceneSubjectTags(beat.text).length&&!sceneSubjectMatched(beat.text,asset.tags))return false;
     if(['2girls','3girls','2boys','3boys','multiple_girls','multiple_boys'].some(t=>tags.has(t)))return false;
     if(pack?.characterKind==='fanwork'&&beat.packPresent&&!verifiedPackIdentity(asset,pack))return false;
     if(actor==='no_humans')return ['no_humans','scenery','still_life','object_focus'].some(t=>tags.has(t));
@@ -1977,8 +1999,17 @@
           const candidates=asArray(pack.externalAssets).filter(asset=>
             !prior.has(asset.name)&&assetMatchesLocalBeat(asset,pack,beat)&&
             asArray(mod.assets).some(row=>Array.isArray(row)&&row[0]===asset.name));
+          // Score each candidate against THIS beat, not by download order.
+          // Exact action/subject tags outrank generic pose and expression tags.
+          const scored=candidates.map(asset=>{
+            const match=sceneTagSignals(beat.text).filter(signal=>signal.tags.some(t=>
+              asArray(asset.tags).map(x=>str(x).toLowerCase()).includes(t)));
+            const score=match.reduce((n,signal)=>n+signal.weight,0)
+              +(sceneSubjectTags(beat.text).length&&sceneSubjectMatched(beat.text,asset.tags)?5:0);
+            return {asset,score};
+          }).filter(row=>row.score>=5).sort((a,b)=>b.score-a.score);
           const seen=new Set();
-          for(const asset of candidates){
+          for(const {asset} of scored){
             if(!safePath(asset.path))continue;
             try{
               const bytes=bytesOf(await risuai.readImage(asset.path));
