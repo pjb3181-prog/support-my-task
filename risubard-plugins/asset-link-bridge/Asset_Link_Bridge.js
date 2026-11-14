@@ -1,6 +1,6 @@
 //@name risubard_asset_link_bridge
 //@api 3.0
-//@version 0.7.0
+//@version 0.8.0
 //@display-name Asset Link Bridge - Multi Module
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-plugins/asset-link-bridge/Asset_Link_Bridge.js
 // @ts-nocheck
@@ -13,7 +13,7 @@
   const OLD = 'asset_link_bridge:v1';
   const AUTOKEY = 'asset_link_bridge:auto:v4';
   let autoEnabled = true;
-  let maxImages = 2;
+  let minImages = 10;
   const $ = id => document.getElementById(id);
   const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const cid = c => String(c?.chaId || c?.id || c?.name || '');
@@ -26,14 +26,14 @@
     catch { return fallback; }
   }
   async function persist() { await Risuai.pluginStorage.setItem(KEY, JSON.stringify({rules,tracked})); }
-  async function persistAuto() { await Risuai.pluginStorage.setItem(AUTOKEY, JSON.stringify({enabled:autoEnabled,maxImages})); }
+  async function persistAuto() { await Risuai.pluginStorage.setItem(AUTOKEY, JSON.stringify({enabled:autoEnabled,minImages})); }
   async function load() {
     const state = await storageGet(KEY, {});
     rules = Array.isArray(state.rules) ? state.rules : [];
     tracked = state.tracked && typeof state.tracked === 'object' ? state.tracked : {};
     const a=await storageGet(AUTOKEY,{});
     autoEnabled=a.enabled !== false;
-    maxImages=[1,2,3].includes(Number(a.maxImages))?Number(a.maxImages):2;
+    minImages=[1,3,5,8,10,15,20].includes(Number(a.minImages))?Number(a.minImages):10;
   }
   const log = text => { $('output').textContent = String(text); };
   const option = (v,t) => `<option value="${esc(v)}">${esc(t)}</option>`;
@@ -261,33 +261,45 @@
     const matched=rules.filter(r=>r.target===characterId);
     const manifest=Array.isArray(tracked[characterId])?tracked[characterId]:[];
     if(!matched.length||!manifest.length)return text;
-    // Existing linked images are not duplicated. Other modules' images do not block insertion.
-    const existing=new Set();
-    for(const entry of manifest) if(text.includes('{{image::'+entry.alias+'}}')||text.includes('<img="'+entry.alias+'">'))existing.add(entry.alias);
-    const insertions=[];const used=new Set(existing);
-    const alreadyLinked = new Set(manifest.filter(e=>existing.has(e.alias)).map(e=>e.rule));
-    const handledActors=new Set();
-    for(const rule of matched){
-      if(insertions.length>=maxImages)break;
-      if(handledActors.has(rule.actor))continue;
-      if(alreadyLinked.has(rule.id))continue;
-      const position=findActorPosition(text,rule.actor);
-      if(position<0)continue;
-      const actorAssets=manifest.filter(entry=>entry.rule===rule.id && entry.alias && entry.path);
-      if(!actorAssets.length)continue;
-      const context=text.slice(Math.max(0,position-240),Math.min(text.length,position+520));
-      const choice=chooseAsset(actorAssets,context,used);
-      if(!choice)continue;
-      used.add(choice.alias);
-      handledActors.add(rule.actor);
-      insertions.push({position,alias:choice.alias,actor:rule.actor});
+    const pools=matched.map(rule=>({rule,items:manifest.filter(e=>e.rule===rule.id && e.alias && e.path)})).filter(p=>p.items.length);
+    if(!pools.length)return text;
+    const existing=new Set(manifest.filter(e=>text.includes('{{image::'+e.alias+'}}')||text.includes('<img="'+e.alias+'">')).map(e=>e.alias));
+    const pending=Math.max(0,minImages-existing.size);
+    if(!pending)return text;
+    const activePools=pools.filter(p=>findActorPosition(text,p.rule.actor)>=0);
+    if(!activePools.length)return text;
+    const blocks=[...text.matchAll(/[^\n]+(?:\n(?!\n)[^\n]+)*/g)].map(m=>({body:m[0],start:m.index,end:m.index+m[0].length}));
+    let current=null;
+    const candidates=[];
+    for(const b of blocks){
+      if(/^(\s*(?:\{\{(?:image|img)::|<img|<!--|\[STATUS|\[\(|&\[))/i.test(b.body))continue;
+      for(const p of activePools){
+        const actor=p.rule.actor;
+        const first=actor.split(/[\s/]+/)[0];
+        if(b.body.includes('['+actor+']')||b.body.includes(actor)||(first.length>=2&&b.body.includes(first))){current=p;break;}
+      }
+      if(!current)continue;
+      if(b.body.trim().length<28)continue;
+      if(/\{\{(?:image|img)::|<img=|<!--PMS_AUX_IMAGE-->/.test(b.body))continue;
+      candidates.push({position:b.end,pool:current,context:b.body});
     }
-    if(!insertions.length)return text;
-    // Insert once near the first mention/speaker block, keeping all original prose intact.
-    for(const item of insertions.sort((a,b)=>b.position-a.position)) {
-      const marker='{{image::'+item.alias+'}}';
-      text=text.slice(0,item.position)+marker+'\n\n'+text.slice(item.position);
+    if(!candidates.length)return text;
+    const count=Math.min(pending,candidates.length);
+    const chosen=[];
+    for(let i=0;i<count;i++){
+      const index=Math.min(candidates.length-1,Math.floor((i+0.5)*candidates.length/count));
+      chosen.push(candidates[index]);
     }
+    const used=new Set(existing);
+    const inserts=[];
+    for(const c of chosen){
+      let item=chooseAsset(c.pool.items,c.context,used);
+      if(!item && c.pool.items.length)item=chooseAsset(c.pool.items,c.context,new Set());
+      if(!item)continue;
+      used.add(item.alias);
+      inserts.push({position:c.position,marker:'\n\n{{image::'+item.alias+'}}'});
+    }
+    for(const ins of inserts.sort((a,b)=>b.position-a.position))text=text.slice(0,ins.position)+ins.marker+text.slice(ins.position);
     return text;
   }
   // The output script handler runs at the RisuAI output processing stage. This
@@ -330,23 +342,23 @@
       body{background:#161b29;color:#edf1fa;font:14px/1.5 system-ui,sans-serif;margin:0}main{max-width:920px;margin:20px auto;padding:20px;background:#252d40;border-radius:14px}
       h2{margin:0 0 8px}h3{margin:20px 0 10px}.muted,small{color:#bcc6d9}label{display:block;margin:9px 0 3px}input,select,button{box-sizing:border-box;background:#141d2d;border:1px solid #55627c;color:#fff;padding:9px;border-radius:7px;font:inherit}
       input,select{width:100%}button{cursor:pointer;margin:5px 5px 5px 0}button:disabled{opacity:.4}.primary{background:#365ca6} .rule{border:1px solid #526078;border-radius:8px;padding:10px;margin-bottom:8px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap} .fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 15px}#hints button{font-size:12px;padding:4px 7px}pre{white-space:pre-wrap;word-break:break-all;background:#111929;border-radius:7px;padding:12px;max-height:300px;overflow:auto}@media(max-width:650px){.fields{display:block}}
-    </style><main><h2>Asset Link Bridge v0.5.0</h2><p class="muted">하나의 봇에 여러 모듈을 연결하고, 등장인물별 이미지 출처를 분리해. 이미지 복사/원본 모듈 수정 없음.</p>
+    </style><main><h2>Asset Link Bridge v0.8.0</h2><p class="muted">하나의 봇에 여러 모듈을 연결하고, 등장인물별 이미지 출처를 분리해. 이미지 복사/원본 모듈 수정 없음.</p>
     <label>대상 봇 (대화하는 봇)</label><select id="target"></select><h3>등장인물별 에셋 연결 규칙</h3><div id="rules"></div>
     <h3>규칙 추가 / 수정</h3><div class="fields"><div><label>봇 안에 등장하는 인물 선택</label><select id="actorSelect"></select><small id="actorInfo"></small><div id="actorManual" style="display:none"><label>목록에 없는 인물 직접 입력</label><input id="actor" placeholder="예: 클로이 / 아르토리아"/></div></div><div><label>이미지 출처 모듈</label><select id="module"></select></div>
     <div><label>모듈 안에서 선택할 캐릭터의 파일명 패턴</label><input id="filter" placeholder="예: artoria_alter"/></div><div><label>패턴 일치 방식</label><select id="mode"><option value="prefix">파일명 시작 부분 일치</option><option value="contains">파일명에 포함</option></select></div>
     <div><label>이미지 별칭 접두사 (다른 인물과 겹치지 않게)</label><input id="prefix" placeholder="예: chloe_artoria__"/></div></div>
     <p id="hints" class="muted"></p><details><summary>선택된 모듈 에셋 이름 샘플</summary><pre id="samples"></pre></details>
     <input type="hidden" id="editing"/><button class="primary" id="saveRule">이 규칙 저장</button><button id="reset">입력 초기화</button>
-    <h3>자동 이미지 출력 (v0.7)</h3><label><input id="autoEnabled" type="checkbox" style="width:auto"/> 답변 출력 단계에서 연결된 등장인물의 이미지를 삽입 (출력 후처리 포함)</label>
-    <label>답변당 최대 이미지 수</label><select id="maxImages"><option value="1">1개</option><option value="2">2개</option><option value="3">3개</option></select>
+    <h3>자동 이미지 출력 (v0.8)</h3><label><input id="autoEnabled" type="checkbox" style="width:auto"/> 답변 출력 단계에서 연결된 등장인물의 이미지를 삽입 (출력 후처리 포함)</label>
+    <label>긴 답변당 최소 이미지 수 (짧은 답변은 가능한 위치만큼)</label><select id="minImages"><option value="1">1개</option><option value="3">3개</option><option value="5">5개</option><option value="8">8개</option><option value="10">10개</option><option value="15">15개</option><option value="20">20개</option></select>
     <p class="muted">원본 답변의 내용은 유지하고 기존 {{image::별칭}} 렌더러를 사용해. 상황은 파일명/근처 문장으로 추정하며, AI에 추가 토큰을 보내지 않아. 정교한 장면 판별은 보장하지 않아.</p>
     <h3>대상 봇 에셋 적용</h3><p class="muted">규칙은 여러 개 추가할 수 있어. 미리보기를 본 다음 동기화하면 등록 규칙대로 연결하고, 이 플러그인이 기존에 추가했던 경로만 정리해. 수동 등록 에셋은 보존해.</p>
     <button id="preview">전체 매핑 미리보기</button><button class="primary" id="sync">선택 봇 에셋 동기화</button><button id="close">닫기</button>
     <pre id="output">원본 모듈이 실제로 설치되어 있어야 해. 먼저 규칙을 추가해.</pre>
     <p class="muted">주의: 파일명 기반 접두어 후보는 실제 캐릭터 식별이 아니라 추정이야. 각 인물과 이미지가 맞는지 확인해. 별칭을 출력하려면 {{image::별칭}} 호출 또는 별도의 정규식/로어북 설정이 필요해. v0.1에서 추가했던 경로는 자동으로 정리하지 않아.</p></main>`;
-    $('autoEnabled').checked=autoEnabled; $('maxImages').value=String(maxImages);
+    $('autoEnabled').checked=autoEnabled; $('minImages').value=String(minImages);
     $('autoEnabled').onchange=async()=>{autoEnabled=$('autoEnabled').checked;await persistAuto();};
-    $('maxImages').onchange=async()=>{maxImages=Number($('maxImages').value);await persistAuto();};
+    $('minImages').onchange=async()=>{minImages=Number($('minImages').value);await persistAuto();};
     $('target').innerHTML=chars.map(c=>option(cid(c),`${c.name} (${cid(c)})`)).join('');
     $('module').innerHTML=modules.map(m=>option(mid(m),`${m.name} (${availableAssets(m).length}개)`)).join('');
     selected=$('target').value;
