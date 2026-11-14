@@ -5,9 +5,7 @@
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-plugins/asset-link-bridge/Asset_Link_Bridge.js
 // @ts-nocheck
 // Stable plugin ID is unchanged for future updates.
-// Automatic updates: publish the matching .js at a public, CORS/Range-enabled fixed URL
-// and add //@update-url https://raw.githubusercontent.com/OWNER/REPO/main/dist/RisuBard_Asset_Link_Bridge.js
-// Do not point this at a private GitHub repository.
+// Release channel: public JS distribution. Source asset modules and user data are never uploaded.
 (() => {
   'use strict';
   const Risuai = risuai;
