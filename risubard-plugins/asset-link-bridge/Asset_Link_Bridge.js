@@ -1,11 +1,11 @@
 //@name risubard_asset_link_bridge
 //@api 3.0
-//@version 0.6.0
+//@version 0.7.0
 //@display-name Asset Link Bridge - Multi Module
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-plugins/asset-link-bridge/Asset_Link_Bridge.js
 // @ts-nocheck
 // Stable plugin ID is unchanged for future updates.
-// Release channel: public JS distribution. Source asset modules and user data are never uploaded.
+// Public release channel: only the plugin source; no personal asset data.
 (() => {
   'use strict';
   const Risuai = risuai;
@@ -265,8 +265,12 @@
     const existing=new Set();
     for(const entry of manifest) if(text.includes('{{image::'+entry.alias+'}}')||text.includes('<img="'+entry.alias+'">'))existing.add(entry.alias);
     const insertions=[];const used=new Set(existing);
+    const alreadyLinked = new Set(manifest.filter(e=>existing.has(e.alias)).map(e=>e.rule));
+    const handledActors=new Set();
     for(const rule of matched){
       if(insertions.length>=maxImages)break;
+      if(handledActors.has(rule.actor))continue;
+      if(alreadyLinked.has(rule.id))continue;
       const position=findActorPosition(text,rule.actor);
       if(position<0)continue;
       const actorAssets=manifest.filter(entry=>entry.rule===rule.id && entry.alias && entry.path);
@@ -275,6 +279,7 @@
       const choice=chooseAsset(actorAssets,context,used);
       if(!choice)continue;
       used.add(choice.alias);
+      handledActors.add(rule.actor);
       insertions.push({position,alias:choice.alias,actor:rule.actor});
     }
     if(!insertions.length)return text;
@@ -285,6 +290,22 @@
     }
     return text;
   }
+  // The output script handler runs at the RisuAI output processing stage. This
+  // complements afterRequest when later plugins or postprocessors rewrite replies.
+  // Both transformations are idempotent because existing markers are detected.
+  const outputHandler=async (content) => {
+    if(typeof content!=='string'||!content.trim())return content;
+    try {
+      const c=await Risuai.getCharacter();
+      const id=cid(c);
+      if(!id)return content;
+      await load();
+      return autoInsertImages(content,id);
+    } catch(error) {
+      console.warn('[Asset Link Bridge] output hook error',error);
+      return content;
+    }
+  };
   const afterRequestHandler=async (content,requestType) => {
     if(typeof content!=='string'||!content.trim())return content;
     try {
@@ -316,7 +337,7 @@
     <div><label>이미지 별칭 접두사 (다른 인물과 겹치지 않게)</label><input id="prefix" placeholder="예: chloe_artoria__"/></div></div>
     <p id="hints" class="muted"></p><details><summary>선택된 모듈 에셋 이름 샘플</summary><pre id="samples"></pre></details>
     <input type="hidden" id="editing"/><button class="primary" id="saveRule">이 규칙 저장</button><button id="reset">입력 초기화</button>
-    <h3>자동 이미지 출력 (v0.4)</h3><label><input id="autoEnabled" type="checkbox" style="width:auto"/> 답변에 연결된 등장인물이 나오면 이미지를 자동으로 삽입</label>
+    <h3>자동 이미지 출력 (v0.7)</h3><label><input id="autoEnabled" type="checkbox" style="width:auto"/> 답변 출력 단계에서 연결된 등장인물의 이미지를 삽입 (출력 후처리 포함)</label>
     <label>답변당 최대 이미지 수</label><select id="maxImages"><option value="1">1개</option><option value="2">2개</option><option value="3">3개</option></select>
     <p class="muted">원본 답변의 내용은 유지하고 기존 {{image::별칭}} 렌더러를 사용해. 상황은 파일명/근처 문장으로 추정하며, AI에 추가 토큰을 보내지 않아. 정교한 장면 판별은 보장하지 않아.</p>
     <h3>대상 봇 에셋 적용</h3><p class="muted">규칙은 여러 개 추가할 수 있어. 미리보기를 본 다음 동기화하면 등록 규칙대로 연결하고, 이 플러그인이 기존에 추가했던 경로만 정리해. 수동 등록 에셋은 보존해.</p>
@@ -351,7 +372,8 @@
     if(!chars.length||!modules.length)log('캐릭터와 에셋을 가진 모듈이 모두 필요해. 먼저 모듈을 설치해.');
     await Risuai.showContainer('fullscreen');
   }
-  Risuai.addRisuReplacer('afterRequest',afterRequestHandler).catch(err=>console.warn('[Asset Link Bridge] hook error',err));
+  Risuai.addRisuReplacer('afterRequest',afterRequestHandler).catch(err=>console.warn('[Asset Link Bridge] afterRequest hook error',err));
+  Risuai.addRisuScriptHandler('output',outputHandler).catch(err=>console.warn('[Asset Link Bridge] output hook registration error',err));
   Risuai.registerSetting('Asset Link Bridge (다중 모듈 연결)',openUI,'','none');
   Risuai.registerButton({name:'다중 모듈 에셋 연결',icon:'',iconType:'none',location:'hamburger'},openUI);
 })();
