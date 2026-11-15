@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.1.0
+//@version 1.1.1
 //@description 독립형 스토리 GM + 세계관 편집실: 설정/로어 변경안 검토·승인·복원, 인물 판정, 간결한 연출 지시문.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.1.0';
+  const VERSION = '1.1.1';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -229,7 +229,7 @@
     const userMessageCount=messages.filter(m=>m?.role==='user'||m?.isUser===true).length;
     return {ci,ti,ch,chat,key,characterId:chId,chatId,identity:`${ch.name||'이름 미상'} / 채팅 ${Number.isInteger(ti)?ti+1:'?'}`,
       card,persona,loreText,wikiText:clip(wiki?.content, LIMITS.wiki),wikiDocs:selectedDocs,wikiNote,personaNote,personaVerified,
-      history:clip(tail,LIMITS.history),historyCount:messages.length,userMessageCount,
+      history:tail.length>LIMITS.history?tail.slice(-LIMITS.history):tail,historyCount:messages.length,userMessageCount,
       hasWiki:!!(clip(wiki?.content,300)||selectedDocs.length),
       hasLore:loreText.length>0,hasPersona:!!persona};
   }
@@ -488,15 +488,15 @@
     return '사용자가 원하는 장면·제안을 해석하고 수락·거절·역제안을 독립적으로 판정한다. 그 판정을 다음 장면의 목표·행동·갈등을 지정하는 2~4문장 연출 지시문으로 반환한다. 소설 본문은 쓰지 않는다.';
   }
   function contextBudget(){return project.contextDepth==='compact'?0.60:project.contextDepth==='deep'?1:0.82;}
-  function preparePrompt(mode,input) {
+  function preparePrompt(mode,input,options={}) {
     const c=current,p=project,b=contextBudget(),pack={
       session:c.identity,
       initialChat:c.userMessageCount===0,
-      sourceNotes:{persona:c.personaNote,personaVerified:c.personaVerified,wiki:c.wikiNote},
-      sourcePriority:'최신 실제 채팅 > 캐릭터 카드/페르소나의 기본 설정 > 확인된 사건의 BardWiki 기억 > 관련 로어북 > 사용자가 승인한 계획 > 디렉터의 이전 가상 판정',
+      sourceNotes:{persona:options.excludePersona?'페르소나 영향 비교를 위해 제외':c.personaNote,personaVerified:options.excludePersona?false:c.personaVerified,wiki:c.wikiNote},
+      sourcePriority:'현재 채팅에서 실제로 확인된 사건 및 참석 인물 > 각 NPC 캐릭터 카드의 성격/경계 > 관련 세계관/로어북 > BardWiki의 검증 가능한 과거 사실 > 플레이어 페르소나의 능력·외모 > 승인된 이야기 목표 > 기존 디렉터의 가정. 플레이어 페르소나는 NPC의 감정·동의를 대신 정할 수 없다.',
       character:clip(JSON.stringify(c.card),Math.floor(LIMITS.card*b)),
-      persona:clip(JSON.stringify(c.persona||{}),Math.floor(LIMITS.persona*b)),
-      personaExtra:clip(p.personaExtra,4200),
+      persona:options.excludePersona?'[이번 비교 판정에서는 제외]':clip(JSON.stringify(c.persona||{}),Math.floor(LIMITS.persona*b)),
+      personaExtra:options.excludePersona?'':clip(p.personaExtra,4200),
       lorebook:clip(JSON.stringify(c.loreText),Math.floor(LIMITS.lore*b)),
       bardWikiContext:clip(c.wikiText,Math.floor(LIMITS.wiki*b)),
       bardWikiCharacters:clip(JSON.stringify(c.wikiDocs),6000),
@@ -506,8 +506,8 @@
       arcApproved:clip(p.plan,10000),
       userRules:clip(p.rules,4800),
       storyGoal:clip(p.goal,2400),
-      pastDirectorTalks:p.talks.slice(-9).map(x=>({user:clip(x.user,900),mode:x.mode,reply:clip(x.reply,1500),verdict:x.verdict})),
-      lastPendingResult:p.last?{verdict:p.last.verdict,reply:clip(p.last.reply,1400),instruction:clip(p.last.instruction,1200)}:null,
+      pastDirectorTalks:p.talks.slice(-9).map(x=>({user:clip(x.user,900),mode:x.mode,reply:clip(x.reply,1500),verdict:x.verdict,truthStatus:'과거 디렉터 가상 판정, 실제 사건으로 확정되지 않음'})),
+      lastPendingResult:options.independent?null:(p.last?{verdict:p.last.verdict,reply:clip(p.last.reply,1400),instruction:clip(p.last.instruction,1200)}:null),
       pacing:p.pacing,
     };
     // Keep the default context affordable; preserve recent actual chat and the
@@ -540,6 +540,10 @@
 8. 너무 답답한 문답 반복, 근거 없는 전원 찬성, 급작스러운 태도 뒤집기, 자동 엔딩, 말만 반복하는 정지 장면을 피한다. 독자적인 행동과 재미있는 갈등을 허용한다.
 9. 첫 메시지와 초기 분기 선택을 덮어쓰거나 강제로 생략하지 않는다. 사용자가 명시한 장면 전환·시간 경과·행동은 연출 지시에 반영한다. 본문을 미리 쓰거나 결말을 멋대로 확정하는 것과 전개 방향을 구체적으로 지정하는 것은 다르다.
 10. 사용자의 방향성은 존중하되 결과를 정답으로 맞춰주는 것을 목표로 삼지 않는다.
+11. 플레이어 페르소나의 매력·능력·초자연적 효과는 캐릭터 설정에 실제로 명시된 범위에서만 적용한다. 플레이어에게 끌린다는 사실과 NPC가 특정 제안 또는 친밀한 행동에 자발적으로 동의한다는 사실은 구분한다. 설정에 근거가 없는 자동 수락을 만들지 않는다.
+12. 친밀한 접촉·관계 진전·중대한 요청에 대한 NPC의 의사를 우선 평가한다. 친밀도가 높아도 무조건 허용하는 것은 아니다. 반대로 정당한 이유가 있으면 수락할 수도 있으므로 일률적 거절도 금지한다.
+13. 최신 채팅에서 실제로 등장하거나 직접 연관된 인물만 이 장면에 참여시킨다. 설정에 여러 인물이 등장한다고 모두 한자리에 있는 것으로 취급하지 않는다. 현재 참석 여부가 불명확하면 새 인물을 임의로 소환하지 않는다.
+14. 독립 판정에서 부여한 NPC별 입장과 실제 채팅의 사실을 지시문 작성보다 우선한다. 확정되지 않은 추정은 불확실하다고 표시하며, 판정 근거 없는 자동 동의를 지시문에 넣지 않는다.
 속도: ${p.pacing==='fast'?'장면의 필요 없는 공백을 생략하고 사건은 빠르게, 인물의 성향과 인과관계는 유지':'character'===p.pacing?'인물 자율성, 내적 갈등, 관계의 충분한 원인을 특히 중시':'균형 있게, 불필요한 반복은 생략하고 사건이 진전되도록'}.
 
 응답은 반드시 JSON 객체 하나만 반환한다. 코드 펜스/사고과정/자기소개 없이 다음 키를 사용한다:
@@ -552,7 +556,7 @@
 - '묘사한다', '반응에 맡긴다', '사용자가 선택하게 한다'만 반복하는 모호한 편집 메모도 실패다. 주인공의 행동·상황과 어떤 갈등/반응을 유도할지 분명히 적되, 대사나 모든 결과를 미리 확정하지 않는다.
 - 좋은 출력 예시(이 예시를 실제 다른 장면에 복제하지 말 것): '약 8시간이 지난 뒤 나미가 잠에서 깨어나는 장면으로 이어가. 한성은 그동안 노트북에 일기 초안을 써두었고, 나미에게 방금 꾼 꿈에 관해 물어본다. 나미의 반응은 기존 성격과 두 사람의 관계를 반영하고, 대화가 다음 사건으로 이어지도록 해.'
 - 사용자가 특정 반응이나 대사를 정확히 확정해 달라고 명시하지 않았다면 세부 대사는 RisuBard 본문 생성에 맡긴다. 다만 설정 판정(거절/조건부 수락 등)이 핵심이면 방향은 지정한다.
-- 첫 메시지와 실제 채팅에 없는 사건을 기정사실화하지 말고, 사용자에게 기획 설명이나 결과 보고서를 복사하게 하지 않는다.
+- 첫 메시지와 실제 채팅에 없는 사건을 기정사실화하지 말고, 사용자에게 기획 설명이나 결과 보고서를 복사하게 하지 않는다. 장면에 없는 다른 NPC를 넣어 일제히 호의적인 반응을 하도록 연출하지 않는다.
 - instruction에는 '지시문 초안:', 'OOC 설명:', '원칙:', '선택지:' 등의 제목·분석을 넣지 않는다.
 - talk/revise/review 모드에는 instruction이 없어도 된다. 자동 전송하지 않는다.
 현재 수행 지침: ${modeInstructions(mode)}.`;
@@ -569,8 +573,39 @@
     const v=parseObject(raw);
     if(!v || typeof v!=='object')return {reply:clip(raw,8000),verdict:'판정 불필요',evidence:'',npc_reaction:'',options:[],instruction:'',proposed_plan:'',review:'',unstructured:true};
     return {reply:clip(v.reply||v.analysis||v.summary,9000),verdict:clip(v.verdict||'판정 불필요',90),evidence:clip(v.evidence,3200),
+      persona_effect:clip(v.persona_effect,1600),actor_positions:list(v.actor_positions).slice(0,10).filter(x=>x&&typeof x==='object').map(x=>({name:clip(x.name,90),verdict:clip(x.verdict,80),basis:clip(x.basis,1100),presence:clip(x.presence,90)})),
       npc_reaction:clip(v.npc_reaction||v.reaction,3000),options:list(v.options).slice(0,4).map(x=>clip(x,300)).filter(Boolean),
       instruction:clip(v.instruction||v.next_instruction,9000),proposed_plan:clip(v.proposed_plan,13500),review:clip(v.review,9500),unstructured:false};
+  }
+  // In normal use the GM judges independently BEFORE the writer sees the desired outcome.
+  // This extra LLM call costs tokens but prevents the writer from grading its own plan.
+  async function judgeSituation(input,options={}){
+    const messages=preparePrompt('judge',input,{...options,independent:true});
+    messages[0].content+='\n\n[독립 판정 전용 단계 — 소설·지시문 작성 금지] ' +
+      '아래 요청은 플레이어가 시도하거나 제안하려는 행동이다. 요청한 결과가 이미 성립했다고 가정하지 말라. ' +
+      '각 NPC별로 성격·선호·체면·기존 관계·최근 실제 사건을 근거로 수락/조건부 수락/보류/거절/역제안/판정 불가를 독립적으로 판단하라. ' +
+      '판정을 위한 반대 증거, 본인의 이해관계, 선행 조건을 먼저 검토하라. 맥락이 부족하면 판정 불가/보류를 선택하라. ' +
+      '현재 장면에 있는 인물과 배경 설정에만 등장한 인물을 구별하고, 후자는 이 장면에 참여시키지 말라. ' +
+      '플레이어 페르소나의 매력 또는 초자연적 설정이 영향이 있다면 어느 원문에 근거하는지 따로 설명하라. ' +
+      '플레이어의 매력에 끌리는 것과 친밀한 행동에 동의하는 것을 동일시하지 말라. 강제적 효과가 있으면 자유로운 동의와 구별하라. ' +
+      '사용자의 제안은 판정 대상일 뿐 판정 정답이 아니고, 이전 Story Director의 가상 반응도 사실 증거가 아니다. ' +
+      '반대로 명백한 수락 근거가 있다면 억지 거절하지 말라. ' +
+      '반드시 JSON 객체만 출력하라: ' +
+      '{"reply":"판정 요약 2~5문장","verdict":"수락|조건부 수락|보류|거절|역제안|판정 불가|판정 불필요","evidence":"출처가 확인된 근거와 추론 구분","npc_reaction":"예상 반응을 짧게, 확정이 아닌 가설로","options":["다음 협상 제안"],"persona_effect":"이 판정에 사용한 페르소나의 구체적 영향과 출처, 확인 불가하면 확인 불가","actor_positions":[{"name":"이름","verdict":"수락/조건부 수락/보류/거절/역제안/판정 불가","basis":"행동·관계·사실의 근거; 자료 부족이면 부족하다고 기재","presence":"현재 장면 등장/등장 미확인/배경 인물"}],"instruction":""}. ' +
+      'actor_positions에는 현장 인물 또는 현재 제안의 직접 상대만 포함하고, 나머지는 제외한다.';
+    messages[1].content+='\n\n[판정 대상 확인] 아직 상대의 동의, 감정 변화, 사건 결과는 확정된 사실이 아니다. 최신 채팅에서 직접 확인된 내용만 근거로 쓴다.';
+    const raw=await askModel(messages),obj=parseObject(raw);
+    if(!obj||typeof obj!=='object'||typeof obj.verdict!=='string')throw new Error('독립 판정 결과를 읽지 못했어. 사건의 결과를 임의 확정하지 않았어. 다시 시도해 줘.');
+    const allowed=new Set(['수락','조건부 수락','보류','거절','역제안','판정 불가','판정 불필요']);
+    const res=normalizedResult(JSON.stringify(obj),'judge');
+    if(!allowed.has(res.verdict))res.verdict='판정 불가';
+    if(res.verdict==='수락' && !res.evidence && !res.actor_positions?.some(x=>x.basis)){
+      res.verdict='판정 불가';
+      res.evidence='수락을 뒷받침할 설정 또는 실제 채팅의 근거가 제시되지 않았어.';
+      res.reply='상대가 곧바로 수락한다고 단정할 자료가 부족해. 어떤 조건에서 수락할 수 있는지 먼저 확인해야 해.';
+    }
+    res.instruction='';
+    return res;
   }
   function needsInstruction(mode){
     return mode==='auto'||mode==='judge'||mode==='instruct';
@@ -599,13 +634,16 @@
       '너는 소설을 작성하는 작가가 아니라 장면을 배정하는 디렉터다. 완성된 소설의 묘사, 직접 대사, 감각·표정의 세부 묘사를 쓰지 마라. ' +
       '반드시 2~4개의 간결한 연출 지시 문장, 가능하면 80~350자 이내로 작성한다. ' +
       '현재 상황/시간 경과, 사용자 행동, 인물의 설정상 동기 및 반응 방향, 다음 장면으로의 연결점만 제시하라. ' +
+      'GM이 별도 단계에서 판정한 NPC별 입장을 우선하고, 수락 근거가 없거나 보류한 제안을 기정사실로 실현하지 마라. ' +
+      '실제 최신 채팅에 현재 등장한 인물만 넣고, 페르소나의 매력이 NPC의 동의를 대신하지 못하도록 하라. ' +
       'NPC 거절 판정이라면 거절하는 방향과 이유를 지시하되 실제 거절 대사를 작성하지 마라. ' +
       '예: 「8시간 뒤 나미가 깨어나는 장면으로 이어가. 한성은 그동안 쓴 일기 초안을 바탕으로 나미에게 꿈을 묻는다. 나미는 현재 관계와 성격에 어울리게 반응하고, 그 대화가 다음 사건의 계기가 되게 해.」 ' +
       '명령형 연출 지시문이며 소설 본문은 아니다. 응답은 JSON {"instruction":"연출 지시문"}만 출력하라.';
     msgs[1].content+='\n\n[이전 GM 판정/제안] '+JSON.stringify({
       verdict:clip(decision?.verdict,100),reason:clip(decision?.evidence,1600),
       reply:clip(decision?.reply,1400),npc:clip(decision?.npc_reaction,1400),
-      priorDraft:clip(decision?.instruction,1800),variation:clip(variation,1300)
+      priorDraft:clip(decision?.instruction,1800),actorPositions:decision?.actor_positions||[],
+      personaEffect:clip(decision?.persona_effect,1200),variation:clip(variation,1300)
     });
     return msgs;
   }
@@ -632,10 +670,25 @@
     const request=lastDirectorRequest(),fresh=await readSources(request);
     if(fresh.key!==current.key)throw new Error('채팅이 바뀌었어. 새로고침해 줘.');
     current=fresh;
-    const draft=await generateInstruction(request,project.last,variation);
-    project.last.instruction=draft;
+    const checked=await judgeSituation(request);
+    const draft=await generateInstruction(request,checked,variation);
+    project.last={...project.last,...checked,instruction:draft};
     project.last.draftError='';
     await save();renderResult();renderSources();
+  }
+  // One optional extra judgement, same evidence minus only the player persona.
+  // This is a sensitivity comparison, not proof of causality (model outputs vary).
+  async function comparePersonaInfluence(){
+    if(!project.last)throw new Error('먼저 디렉터로 상황을 판정해 줘.');
+    await verifySession();await flushSave();
+    const request=lastDirectorRequest();
+    const fresh=await readSources(request);
+    if(fresh.key!==current.key)throw new Error('채팅이 변경됐어. 새로고침해 줘.');
+    current=fresh;
+    if(!current.persona && !project.personaExtra?.trim())throw new Error('조회된 페르소나나 보충 설정이 없어 비교할 수 없어.');
+    const result=await judgeSituation(request,{excludePersona:true});
+    project.last.persona_comparison={withPersona:project.last.verdict,withoutPersona:result.verdict,evidence:result.evidence,actor_positions:result.actor_positions,at:now()};
+    await save();renderResult();
   }
   async function verifySession(){
     const ci=await api.getCurrentCharacterIndex(),ti=await api.getCurrentChatIndex();
@@ -648,11 +701,16 @@
     const fresh=await readSources([input,project.goal].filter(Boolean).join('\n').slice(0,3000));
     if(fresh.key!==current.key)throw new Error('채팅이 전환됐어. 새로고침을 눌러줘.');
     current=fresh;
-    const raw=await askModel(preparePrompt(mode,input));
-    const res=normalizedResult(raw,mode);
-    if(needsInstruction(mode)&&instructionNeedsRewrite(res.instruction)){
-      try{res.instruction=await generateInstruction(input,res,'초안이 없거나 소설 본문/메타 설명으로 나왔으므로 장면을 이끄는 짧은 연출 지시문으로 다시 작성');}
-      catch(error){res.draftError='초안 자동 생성 실패: '+(error?.message||error);console.warn('[SD] draft recovery',error);}
+    let res;
+    if(needsInstruction(mode)){
+      // Two explicit phases: independent GM adjudication, then scene direction.
+      // Do not show a flattering draft from a model that skipped adjudication.
+      res=await judgeSituation(input);
+      try{res.instruction=await generateInstruction(input,res,'이번 제안에 대한 별도 GM 판정에 따르는 짧은 연출 지시문 작성');}
+      catch(error){res.draftError='초안 생성 실패: '+(error?.message||error);console.warn('[SD] draft generation',error);}
+    }else{
+      const raw=await askModel(preparePrompt(mode,input));
+      res=normalizedResult(raw,mode);
     }
     project.last=res;
     if(res.review)project.review=res.review;
@@ -821,7 +879,7 @@
       const ta=makeTextarea(root,6,'짧은 다음 장면 연출 지시문');ta.value=r.instruction;ui.instruction=ta;
       ta.addEventListener('input',()=>{project.last.instruction=ta.value;scheduleSave();});
       const row=el('div',root,{class:'sd-actions'});
-      btn(row,'초안 복사',()=>action('복사',async()=>{await copyText(ta.value);}), 'sd-btn sd-primary');
+      btn(row,'지시문 복사',()=>action('복사',async()=>{await copyText(ta.value);}), 'sd-btn sd-primary');
       btn(row,'이대로 채팅에 보내기',()=>action('전송',async()=>{await sendDraft(ta.value);}), 'sd-btn');
       btn(row,'연출 지시문으로 다시 쓰기',()=>action('연출 지시문 재작성',async()=>{await regenerateLastInstruction('같은 장면 목적과 판정을 유지하되 2~4문장의 간결한 연출 지시로 작성. 소설 본문과 대사는 제외');}), 'sd-btn sd-soft');
     }else{
@@ -836,6 +894,19 @@
       el('summary',detail,{},'설정 판정과 추천 이유 보기'+(r.verdict&&r.verdict!=='판정 불필요'?' · '+r.verdict:''));
       if(r.reply)el('div',detail,{class:'sd-response'},r.reply);
       if(r.evidence){el('div',detail,{class:'sd-section'},'판정 근거');el('div',detail,{class:'sd-muted sd-reply-preview'},r.evidence);}
+      if(r.actor_positions?.length){
+        el('div',detail,{class:'sd-section'},'NPC별 입장과 참석 여부');
+        r.actor_positions.forEach(x=>{el('div',detail,{class:'sd-muted sd-reply-preview'},`${x.name||'이름 미상'} · ${x.verdict||'판정 불가'} · ${x.presence||'확인 불가'}\n${x.basis||'근거 미확인'}`);});
+      }
+      if(r.persona_effect){el('div',detail,{class:'sd-section'},'페르소나 영향');el('div',detail,{class:'sd-muted sd-reply-preview'},r.persona_effect);}
+      if(r.persona_comparison){
+        el('div',detail,{class:'sd-section'},'페르소나 제외 비교 (참고용)');
+        el('div',detail,{class:'sd-muted sd-reply-preview'},`현재 판정: ${r.persona_comparison.withPersona||'?'} / 페르소나 제외: ${r.persona_comparison.withoutPersona||'?'}\n제외한 판정의 근거: ${r.persona_comparison.evidence||'미확인'}\n단 한 번의 모델 비교는 인과관계를 확정하지 못하며, 실제 세계관 설정은 변경되지 않아.`);
+      }
+      if(current?.hasPersona || project.personaExtra?.trim()){
+        btn(detail,'페르소나 없이 같은 상황 재판정',()=>action('페르소나 영향 비교',async()=>{await comparePersonaInfluence();}),'sd-btn sd-soft sd-small');
+        el('div',detail,{class:'sd-texthint'},'진단용 모델 호출이 1회 추가돼. 실제 페르소나·봇 설정·스토리 진행은 변경하지 않아.');
+      }
       if(r.npc_reaction){el('div',detail,{class:'sd-section'},'상대 반응 참고');el('div',detail,{class:'sd-reply-preview'},r.npc_reaction);}
     }
     if(r.options?.length){
