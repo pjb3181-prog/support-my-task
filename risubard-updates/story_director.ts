@@ -1,19 +1,20 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.1.2
-//@description 독립형 스토리 GM + 세계관 편집실: 설정/로어 변경안 검토·승인·복원, 인물 판정, 간결한 연출 지시문.
+//@version 1.2.0
+//@description 채팅 옆 빠른 상담 플로팅 창 + 독립 GM 판정, 연출 지시문, 승인 전송, 세계관 편집 및 복원.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.1.2';
+  const VERSION = '1.2.0';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
   let busy = false, saveTimer = null, worldSaveTimer = null;
   let world = null;
+  let dockHost = null, dockSide = 'right', layoutMode = 'full';
   const WORLD_STORE = "story_director_world_v1:";
   const WORLD_OLD_STORE = "world_editor_lab_010_";
   const WORLD_FIELDS = ["desc","personality","scenario","exampleMessage"];
@@ -25,7 +26,7 @@
   const DEFAULTS = {
     goal:'',canon:'',hardLimits:'',plan:'',rules:'',personaExtra:'',wikiExtra:'',input:'',
     mode:'auto',model:'otherAx',pacing:'balanced',contextDepth:'standard',
-    talks:[],last:null,pendingPlan:null,applied:[],review:'',updatedAt:0
+    talks:[],last:null,pendingPlan:null,applied:[],review:'',dockDraft:'',updatedAt:0
   };
   const STYLE = `
   :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0f151e;color:#eaf0f7;font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
@@ -94,6 +95,29 @@
   .sd-world-versions select{min-width:200px;max-width:100%;flex:1 1 260px}
   .sd-world-panel .sd-actionbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
   .sd-soft-tag{font-size:11px;color:#a5c9c7;border:1px solid #4a6c6d;border-radius:5px;padding:2px 7px}
+  body.sd-dock-mode{background:#101927;overflow:hidden}
+  body.sd-dock-mode>.sd-app{display:none!important}
+  .sd-dock{height:100dvh;width:100%;display:flex;flex-direction:column;background:#172331;color:#eaf1f8;overflow:hidden}
+  .sd-dock-head{flex:0 0 auto;border-bottom:1px solid #35516a;padding:11px 12px 9px;background:#152435}
+  .sd-dock-headline{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .sd-dock-head .sd-title{font-size:15px;margin:0}
+  .sd-dock .sd-btn{font-size:12px;padding:7px 9px}
+  .sd-dock .sd-btn.sd-primary{background:#188f87}
+  .sd-dock-toolbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:7px}
+  .sd-dock-mini{font-size:11px;color:#abc4d6;overflow-wrap:anywhere}
+  .sd-dock-scroll{flex:1 1 auto;overflow:auto;padding:10px 12px;overscroll-behavior:contain;scrollbar-width:thin}
+  .sd-dock-thread{margin-bottom:10px}
+  .sd-dock-thread .sd-bubble{font-size:12px;margin:6px 0;padding:8px 10px}
+  .sd-dock-thread .sd-user{margin-left:10%}.sd-dock-thread .sd-ai{margin-right:8%}
+  .sd-dock-result{border:1px solid #385d70;border-radius:10px;padding:11px;background:#112632;margin:10px 0}
+  .sd-dock-result textarea{min-height:110px;max-height:320px;resize:vertical}
+  .sd-dock-compose{flex:0 0 auto;padding:10px 12px 12px;border-top:1px solid #365064;background:#152435}
+  .sd-dock-compose textarea{min-height:75px;max-height:210px;resize:vertical}
+  .sd-dock-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+  .sd-dock-actions .sd-btn{flex:1 1 auto}
+  .sd-dock-load{color:#84c7c4;font-size:12px;margin:6px 0}
+  .sd-dock-status{font-size:11px;color:#82ddc6;margin-top:5px;min-height:15px;overflow-wrap:anywhere}
+  .sd-dock .sd-details{font-size:12px;margin:8px 0}
   @media(max-width:760px){.sd-nav{gap:1px}.sd-nav button{gap:6px;padding:9px 10px;font-size:12px}.sd-icon,.sd-icon svg{width:17px;height:17px;flex-basis:17px}.sd-world-columns{grid-template-columns:1fr}}
   @media(max-width:580px){.sd-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}.sd-nav button{width:100%;justify-content:center;white-space:normal;min-height:43px;padding:9px 7px;font-size:12px}.sd-nav button span:last-child{word-break:keep-all}.sd-source-top{align-items:flex-start}}
   `;
@@ -243,8 +267,8 @@
     saveTimer=setTimeout(()=>{saveTimer=null;save().catch(e=>setStatus('자동 저장 실패: '+(e?.message||e),true));},650);
   }
   async function flushSave(){if(saveTimer){clearTimeout(saveTimer);saveTimer=null;}await save();}
-  function setStatus(s,bad=false){if(ui?.status){ui.status.textContent=s;ui.status.style.color=bad?'#ffa6a2':'#7bdac5';}}
-  function setBusy(b) {busy=b;if(!ui)return;ui.buttons=ui.buttons.filter(x=>x.isConnected!==false);ui.buttons.forEach(x=>{x.disabled=b;});ui.loading.classList.toggle('sd-hidden',!b);}
+  function setStatus(s,bad=false){if(ui?.status){ui.status.textContent=s;ui.status.style.color=bad?'#ffa6a2':'#7bdac5';}if(ui?.dock?.status){ui.dock.status.textContent=s;ui.dock.status.style.color=bad?'#ffa6a2':'#7bdac5';}}
+  function setBusy(b) {busy=b;if(!ui)return;ui.buttons=ui.buttons.filter(x=>x.isConnected!==false);ui.buttons.forEach(x=>{x.disabled=b;});ui.loading.classList.toggle('sd-hidden',!b);if(ui.dock?.loading)ui.dock.loading.classList.toggle('sd-hidden',!b);}
   async function action(label,fn){if(busy)return;setBusy(true);setStatus(label+' 처리 중…');try{await fn();setStatus(label+' 완료');}catch(e){console.error('[SD] '+label,e);setStatus(label+' 실패: '+(e?.message||e),true);}finally{setBusy(false);}}
   function resultText(r){
     if(typeof r==='string') return r;
@@ -509,6 +533,7 @@
       storyGoal:clip(p.goal,2400),
       pastDirectorTalks:p.talks.slice(-9).map(x=>({user:clip(x.user,900),mode:x.mode,reply:clip(x.reply,1500),verdict:x.verdict,truthStatus:'과거 디렉터 가상 판정, 실제 사건으로 확정되지 않음'})),
       lastPendingResult:options.independent?null:(p.last?{verdict:p.last.verdict,reply:clip(p.last.reply,1400),instruction:clip(p.last.instruction,1200)}:null),
+      editableWorkingDraft:options.independent?'[GM 판정의 사실 근거에서 제외]':clip(p.dockDraft,1200),
       pacing:p.pacing,
     };
     // Keep the default context affordable; preserve recent actual chat and the
@@ -778,6 +803,7 @@
     const checked=await judgeSituation(request);
     const draft=await generateInstruction(request,checked,variation);
     project.last={...project.last,...checked,instruction:draft};
+    project.dockDraft=draft;
     project.last.draftError='';
     await save();renderResult();renderSources();
   }
@@ -816,8 +842,10 @@
     }else{
       const raw=await askModel(preparePrompt(mode,input));
       res=normalizedResult(raw,mode);
+      if(!needsInstruction(mode))res.instruction='';
     }
     project.last=res;
+    if(res.instruction)project.dockDraft=res.instruction;
     if(res.review)project.review=res.review;
     if(res.proposed_plan)project.pendingPlan=res.proposed_plan;
     project.talks.push({at:now(),mode,user:clip(input,1800),reply:clip(res.reply,3600),verdict:res.verdict});
@@ -989,10 +1017,10 @@
       el('div',root,{class:'sd-texthint'},'소설 본문이 아니라 다음 장면의 방향을 정하는 짧은 지시문이야. 직접 수정해도 돼.');
       if(instructionNeedsRewrite(r.instruction))el('div',root,{class:'sd-note'},'이전 버전에서 작성된 소설 본문 또는 장황한 초안일 수 있어. 아래의 ‘연출 지시문으로 다시 쓰기’를 눌러 변환할 수 있어.');
       const ta=makeTextarea(root,6,'짧은 다음 장면 연출 지시문');ta.value=r.instruction;ui.instruction=ta;
-      ta.addEventListener('input',()=>{project.last.instruction=ta.value;scheduleSave();});
+      ta.addEventListener('input',()=>{project.last.instruction=ta.value;project.dockDraft=ta.value;scheduleSave();});
       const row=el('div',root,{class:'sd-actions'});
       btn(row,'지시문 복사',()=>action('복사',async()=>{await copyText(ta.value);}), 'sd-btn sd-primary');
-      btn(row,'이대로 채팅에 보내기',()=>action('전송',async()=>{await sendDraft(ta.value);}), 'sd-btn');
+      btn(row,'이대로 채팅에 보내기',()=>action('전송',async()=>{const sent=await sendDraft(ta.value);if(sent)await api.hideContainer();}), 'sd-btn');
       btn(row,'연출 지시문으로 다시 쓰기',()=>action('연출 지시문 재작성',async()=>{await regenerateLastInstruction('같은 장면 목적과 판정을 유지하되 2~4문장의 간결한 연출 지시로 작성. 소설 본문과 대사는 제외');}), 'sd-btn sd-soft');
     }else{
       ui.instruction=null;
@@ -1050,12 +1078,13 @@
     await verifySession();
     let question='이 지시문을 실제 채팅에 사용자 메시지로 보내고 답변을 생성할까?';
     if(current.userMessageCount===0)question='아직 실제 사용자 메시지가 없는 채팅이야. 첫 메시지의 선택지를 건너뛸 수 있어. 그래도 전송할까?';
-    if(!window.confirm(question))return;
+    if(!window.confirm(question))return false;
     await flushSave();
     await api.sendChat(s);
     project.applied.push({at:now(),text:clip(s,8000)});project.applied=project.applied.slice(-30);
     await save();
     setStatus('채팅 전송 완료. 결과는 실제 대화를 읽고 다음에 다시 판정해.');
+    return true;
   }
   async function reload(){
     if(saveTimer){clearTimeout(saveTimer);saveTimer=null;}if(current && project)await save();
@@ -1175,12 +1204,14 @@
   }
 
   function renderUI(){
+    document.body.classList.remove('sd-dock-mode');
     document.body.replaceChildren();document.getElementById('sd-css')?.remove();const style=el('style',document.head,{id:'sd-css'});style.textContent=STYLE;
     const root=el('main',document.body,{class:'sd-app'});ui={buttons:[],views:{},tabs:{},activeTab:'plan',instruction:null,worldExpanded:!project.canon&&!project.plan};
     const header=el('div',root,{class:'sd-header'}),brand=el('div',header);
     el('div',brand,{class:'sd-kicker'},'RISUBARD · STORY GM');el('div',brand,{class:'sd-brand'},'Story Director');
     const headBtns=el('div',header,{class:'sd-actions'});
     btn(headBtns,'↻ 채팅 새로고침',()=>action('채팅 새로고침',reload),'sd-btn sd-small');
+    btn(headBtns,'채팅 옆 빠른 상담',()=>void openDock(),'sd-btn sd-small');
     btn(headBtns,'닫기',()=>{syncFields();void Promise.all([flushSave(),flushWorldSave()]).finally(()=>api.hideContainer());},'sd-btn sd-small');
     ui.identity=el('div',root,{class:'sd-sub'});
     const nav=el('nav',root,{class:'sd-nav'});
@@ -1284,6 +1315,187 @@
     project.applied.slice().reverse().slice(0,12).forEach(x=>{const item=el('details',ui.appliedArea,{class:'sd-details'});el('summary',item,{},`${x.at?.slice(0,19)||'날짜 미상'} · 보낸 지시문`);el('div',item,{class:'sd-bubble sd-ai'},x.text);const row=el('div',item,{class:'sd-actions'});btn(row,'다시 복사',()=>action('복사',async()=>copyText(x.text)),'sd-btn sd-small');});
   }
   async function submit(){await action('AI 판정/상담',async()=>{syncFields();const input=project.input.trim();const mode=project.mode;await runDirector(input,mode);ui.composer.value='';renderResult();renderHistory();renderSources();renderLogs();visible('main');});}
+  // API 3.0 exposes only a fullscreen plugin iframe. With explicit main-DOM
+  // permission, resize exactly that active iframe into a small nonmodal chat
+  // drawer. Never modify the application's source, chat input, or other plugins.
+  async function resizeDockHost(side=dockSide){
+    if(!dockHost)return false;
+    const css={position:'fixed',display:'block',top:'clamp(8px, 5vh, 65px)',
+      width:'min(470px, calc(100vw - 16px))',height:'min(83vh, 760px)',
+      left:side==='left'?'8px':'auto',right:side==='right'?'8px':'auto',
+      bottom:'auto',border:'1px solid #405b70',borderRadius:'14px',
+      boxShadow:'0 18px 50px rgba(0,0,0,.52)',zIndex:'1000',backgroundColor:'#172331'};
+    for(const [property,value] of Object.entries(css))await dockHost.setStyle(property,value);
+    dockSide=side;
+    return true;
+  }
+  async function findOwnDockHost(){
+    try{
+      const doc=await api.getRootDocument();
+      if(!doc){console.warn('[SD] Main DOM permission unavailable; showing full UI.');return false;}
+      // `showContainer('fullscreen')` places our iframe at fixed z-index 1000.
+      // Refuse to touch any iframe if that signature is ambiguous.
+      const frames=await doc.querySelectorAll('iframe[style*="z-index: 1000"]');
+      if(!frames||await frames.length()!==1)return false;
+      const found=await frames.at(0);
+      if(!found||await found.getStyle('display')!=='block'||await found.getStyle('position')!=='fixed')return false;
+      dockHost=found;
+      return await resizeDockHost(dockSide);
+    }catch(e){console.warn('[SD] Floating drawer unavailable; using fullscreen fallback:',e);dockHost=null;return false;}
+  }
+  function dockButton(parent,label,callback,cls='sd-btn'){
+    return btn(parent,label,callback,cls);
+  }
+  function renderDockHistory(){
+    const d=ui?.dock;if(!d)return;
+    d.history.replaceChildren();
+    if(!project.talks.length){el('div',d.history,{class:'sd-dock-mini'},'아직 상담이 없어. 아래에 원하는 행동이나 전개를 적어봐.');return;}
+    for(const entry of project.talks.slice(-6)){
+      const u=el('div',d.history,{class:'sd-bubble sd-user'});
+      el('div',u,{class:'sd-mini'},'나 · '+(entry.mode||'상담'));
+      el('div',u,{},entry.user||'');
+      const a=el('div',d.history,{class:'sd-bubble sd-ai'});
+      el('div',a,{class:'sd-mini'},'디렉터'+(entry.verdict&&entry.verdict!=='판정 불필요'?' · '+entry.verdict:''));
+      el('div',a,{},entry.reply||'(답변 없음)');
+    }
+    d.scroll.scrollTop=d.scroll.scrollHeight;
+  }
+  function renderDockResult(){
+    const d=ui?.dock;if(!d)return;
+    const p=d.result;p.replaceChildren();
+    const r=project.last;
+    if(!r){el('div',p,{class:'sd-dock-mini'},'판정 결과와 승인할 지시문이 여기에 표시돼.');return;}
+    if(r.boundary?.enforced)el('div',p,{class:'sd-note sd-world-warning'},'확정 금기 적용: '+(r.boundary.actor||'상대')+' — '+(r.boundary.principle||'설정상 원칙'));
+    const visibleDraft=r.instruction||project.dockDraft||'';
+    const preserved=!!visibleDraft&&!r.instruction;
+    if(visibleDraft){
+      el('div',p,{class:'sd-title'},preserved?'이전에 작성한 지시문 · 상담 내용은 아직 미반영':'다음 장면 연출 지시문 · 직접 수정 가능');
+      const area=makeTextarea(p,5,'다음 장면에 사용할 지시문을 고쳐봐.');area.value=visibleDraft;
+      d.instruction=area;
+      area.addEventListener('input',()=>{project.dockDraft=area.value;if(project.last?.instruction)project.last.instruction=area.value;scheduleSave();if(ui.instruction)ui.instruction.value=area.value;});
+      const actions=el('div',p,{class:'sd-dock-actions'});
+      dockButton(actions,'승인 후 채팅에 전송',()=>action('실제 채팅 전송',async()=>{
+        const sent=await sendDraft(area.value);
+        if(sent)await api.hideContainer();
+      }),'sd-btn sd-primary');
+      if(preserved){
+        dockButton(actions,'상담 반영해 다시 만들기',()=>{d.composer.value='기존 지시문과 방금 논의한 판단을 반영해 다음 장면을 다시 판정하고 2~4문장 연출 지시문을 만들어줘.';project.input=d.composer.value;scheduleSave();d.composer.focus();});
+      }else{
+        dockButton(actions,'다시 작성',()=>action('판정/지시문 다시 작성',async()=>{
+          await regenerateLastInstruction('현재 장면의 판정은 유지하면서 2~4문장 연출 지시문으로 간결하게 작성. 소설 본문 금지');
+          renderDockHistory();renderDockResult();
+        }));
+      }
+      dockButton(actions,'복사',()=>action('지시문 복사',async()=>copyText(area.value)));
+      if(instructionNeedsRewrite(visibleDraft))el('div',p,{class:'sd-texthint'},'지시문 형식을 다시 점검해야 할 수 있어.');
+    }else if(r.draftError){
+      el('div',p,{class:'sd-note sd-world-warning'},r.draftError);
+      dockButton(p,'이 판정으로 지시문 생성',()=>action('지시문 재생성',async()=>{await regenerateLastInstruction();renderDockResult();}),'sd-btn sd-primary');
+    }
+    if(r.reply||r.evidence||r.actor_positions?.length){
+      const details=el('details',p,{class:'sd-details'});
+      el('summary',details,{},'판정·근거 보기'+(r.verdict&&r.verdict!=='판정 불필요'?' · '+r.verdict:''));
+      if(r.reply)el('div',details,{class:'sd-response'},r.reply);
+      if(r.evidence)el('div',details,{class:'sd-bubble sd-ai'},r.evidence);
+      for(const n of (r.actor_positions||[]))el('div',details,{class:'sd-dock-mini'},`${n.name||'?'} · ${n.verdict||'?'} · ${n.presence||'?'}: ${n.basis||''}`);
+    }
+    if(r.options?.length){
+      const picks=el('div',p,{class:'sd-dock-toolbar'});
+      for(const choice of r.options.slice(0,3)){
+        dockButton(picks,'↳ '+clip(choice,46),()=>{d.composer.value=choice;project.input=choice;scheduleSave();d.composer.focus();},'sd-btn sd-small');
+      }
+    }
+    if(project.pendingPlan||project.pendingCanon||project.pendingHardLimits){
+      el('div',p,{class:'sd-note'},'이야기 설계안이 있어. 적용하려면 전체 설계에서 검토·승인해.');
+      dockButton(p,'전체 설계에서 검토',()=>void expandDockToFull('plan'),'sd-btn');
+    }
+  }
+  async function dockSubmit(mode){
+    const d=ui?.dock;if(!d)return;
+    await action(mode==='talk'?'디렉터 상담':'인물 판정·지시문',async()=>{
+      const input=d.composer.value.trim();if(!input)throw new Error('검토할 전개를 입력해 줘.');
+      project.input=input;
+      await runDirector(input,mode);
+      d.composer.value='';ui.composer.value='';project.input='';
+      renderHistory();renderResult();renderSources();renderLogs();
+      renderDockHistory();renderDockResult();
+      d.scroll.scrollTop=d.scroll.scrollHeight;
+    });
+  }
+  async function dockReload(){
+    await action('채팅 최신상태 반영',async()=>{
+      if(ui?.dock?.composer)project.input=ui.dock.composer.value;
+      await reload();
+      if(ui?.dock){ui.dock.identity.textContent=current.identity;ui.dock.composer.value=project.input||'';}
+      renderDockHistory();renderDockResult();
+    });
+  }
+  async function expandDockToFull(tab='main'){
+    if(busy)return;
+    if(ui?.dock?.composer)project.input=ui.dock.composer.value;
+    await flushSave();
+    layoutMode='full';document.body.classList.remove('sd-dock-mode');
+    await api.showContainer('fullscreen');
+    renderUI();
+    visible(tab);
+  }
+  function renderDockUI(){
+    document.body.classList.add('sd-dock-mode');
+    const d={};ui.dock=d;
+    const shell=el('section',document.body,{class:'sd-dock',role:'region','aria-label':'Story Director 빠른 상담'});
+    d.root=shell;
+    const header=el('div',shell,{class:'sd-dock-head'});
+    const top=el('div',header,{class:'sd-dock-headline'});
+    el('div',top,{class:'sd-title'},'🎬 Story Director · 빠른 상담');
+    const controls=el('div',top,{class:'sd-actions'});
+    dockButton(controls,'↔',()=>action('패널 위치',async()=>{await resizeDockHost(dockSide==='right'?'left':'right');}),'sd-btn sd-small');
+    dockButton(controls,'전체',()=>void expandDockToFull('main'),'sd-btn sd-small');
+    dockButton(controls,'×',()=>{project.input=d.composer.value;void flushSave().finally(()=>api.hideContainer());},'sd-btn sd-small');
+    d.identity=el('div',header,{class:'sd-dock-mini'},current.identity);
+    const tools=el('div',header,{class:'sd-dock-toolbar'});
+    dockButton(tools,'↻ 현재 채팅 읽기',()=>void dockReload(),'sd-btn sd-small');
+    dockButton(tools,'세계관/이야기 설계',()=>void expandDockToFull('plan'),'sd-btn sd-small');
+    el('span',tools,{class:'sd-dock-mini'},'채팅과 동시에 사용 · 전송은 승인 후');
+    d.status=el('div',header,{class:'sd-dock-status',role:'status'},'준비됨');
+    d.loading=el('div',header,{class:'sd-dock-load sd-hidden'},'모델이 판정·작성 중이야. 채팅은 그대로 열려 있어.');
+    d.scroll=el('div',shell,{class:'sd-dock-scroll'});
+    el('div',d.scroll,{class:'sd-section'},'디렉터와 논의');
+    d.history=el('div',d.scroll,{class:'sd-dock-thread'});
+    d.result=el('div',d.scroll,{class:'sd-dock-result'});
+    const composer=el('div',shell,{class:'sd-dock-compose'});
+    d.composer=makeTextarea(composer,3,'예: 다음 장면에서 ○○이 제안을 거절하는 게 설정에 맞아? 그 다음엔 어떻게 협상할까?');
+    d.composer.value=project.input||'';
+    d.composer.addEventListener('input',()=>{project.input=d.composer.value;scheduleSave();});
+    d.composer.addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();void dockSubmit('auto');}});
+    const actions=el('div',composer,{class:'sd-dock-actions'});
+    dockButton(actions,'의논만 하기',()=>void dockSubmit('talk'),'sd-btn');
+    dockButton(actions,'판정 → 지시문 만들기',()=>void dockSubmit('auto'),'sd-btn sd-primary');
+    el('div',composer,{class:'sd-dock-mini'},'Ctrl+Enter: 판정·지시문 · 복사/화면닫기 없이 직접 전송 가능');
+    renderDockHistory();renderDockResult();
+  }
+  async function openDock(){
+    if(busy)return;
+    try{
+      // Use the same per-character/per-chat storage as the original editor.
+      if(current&&project){if(ui?.dock?.composer)project.input=ui.dock.composer.value;await flushSave();}
+      current=await readSources();project=normState(await api.pluginStorage.getItem(current.key));await loadWorld();
+      layoutMode='dock';
+      await api.showContainer('fullscreen');
+      renderUI();
+      const floating=await findOwnDockHost();
+      if(!floating){
+        layoutMode='full';
+        setStatus('빠른 패널 사용에는 RisuBard의 화면 접근 권한이 필요해. 현재는 전체화면이야. 생성 후 «이대로 채팅에 보내기»로 직접 전송할 수 있어.',true);
+        visible('main');
+        return;
+      }
+      renderDockUI();
+    }catch(error){
+      console.error('[SD] openDock failed',error);
+      layoutMode='full';document.body.classList.remove('sd-dock-mode');
+      try{await api.showContainer('fullscreen');renderUI();visible('main');setStatus('빠른 상담 오류: '+(error?.message||error),true);}catch(_){}
+    }
+  }
   async function open(){
     if(busy)return;
     try {current=await readSources();project=normState(await api.pluginStorage.getItem(current.key));await loadWorld();await api.showContainer('fullscreen');renderUI();}
@@ -1292,6 +1504,7 @@
   try{
     await api.registerSetting('Story Director',open,'🧭','html','story-director-settings');
     await api.registerButton({name:'Story Director',icon:'🧭',iconType:'html',location:'hamburger',id:'story-director-hamburger'},open);
-    console.log('[Story Director] v'+VERSION+' installed. No chat hooks or automatic interception.');
+    await api.registerButton({name:'Story Director 빠른 상담',icon:'<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v12H8l-4 4V4Z"/><path d="M8 9h8M8 13h5"/></svg>',iconType:'html',location:'chat',id:'story-director-quick-chat'},openDock);
+    console.log('[Story Director] v'+VERSION+' installed. Chat drawer optional; no automatic chat interception or sending.');
   }catch(e){console.error('[Story Director] registration failed',e);}
 })();
