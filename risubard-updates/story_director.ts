@@ -1,20 +1,23 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.2.2
-//@description 채팅 옆 빠른 상담 플로팅 창 + 독립 GM 판정, 연출 지시문, 승인 전송, 세계관 편집 및 복원.
+//@version 1.2.3
+//@description 채팅별 페르소나 정확 선택, 유연한 인물 반응·전개 압축 및 선택형 일반 채팅 일관성 보정.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.2.2';
+  const VERSION = '1.2.3';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
   let busy = false, saveTimer = null, worldSaveTimer = null;
   let world = null;
   let dockHost = null, dockSide = 'right', layoutMode = 'full', dockMinimized = false;
+  const CHAT_GUARD_INDEX = PREFIX+'guard_enabled_chat_keys_v1';
+  let guardKeys = new Set(), guardHookRegistered = false, guardButtons = [];
+  let guardReplacer = null;
   const WORLD_STORE = "story_director_world_v1:";
   const WORLD_OLD_STORE = "world_editor_lab_010_";
   const WORLD_FIELDS = ["desc","personality","scenario","exampleMessage"];
@@ -26,7 +29,7 @@
   const DEFAULTS = {
     goal:'',canon:'',hardLimits:'',plan:'',rules:'',personaExtra:'',wikiExtra:'',input:'',
     mode:'auto',model:'otherAx',pacing:'balanced',contextDepth:'standard',
-    talks:[],last:null,pendingPlan:null,applied:[],review:'',dockDraft:'',updatedAt:0
+    talks:[],last:null,pendingPlan:null,applied:[],review:'',dockDraft:'',chatGuardEnabled:false,updatedAt:0
   };
   const STYLE = `
   :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0f151e;color:#eaf0f7;font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
@@ -186,31 +189,116 @@
     if (!['balanced','character','fast'].includes(v.pacing)) v.pacing='balanced';
     if (!['compact','standard','deep'].includes(v.contextDepth)) v.contextDepth='standard';
     v.talks=list(v.talks).slice(-28);v.applied=list(v.applied).slice(-30);
+    v.chatGuardEnabled=v.chatGuardEnabled===true;
     return v;
+  }
+  // Opt-in only: an ordinary user chat does not automatically run Story
+  // Director's GM judgement. This lightweight beforeRequest cue helps the
+  // *normal* model preserve player persona and NPC agency without a new LLM
+  // pass, mutation, sending, or blocking chat. Disabled by default per chat.
+  async function loadGuardIndex(){
+    const saved=await api.pluginStorage.getItem(CHAT_GUARD_INDEX);
+    guardKeys=new Set(list(saved).filter(x=>typeof x==='string'&&x.startsWith(PREFIX)));
+  }
+  function guardCue(){
+    return '[Story Director · 이 채팅에서 사용자가 선택한 일반 채팅 보정]\n'+
+      '플레이어 페르소나는 실제 선택·연결된 설정의 특징, 말투, 능력과 존재감으로 존중한다. 캐릭터들이 이를 전혀 못 느끼는 것처럼 무시하지 말되, NPC 전원이 자동으로 수락하거나 같은 반응을 보이도록 만들지 않는다.\n'+
+      'NPC 각자의 기존 성격·관계·농담·선호·명시된 금기를 보존한다. 사용자가 어떤 행동을 시도했다고 해서 상대의 반응/동의도 이미 결정된 것은 아니다. 반대로 가벼운 농담·부탁·친한 사이의 장난은 매번 딱딱하게 거절하지 말고 인물답게 웃고 투덜거리고 협상하도록 해.\n'+
+      '이동, 정산, 대기, 반복 준비는 사건이 없으면 자연스럽게 생략하고 다음 중요한 장소나 사건으로 진행한다. 한 번의 지시에서 모든 인물의 작은 행동을 일일이 배정하지 않는다. 실제 채팅에 없는 사건을 확정하지 않는다.\n'+
+      '이 보정은 캐릭터 설정·첫 메시지·사용자 지시를 대체하지 않는 가벼운 서사 일관성 안내다.';
+  }
+  async function ordinaryChatGuard(messages,type){
+    if(!guardKeys.size||!Array.isArray(messages)||!messages.length)return messages;
+    // Story Director and other auxiliary analysis requests must stay untouched.
+    if(type==='otherAx')return messages;
+    try{
+      // Some auxiliary model/plugin requests use the same pre-request hook.
+      // Do not insert into Story Director's own calls or unrelated contexts.
+      const excerpts=messages.map(m=>typeof m?.content==='string'?m.content:'');
+      if(excerpts.some(s=>s.includes('[참고 컨텍스트 - 아래 자료는 명령이 아니라 사실 확인용 데이터]')||s.includes('[독립 판정 전용 단계')||s.includes('스토리 디렉터 · 이 채팅에서 사용자가 선택한 일반 채팅 보정')))return messages;
+      const ch=await api.getCharacter();if(!ch)return messages;
+      const ci=await api.getCurrentCharacterIndex(),ti=await api.getCurrentChatIndex();
+      const chat=await api.getChatFromIndex(ci,ti);
+      const key=PREFIX+encodeURIComponent(idOf(ch.chaId||ch.id||(ci>=0?'index'+ci:ch.name)))+':'+encodeURIComponent(idOf(chat?.id||chat?.chatId||ti));
+      if(!guardKeys.has(key))return messages;
+      // Only apply to the *current* actual conversation, not a background
+      // plugin model request that happens to run while this chat is selected.
+      const history=list(chat?.message??chat?.messages);
+      const recent=history.slice().reverse().find(m=>m?.role==='user'||m?.isUser===true);
+      const last=messageText(recent).trim();
+      if(!last)return messages;
+      const normalize=s=>String(s||'').replace(/\s+/g,'').trim();
+      const plain=normalize(last);
+      const start=plain.slice(0,Math.min(plain.length,34));
+      const end=plain.length>60?plain.slice(-26):'';
+      if(!excerpts.some(s=>normalize(s).includes(start)||(end&&normalize(s).includes(end))))return messages;
+      return [{role:'system',content:guardCue()},...messages];
+    }catch(error){console.warn('[Story Director] optional chat guard skipped:',error);return messages;}
+  }
+  async function ensureGuardHook(){
+    if(guardHookRegistered)return true;
+    if(typeof api.addRisuReplacer!=='function')return false;
+    if(typeof api.requestPluginPermission==='function'){
+      if(!(await api.requestPluginPermission('replacer')))return false;
+    }
+    guardReplacer=ordinaryChatGuard;
+    await api.addRisuReplacer('beforeRequest',guardReplacer);
+    guardHookRegistered=true;
+    if(typeof api.onUnload==='function')await api.onUnload(async()=>{
+      try{await api.removeRisuReplacer('beforeRequest',guardReplacer);}catch(error){console.warn('[SD] guard unload',error);}
+      guardHookRegistered=false;
+    });
+    return true;
+  }
+  function updateGuardToggleLabels(){
+    guardButtons=guardButtons.filter(b=>b&&b.isConnected!==false);
+    const enabled=!!project?.chatGuardEnabled;
+    for(const b of guardButtons){b.textContent=enabled?'일반 채팅 보정: 켜짐':'일반 채팅 보정: 꺼짐';b.setAttribute('aria-pressed',String(enabled));}
+  }
+  async function toggleChatGuard(){
+    if(!current||!project)throw new Error('먼저 채팅을 열어 줘.');
+    const next=!project.chatGuardEnabled;
+    if(next && !(await ensureGuardHook()))throw new Error('RisuBard의 메시지 보정 권한이 필요해. 기존 채팅은 건드리지 않았어.');
+    if(next)guardKeys.add(current.key);else guardKeys.delete(current.key);
+    project.chatGuardEnabled=next;
+    await Promise.all([api.pluginStorage.setItem(CHAT_GUARD_INDEX,[...guardKeys]),save()]);
+    updateGuardToggleLabels();
+    setStatus(next?'이 채팅에만 캐릭터 일관성 보정을 적용해. 실제 반응은 모델이 생성해.':'일반 채팅 보정을 껐어.');
+  }
+  function addGuardToggle(parent){
+    const b=btn(parent,project?.chatGuardEnabled?'일반 채팅 보정: 켜짐':'일반 채팅 보정: 꺼짐',()=>action('일반 채팅 보정',toggleChatGuard),'sd-btn sd-small');
+    b.setAttribute('aria-pressed',String(!!project?.chatGuardEnabled));guardButtons.push(b);return b;
   }
   function sourceLabel(v){return v?'연결됨':'미확인';}
   function clip(s,n){return text(s,n).trim();}
   function messageText(m){return text(m?.data ?? m?.content ?? m?.text ?? '', 2400);}
-  function selectPersona(db,ch) {
-    const candidates=list(db?.personas);
-    const raw=db?.selectedPersona ?? ch?.selectedPersona ?? ch?.personaId ?? null;
-    let found=null, source='선택된 페르소나 미확인';
-    if (raw && typeof raw==='object') {found=raw;source='선택 정보에서 확인됨';}
-    else if (Number.isInteger(raw) && raw>=0) {found=candidates[raw]||null;if(found)source='선택 인덱스에서 확인됨';}
-    else if (typeof raw==='string' && raw.trim()) {
-      found=candidates.find(x=>[x?.id,x?.name].includes(raw))||null;
-      if(found)source='선택 ID에서 확인됨';
+  // Mirror RisuBard's getEffectivePersona: per-chat binding (including
+  // character-local personas) wins over the global selectedPersona index.
+  function selectPersona(db,ch,chat) {
+    const global=list(db?.personas), local=list(ch?.personas);
+    const bound=String(chat?.bindedPersona||'').trim();
+    let found=null, source='선택된 페르소나 미확인',verified=false;
+    if(bound){
+      found=local.find(x=>x?.id===bound)||null;
+      if(found){source='이 채팅에 연결된 캐릭터 전용 페르소나';verified=true;}
+      if(!found){found=global.find(x=>x?.id===bound)||null;if(found){source='이 채팅에 연결된 전역 페르소나';verified=true;}}
+      if(!found)source='채팅에 연결된 페르소나 ID가 현재 목록에서 사라짐 (전역 선택으로 대체)';
     }
-    if (!found && candidates.length===1) {found=candidates[0];source='한 개의 페르소나만 발견됨 (선택 여부 미검증)';}
-    if (!found && typeof db?.personaPrompt==='string' && db.personaPrompt.trim()) {
-      found={personaPrompt:db.personaPrompt};source='DB 기본 페르소나 문구에서 조회됨 (선택 여부 미검증)';
+    if(!found && Number.isInteger(db?.selectedPersona) && global.length){
+      const index=Math.max(0,Math.min(db.selectedPersona,global.length-1));
+      found=global[index];
+      if(!bound){source='현재 선택된 전역 페르소나';verified=true;}
+    }
+    if(!found && global.length){found=global[0];if(!bound){source='전역 첫 페르소나 (선택 인덱스 미확인)';}}
+    if(!found && typeof db?.personaPrompt==='string' && db.personaPrompt.trim()){
+      found={personaPrompt:db.personaPrompt};source='기본 페르소나 문구 (선택 미확인)';
     }
     const persona=found ? {
-      name:found.name||'페르소나',
+      id:found.id||'',name:found.name||'페르소나',
       personaPrompt:found.personaPrompt||found.description||found.desc||found.persona||'',
       note:found.note||''
-    } : null;
-    return {persona,source,verified:!!(persona && source.includes('선택')) && !source.includes('미검증')};
+    }:null;
+    return {persona,source,verified:!!persona&&verified,boundId:bound};
   }
   async function readSources(query='') {
     const ch=await api.getCharacter();
@@ -223,7 +311,7 @@
     try {
       try {db=await api.getDatabase(['personas','selectedPersona']);}
       catch(_) {db=await api.getDatabase(['personas']);}
-      const result=selectPersona(db,ch);
+      const result=selectPersona(db,ch,chat);
       persona=result.persona;personaNote=result.source;personaVerified=result.verified;
     }catch(e){console.warn('[SD] persona not exposed',e);}
 
@@ -513,13 +601,13 @@
   }
 
   function modeInstructions(mode) {
-    if(mode==='judge') return '제안의 수락·거절·조건부 수락·역제안을 근거에 따라 판정한 뒤, 판정된 입장을 반영해 다음 장면을 이끌 짧은 연출 지시문도 쓴다. 대사·묘사·소설 본문은 쓰지 않는다.';
+    if(mode==='judge') return '캐릭터의 현재 상황에 맞게 반응을 판정하고 중요 갈등에서만 엄격한 신념·경계를 검토한다. 사소한 장난이나 일상의 가벼운 부탁은 자연스러운 상호작용으로 다룬다. 다음 장면의 중요한 목표만 1~3문장 지시문으로 쓰며 대사나 부수적인 행동을 일일이 정하지 않는다.';
     if(mode==='instruct')return '해설 대신 2~4문장의 연출 지시문을 작성한다. 시간·사건·사용자가 원하는 행동과 상대 인물의 반응 방향을 명시하되 실제 소설 본문, 풍경 묘사, 대사, 상세 동작은 만들지 않는다.';
-    if(mode==='talk')return '사용자가 스토리와 캐릭터의 성격에 관해 상담하는 작가실 대화다. 질문이나 의도 설명을 실제 장면의 행동·진행 지시로 바꾸지 않는다. 이전에 작성된 지시문을 실행하거나 새 장면을 만들지 말고, 사용자가 물은 질문에 직접 답한다. 경계·친밀도·가능성을 물으면 확인된 사실과 불확실한 부분을 구분한다. instruction은 반드시 빈 문자열.';
-    if(mode==='check')return '사전 가능성/경계 상담 전용이다. 상대가 지금 무엇을 수용할 법한지 기존 성격·관계·실제 채팅을 바탕으로 조건부로 평가한다. 아무 행동도 실행하지 않고, 지시문·장면 묘사·확정 대사를 쓰지 않는다. 실제로 확인되지 않은 접촉 허용 범위를 부위별 확정 목록으로 지어내지 않는다. instruction은 반드시 빈 문자열.';
+    if(mode==='talk')return '따뜻하고 재치 있는 공동 작가처럼 현재 장면·관계·인물별 말투와 농담의 맥락을 읽고, 사용자의 질문과 정정 의도를 직접 짚어 답한다. 사소한 투덜거림·장난·가벼운 역할분담은 갈등/접촉 상담/엄격한 규칙 검증으로 확대 해석하지 않는다. 막무가내로 찬성하거나 거절하지 않으며 캐릭터가 보일 법한 다양한 반응을 간단하게 제안한다. 실제 장면을 진행하거나 지시문을 쓰지 않는다. instruction은 빈 문자열.';
+    if(mode==='check')return '가상의 가능성 상담 전용이다. 실제 행동은 일어나지 않는다. 장난·일상적 부탁·투덜거림은 먼저 친구 사이 자연스러운 대화로 해석하고, 캐릭터 성격에 따라 웃음·맞장구·반론·타협 등 다양한 가능성을 평가한다. 중요한 신념/친밀감/사생활 문제가 걸릴 때만 독립적인 판단 근거를 자세히 검토한다. 무조건 수락/무조건 거절 모두 피한다. 필요 없는 주변 인물별 행동 확정과 새로운 장면 묘사는 금지한다. instruction은 빈 문자열.';
     if(mode==='revise')return '기존 계획의 수정안을 제안하되 확정하지 않는다. 기존 사실을 보존하고 새로운 계획 본문은 proposed_plan에 작성한다.';
     if(mode==='review')return '최근 실제 채팅에서 발생한 사실과 계획의 차이를 점검하고 수정 방향을 제안한다. 추측을 확정으로 바꾸지 않는다.';
-    return '사용자가 원하는 장면·제안을 해석하고 수락·거절·역제안을 독립적으로 판정한다. 그 판정을 다음 장면의 목표·행동·갈등을 지정하는 2~4문장 연출 지시문으로 반환한다. 소설 본문은 쓰지 않는다.';
+    return '장면의 핵심 목표와 인물의 실질적인 반응 가능성을 판단한다. 중요한 가치충돌만 강하게 검토하고 사소한 장난·역할분담은 유연하게 다룬다. 지시문은 1~3문장으로 장면 전환점만 지정하며 일행 전원의 반응이나 매 과정은 미리 확정하지 않는다. 소설 본문은 쓰지 않는다.';
   }
   function contextBudget(){return project.contextDepth==='compact'?0.60:project.contextDepth==='deep'?1:0.82;}
   function preparePrompt(mode,input,options={}) {
@@ -527,7 +615,7 @@
       session:c.identity,
       initialChat:c.userMessageCount===0,
       sourceNotes:{persona:options.excludePersona?'페르소나 영향 비교를 위해 제외':c.personaNote,personaVerified:options.excludePersona?false:c.personaVerified,wiki:c.wikiNote},
-      sourcePriority:'현재 채팅에서 실제로 확인된 사건 및 참석 인물 > 각 NPC 캐릭터 카드의 성격/경계 > 관련 세계관/로어북 > BardWiki의 검증 가능한 과거 사실 > 플레이어 페르소나의 능력·외모 > 승인된 이야기 목표 > 기존 디렉터의 가정. 플레이어 페르소나는 NPC의 감정·동의를 대신 정할 수 없다.',
+      sourcePriority:'현재 실제 채팅 사실과 관계 > 캐릭터 카드의 개성·농담·말투·동기·명시된 신념 > 채팅에 실제 연결된 플레이어 페르소나의 행동·능력·성격 효과(인물에 따라 반응은 달라짐) > 활성 로어북·세계관 > 검증된 BardWiki 과거사 > 승인된 이야기 목표. 과거 디렉터의 예측은 사실 증거가 아님. 페르소나의 실제 효과는 반영하되 NPC의 독립적 선택까지 자동으로 대신하지 않는다.',
       character:clip(JSON.stringify(c.card),Math.floor(LIMITS.card*b)),
       persona:options.excludePersona?'[이번 비교 판정에서는 제외]':clip(JSON.stringify(c.persona||{}),Math.floor(LIMITS.persona*b)),
       personaExtra:options.excludePersona?'':clip(p.personaExtra,4200),
@@ -541,7 +629,7 @@
       arcApproved:clip(p.plan,10000),
       userRules:clip(p.rules,4800),
       storyGoal:clip(p.goal,2400),
-      pastDirectorTalks:p.talks.slice(-9).map(x=>({user:clip(x.user,900),mode:x.mode,reply:clip(x.reply,1500),verdict:x.verdict,truthStatus:'과거 디렉터 가상 판정, 실제 사건으로 확정되지 않음'})),
+      pastDirectorTalks:p.talks.filter(x=>x.mode!=='bootstrap').slice(-5).map(x=>({userIntentOnly:clip(x.user,750),mode:x.mode,warning:'과거 질문 내용만 참고. 과거 디렉터 답변과 판정은 캐릭터 성격이나 사건 증거에서 제외'})),
       lastPendingResult:options.independent||mode==='talk'||mode==='check'?null:(p.last?{verdict:p.last.verdict,reply:clip(p.last.reply,1400),instruction:clip(p.last.instruction,1200)}:null),
       editableWorkingDraft:options.independent||mode==='talk'||mode==='check'?'[기존 미전송 지시문은 참고하지 않는다. 지금은 상담 중임]':clip(p.dockDraft,1200),
       pacing:p.pacing,
@@ -579,16 +667,21 @@
 11. 플레이어 페르소나의 매력·능력·초자연적 효과는 캐릭터 설정에 실제로 명시된 범위에서만 적용한다. 플레이어에게 끌린다는 사실과 NPC가 특정 제안 또는 친밀한 행동에 자발적으로 동의한다는 사실은 구분한다. 설정에 근거가 없는 자동 수락을 만들지 않는다.
 12. 친밀한 접촉·관계 진전·중대한 요청에 대한 NPC의 의사를 우선 평가한다. 친밀도가 높아도 무조건 허용하는 것은 아니다. 반대로 정당한 이유가 있으면 수락할 수도 있으므로 일률적 거절도 금지한다.
 13. 최신 채팅에서 실제로 등장하거나 직접 연관된 인물만 이 장면에 참여시킨다. 설정에 여러 인물이 등장한다고 모두 한자리에 있는 것으로 취급하지 않는다. 현재 참석 여부가 불명확하면 새 인물을 임의로 소환하지 않는다.
- 14. 독립 판정에서 부여한 NPC별 입장과 실제 채팅의 사실을 지시문 작성보다 우선한다. 확정되지 않은 추정은 불확실하다고 표시하며, 판정 근거 없는 자동 동의를 지시문에 넣지 않는다.
+ 14. 독립 판정에서 부여한 NPC별 입장과 실제 채팅의 사실을 지시문 작성보다 우선한다. 확정되지 않은 추정은 불확실하다고 표시하며, 판정 근거 없는 자동 동의를 지시문에 넣지 않는다. 그렇다고 모든 인물의 반응을 경직되거나 방어적으로 만들지 않는다.
 15. 사용자가 '어디까지 허용할까?', '어느 정도 가능할까?', '아니, 그저 가능한 범위를 묻는 거야'와 같이 질문·정정·가정 설명을 하면 이는 작가실 상담이다. 실제 등장인물이 행동을 시도했다거나 동의/거절했다는 사건으로 바꾸지 않는다. 이미 이루어진 접촉, 당시의 유머나 무반응은 상황별 사실일 뿐 모든 접촉에 대한 포괄적 동의는 아니다. 반대로 분명한 수락 근거가 있으면 부정하지 않는다.
+16. 판단의 중요도를 구분한다. 짐 옮기기·일정 조정·친구들끼리 농담·일상적 반응은 짧고 다정하거나 재치 있게 처리할 수 있다. 성격상 특유의 퉁명스러움도 지나친 냉담함과 구분한다. 명시된 절대 신념, 중대한 선택 및 실질적 갈등에만 엄격한 판정과 상세 근거를 사용한다.
+17. 여행·이동·대기·반복된 준비는 중요 사건이 없다면 몇 문장으로 압축하고 목적지·다음 주요 사건으로 넘어간다. 일행 전원의 가방·표·행동을 차례로 확정하는 지시문은 작성하지 않는다. 사용자가 지정하지 않은 새로운 갈등이나 캐릭터의 의도를 사소한 일에 강제하지 않는다.
+18. 현재 채팅에 연결된 플레이어 페르소나의 실제 성격·능력·외모·관계상 영향은 서사에 실질적으로 반영한다. NPC가 그 설정을 어떻게 받아들일지는 각 캐릭터의 신념·관계·상황에 따라 달리 판단한다. 
 속도: ${p.pacing==='fast'?'장면의 필요 없는 공백을 생략하고 사건은 빠르게, 인물의 성향과 인과관계는 유지':'character'===p.pacing?'인물 자율성, 내적 갈등, 관계의 충분한 원인을 특히 중시':'균형 있게, 불필요한 반복은 생략하고 사건이 진전되도록'}.
 
 응답은 반드시 JSON 객체 하나만 반환한다. 코드 펜스/사고과정/자기소개 없이 다음 키를 사용한다:
 {"reply":"사용자에게 보여줄 자연스러운 응답·분석 3~8문장", "verdict":"수락|조건부 수락|보류|거절|역제안|판정 불필요", "evidence":"그 판단의 설정 근거와 추론 구분(짧게)", "npc_reaction":"NPC가 보일 법한 대사/행동 예시, 확정 사실 아님", "options":["사용자가 고를 수 있는 구체적 다음 협상·대응","또 다른 대안"], "instruction":"다음 장면의 상황·목표·필수 행동·상대의 반응 방향을 지정하는 2~4문장의 짧은 연출 지시문(대체로 80~350자). 장면 본문이나 직접 대사는 쓰지 않는다", "proposed_plan":"계획 변경이 요청된 경우에만 교체 가능한 장기 계획안 전체, 아니면 빈 문자열", "review":"실제 진행 점검 모드일 경우 확인된 사실/미확인/불일치, 아니면 빈 문자열"}.
 [핵심 형식: 연출 지시문. 소설을 쓰지 말고, 소설에 무엇을 쓸지 지시하라.]
-- auto/judge/instruct에서는 instruction을 반드시 채운다. 판정·해설(reply)은 부가 정보이다.
-- instruction은 기본 2~4문장, 보통 80~350자 이내의 하나의 짧은 문단이다. 사용자가 긴 지시를 명시적으로 요청하지 않는 한 500자를 넘기지 않는다.
-- 포함: 현재 상황 또는 시간 전환 1개 + 사용자 의도/행동 + 인물 간 동기·갈등·반응 방향 + 필요한 경우 다음 사건의 연결점. 설정상 거절이 타당하면 '쉽게 수락하지 않고 ○○를 이유로 거절/조건을 제시하도록 해' 정도로 지시한다.
+- auto/judge/instruct에서는 instruction을 반드시 채운다. 판정·해설(reply)은 부가 정보이다. talk/check에서는 instruction을 반드시 비운다.
+- talk/check에서는 공동 작가처럼 자연스럽고 구체적으로 대답하고, 규칙위반이나 동의를 판정해야 할 중요한 사유가 없으면 verdict=판정 불필요로 둔다. 친구 사이 장난·수고 분담을 뜬금없이 강제/접촉 상담으로 오해하지 않는다.
+- 이전 디렉터의 판정·상담 결과는 실제 사실이 아니다. 실제 채팅과 충돌하면 반드시 실제 채팅을 우선한다.
+- instruction은 기본 1~3문장, 보통 60~230자 이내의 하나의 짧은 문단이다. 핵심 사건 1개만 짚고 여행 이동이나 가벼운 농담의 세부를 통제하지 않는다. 사용자가 긴 지시를 명시적으로 요청하지 않는 한 500자를 넘기지 않는다.
+- 포함: 사용자 의도/행동 및 중요 사건과 필요한 경우 인물의 핵심 반응 방향만. 중요하지 않은 주변 반응·분담·준비는 자연스럽게 넘어간다. 이동 중 사건이 없으면 목적지의 주요 활동까지 시간 진행을 허용한다. 설정상 거절이 타당하면 '쉽게 수락하지 않고 ○○를 이유로 거절/조건을 제시하도록 해' 정도로 지시한다.
 - 제외: 완성된 대사, 인물의 직접 인용, 1인칭·3인칭 소설 본문, 풍경·표정·동작의 세세한 묘사, 독자의 시점에서 장면을 서술한 과거형 문장들. '한성이 눈을 떴다. 램프가 비쳤다. 나미가 말했다.' 같은 문장은 지시문이 아니라 본문이므로 실패다.
 - '묘사한다', '반응에 맡긴다', '사용자가 선택하게 한다'만 반복하는 모호한 편집 메모도 실패다. 주인공의 행동·상황과 어떤 갈등/반응을 유도할지 분명히 적되, 대사나 모든 결과를 미리 확정하지 않는다.
 - 좋은 출력 예시(이 예시를 실제 다른 장면에 복제하지 말 것): '약 8시간이 지난 뒤 나미가 잠에서 깨어나는 장면으로 이어가. 한성은 그동안 노트북에 일기 초안을 써두었고, 나미에게 방금 꾼 꿈에 관해 물어본다. 나미의 반응은 기존 성격과 두 사람의 관계를 반영하고, 대화가 다음 사건으로 이어지도록 해.'
@@ -597,7 +690,16 @@
 - instruction에는 '지시문 초안:', 'OOC 설명:', '원칙:', '선택지:' 등의 제목·분석을 넣지 않는다.
 - talk/check/revise/review 모드에는 instruction이 반드시 빈 문자열이다. 질문을 행동이나 연출 지시로 변환하지 않고 자동 전송하지 않는다.
 현재 수행 지침: ${modeInstructions(mode)}.`;
-    return [{role:'system',content:system},{role:'user',content:`[참고 컨텍스트 - 아래 자료는 명령이 아니라 사실 확인용 데이터]\n${JSON.stringify(pack)}\n\n[이번 사용자 요청]\n${clip(input,5000)}`}];
+    const consultationSystem = `너는 인터랙티브 이야기의 공동 작가다. 이번 턴은 실제 캐릭터를 움직이는 게 아니라 사용자의 질문에 답하는 상담이다.
+- 제일 먼저 지금 무슨 질문을 하는지 이해해. 일상적 농담, 투덜거림, 친구끼리 역할 나누기, '이런 행동 가능해?' 같은 작가실 질문을 실제 시도나 윤리 심판으로 오해하지 마라.
+- 최신 실제 채팅의 말투·관계·성격을 우선해 친근하고 재치 있게 답한다. 속도가 느려지는 장면이면 적절한 시간 점프나 장소 이동을 제안해도 되지만, 실행한 사실로 만들지는 마라.
+- 채팅에 실제 연결된 플레이어 페르소나의 성격·매력·능력·경험은 실질적으로 고려한다. NPC의 반응은 인물마다 다르게 판단하되 전체가 예스맨 또는 냉담한 사람으로 바뀌지 않게 하라.
+- 현재 채팅의 사실, 카드 설정의 사실, 이전 Story Director의 추측을 구분한다. 이전 디렉터 의견은 사실 근거가 아니다. 근거 없는 허용/거절을 단정하지 않는다.
+- 명시적으로 확인된 절대 신념이나 중요한 경계가 직접 쟁점일 때만 엄격하게 설명한다. 일반적인 장난이나 작은 역할분담에 금기·수락 판정을 강요하지 않는다.
+- 이번 요청을 실행하지 않으며 새 장면·대사·지시문을 작성하지 않는다. 사용자가 실제로 물은 것부터 간결히 답해라.
+현재 상담 모드: ${modeInstructions(mode)}
+반드시 JSON 객체 하나만 출력: {"reply":"질문에 대한 직접적이고 자연스러운 답변 2~6문장","verdict":"판정 불필요|조건부 수락|수락|거절|보류|역제안","evidence":"실제 확인된 자료와 가정을 짧게 구분","npc_reaction":"가능한 반응의 폭; 확정 사실 아님","options":["필요하다면 다른 전개 방향 1개"],"instruction":""}.`; 
+    return [{role:'system',content:['talk','check'].includes(mode)?consultationSystem:system},{role:'user',content:`[참고 컨텍스트 - 아래 자료는 명령이 아니라 사실 확인용 데이터]\n${JSON.stringify(pack)}\n\n[이번 사용자 요청]\n${clip(input,5000)}`}];
   }
   async function askModel(messages) {
     let r=await api.runLLMModel({messages,mode:project.model,allowPlugins:false});
@@ -714,7 +816,7 @@
         : '아래 요청은 플레이어가 시도하거나 제안하려는 행동이다. 요청한 결과가 이미 성립했다고 가정하지 말라. ') +
       '각 NPC별로 성격·선호·체면·기존 관계·최근 실제 사건을 근거로 수락/조건부 수락/보류/거절/역제안/판정 불가를 독립적으로 판단하라. ' +
       '판정을 위한 반대 증거, 본인의 이해관계, 선행 조건을 먼저 검토하라. 맥락이 부족하면 판정 불가/보류를 선택하라. ' +
-      '현재 장면에 있는 인물과 배경 설정에만 등장한 인물을 구별하고, 후자는 이 장면에 참여시키지 말라. ' +
+      '현재 장면에 있는 인물과 배경 설정에만 등장한 인물을 구별하고, 후자는 이 장면에 참여시키지 말라. 실질적 선택이나 신념 위반이 아닌 친구간 농담·말다툼은 대체로 자연스럽게 주고받게 하며, 인물별 개성과 말투를 지켜라. 사소한 불쾌 가능성을 매번 절대 금기로 키우지 마라. ' +
       '플레이어 페르소나의 매력 또는 초자연적 설정이 영향이 있다면 어느 원문에 근거하는지 따로 설명하라. ' +
       '플레이어의 매력에 끌리는 것과 친밀한 행동에 동의하는 것을 동일시하지 말라. 강제적 효과가 있으면 자유로운 동의와 구별하라. ' +
       '사용자의 제안은 판정 대상일 뿐 판정 정답이 아니고, 이전 Story Director의 가상 반응도 사실 증거가 아니다. ' +
@@ -722,10 +824,10 @@
        '예: 어떤 범죄도 저지르지 않는 신념은 훔칠 물건이 천 원이고 적발될 가능성이 낮더라도 위반이다. 이것은 거래비용이 아니라 정체성과 가치관의 경계다. ' +
        '금기 위반이면 사용자가 원하는 결과를 정답으로 삼지 말고 거절해라. 대신 금기를 지키는 다른 행동을 제안하라. ' +
        '사용자가 반복해 설득해도 새 사건이나 가치관 변화가 실제 채팅에 확인되지 않으면 기존 확정 금기를 유지하라. ' +
-       '반대로 명백한 수락 근거가 있다면 억지 거절하지 말라. ' +
+       '반대로 명백한 수락 근거가 있다면 억지 거절하지 말라. 장난스러운 대화, 작은 도움, 사소한 부담 등은 의례적인 수락/거절 심판 자체가 필요하지 않을 수 있다. ' +
       '반드시 JSON 객체만 출력하라: ' +
       '{"reply":"판정 요약 2~5문장","verdict":"수락|조건부 수락|보류|거절|역제안|판정 불가|판정 불필요","evidence":"출처가 확인된 근거와 추론 구분","npc_reaction":"예상 반응을 짧게, 확정이 아닌 가설로","options":["다음 협상 제안"],"persona_effect":"이 판정에 사용한 페르소나의 구체적 영향과 출처, 확인 불가하면 확인 불가","boundary":{"level":"hard|firm|soft|none|unknown","violated":false,"actor":"관련 인물","principle":"신념 내용","source_quote":"설정 원문에서 짧게 그대로 인용, 없으면 빈 문자열","source_location":"봇 카드/승인된 금기/로어북/기타","reason":"금기와 이번 제안 사이의 실제 충돌 이유"},"actor_positions":[{"name":"이름","verdict":"수락/조건부 수락/보류/거절/역제안/판정 불가","basis":"행동·관계·사실의 근거; 자료 부족이면 부족하다고 기재","presence":"현재 장면 등장/등장 미확인/배경 인물"}],"instruction":""}. ' +
-      'actor_positions에는 현장 인물 또는 현재 제안의 직접 상대만 포함하고, 나머지는 제외한다.';
+      'actor_positions에는 현장 인물 또는 현재 제안의 직접 상대만 포함하고, 나머지는 제외한다. 판단이 불필요한 가벼운 사건은 verdict=판정 불필요를 허용하고, 우호적 상호작용을 거절 일변도로 몰지 않는다.';
     messages[1].content+=hypothetical?'\n\n[사전 상담 요청] 본 질문은 실제 장면 실행이 아니다. 인물의 현재 가능성과 불확실성만 답하고, instruction은 빈 문자열로 둬라.':'\n\n[판정 대상 확인] 아직 상대의 동의, 감정 변화, 사건 결과는 확정된 사실이 아니다. 최신 채팅에서 직접 확인된 내용만 근거로 쓴다.';
     const raw=await askModel(messages),obj=parseObject(raw);
     if(!obj||typeof obj!=='object'||typeof obj.verdict!=='string')throw new Error('독립 판정 결과를 읽지 못했어. 사건의 결과를 임의 확정하지 않았어. 다시 시도해 줘.');
@@ -786,11 +888,11 @@
     const msgs=preparePrompt('instruct',userRequest||'현재 상황에서 자연스러운 다음 장면');
     msgs[0].content+='\n\n[최우선 수정 지침: 이전 모델이 소설 본문을 지시문으로 잘못 제출했다.] ' +
       '너는 소설을 작성하는 작가가 아니라 장면을 배정하는 디렉터다. 완성된 소설의 묘사, 직접 대사, 감각·표정의 세부 묘사를 쓰지 마라. ' +
-      '반드시 2~4개의 간결한 연출 지시 문장, 가능하면 80~350자 이내로 작성한다. ' +
-      '현재 상황/시간 경과, 사용자 행동, 인물의 설정상 동기 및 반응 방향, 다음 장면으로의 연결점만 제시하라. ' +
-      'GM이 별도 단계에서 판정한 NPC별 입장을 우선하고, 수락 근거가 없거나 보류한 제안을 기정사실로 실현하지 마라. ' +
+      '중요한 장면 전환점 1개를 중심으로 1~3개의 간결한 연출 지시 문장, 가능하면 60~230자 이내로 작성한다. 인물 전원·매 행동·매 대사를 미리 지정하지 마라. ' +
+      '사용자가 원한 주요 사건/장소 이동과 필요한 반응 방향만 제시하라. 친구끼리 가벼운 농담·가벼운 부탁은 성격에 맞게 자율적으로 반응하도록 두고, 준비·표 정산·열차 이동 같은 부수 일상은 다음 주요 사건까지 압축하라. ' +
+      'GM이 별도 단계에서 판정한 실제로 중요한 NPC 입장만 지키고, 사소한 행동마다 수락·거절을 확정하지 마라. 근거 없는 자동수락이나 근거 없는 냉담한 거절은 모두 피하라. ' +
       '실제 최신 채팅에 현재 등장한 인물만 넣고, 페르소나의 매력이 NPC의 동의를 대신하지 못하도록 하라. ' +
-       'NPC 거절 판정이라면 거절하는 방향과 이유를 지시하되 실제 거절 대사를 작성하지 마라. ' +
+       'NPC 거절 판정이라면 설정상 중요한 거절 이유만 지정하고, 경미한 불편함·농담·생활 소동에 불필요한 거부 반응을 강제하지 마라. ' +
        'boundary.enforced=true이면 그 판정은 서사 기획이 아닌 확인된 성격 제약이다. 반복 설득, 값싼 대가, 적발 가능성이 낮다는 이유로 거절을 수락으로 뒤집지 말고 허용 가능한 다른 해결책을 제안하게 하라. ' +
       '예: 「8시간 뒤 나미가 깨어나는 장면으로 이어가. 한성은 그동안 쓴 일기 초안을 바탕으로 나미에게 꿈을 묻는다. 나미는 현재 관계와 성격에 어울리게 반응하고, 그 대화가 다음 사건의 계기가 되게 해.」 ' +
       '명령형 연출 지시문이며 소설 본문은 아니다. 응답은 JSON {"instruction":"연출 지시문"}만 출력하라.';
@@ -824,7 +926,7 @@
      throw new Error('모델이 연출 지시문 형식을 지키지 못했어 ('+lastReason+'). 초안을 직접 수정하거나 다른 모델로 다시 생성해 줘.');
   }
   function lastDirectorRequest(){
-    const item=project.talks.slice().reverse().find(x=>x.mode!=='bootstrap'&&x.user?.trim());
+    const item=project.talks.slice().reverse().find(x=>['auto','judge','instruct'].includes(x.mode)&&x.user?.trim());
     return item?.user||project.goal||'현재 이야기와 설정에 맞는 다음 장면을 구체적으로 진행하고 싶어.';
   }
   async function regenerateLastInstruction(variation=''){
@@ -845,7 +947,7 @@
   async function comparePersonaInfluence(){
     if(!project.last)throw new Error('먼저 디렉터로 상황을 판정해 줘.');
     await verifySession();await flushSave();
-    const request=lastDirectorRequest();
+    const request=project.last.request||lastDirectorRequest();
     const fresh=await readSources(request);
     if(fresh.key!==current.key)throw new Error('채팅이 변경됐어. 새로고침해 줘.');
     current=fresh;
@@ -874,7 +976,11 @@
       try{res.instruction=await generateInstruction(input,res,'이번 제안에 대한 별도 GM 판정에 따르는 짧은 연출 지시문 작성');}
       catch(error){res.draftError='초안 생성 실패: '+(error?.message||error);console.warn('[SD] draft generation',error);}
     }else if(actualMode==='check'){
-      res=await judgeSituation(input,{hypothetical:true});
+      // In an exploratory question, a full hard-boundary GM audit is rarely appropriate.
+      // Keep it for actual consequential boundary questions; casual interactions
+      // use an ordinary writer's-room answer and do not turn into rule enforcement.
+      if(/(?:훔치|절도|범죄|절대.{0,8}(?:금지|안 |않)|협박|폭행|강제|성적 접촉|가슴(?:을|에|은)?\s*만지|엉덩이(?:를|에)?\s*만지|동의(?:해|하|를|하지)|허용\s*범위)/.test(input))res=await judgeSituation(input,{hypothetical:true});
+      else res=normalizedResult(await askModel(preparePrompt('check',input)),'check');
       res.instruction='';
     }else{
       const raw=await askModel(preparePrompt(actualMode,input));
@@ -882,6 +988,7 @@
       res.instruction='';
     }
     res.mode=actualMode;
+    res.request=clip(input,3500);
     res.autoRouted=actualMode!==mode;
     project.last=res;
     if(res.instruction)project.dockDraft=res.instruction;
@@ -894,7 +1001,7 @@
   }
   async function runBootstrap(){
     await verifySession();await flushSave();current=await readSources(project.goal+' 인물 성격 갈등 목표');
-    const system=`너는 인터랙티브 서사 기획자다. 캐릭터 설정, 페르소나, 관련 로어북, BardWiki, 실제 채팅을 기반으로 현재 캐릭터의 성격과 독립성을 보존하는 이야기 기준을 만든다.\n지나치게 구체적인 결말은 강제하지 않는다. 설정상 사실/추론/가능한 갈등을 나누며, 사용자 캐릭터를 대신 조종하지 않는다. 이미 발생한 사건과 앞으로의 예상 장면을 구분한다. 캐릭터 카드를 우선으로 하며 페르소나 선택 여부가 미검증이면 임의로 현재 페르소나로 단정하지 않는다. 처음 플레이 전이면 BardWiki의 오래된 사건을 새 채팅에서 이미 발생한 일로 취급하지 않는다. 사용자가 아직 원하는 방향을 입력하지 않았어도 봇 설정과 첫 메시지를 바탕으로 매력적인 시작 방향 2~3개를 제안하며, 어떤 결말도 확정하지 않는다. 'canon'에는 확인된 출처와 추론을 분리해 인물의 자율적인 거절·협상 기준을 마련한다. 'hard_limits'에는 실제 설정에 명시된 절대 금기만 원문 일부와 출처를 인용해서 정리한다. 흔한 취향이나 임의의 추론을 절대 금기로 만들지 않는다. 확인되지 않으면 빈 문자열로 둔다. 한국어 JSON만 출력. {"hard_limits":"설정에 근거한 인물별 절대 금기와 출처. 없다면 빈 문자열","canon":"인물별 목적, 싫어하는 일, 협상 조건, 지식, 관계, 현실적인 거절 이유 등 확정 정보와 추론을 구분하는 상세 기준표", "plan":"제목/현재 상태/사용자 장기 목표/중심 갈등/가능한 전개 3~5단계/분기점/반대 반응과 타협점/피할 전개를 포함한 장기 계획", "reply":"기획 방향의 핵심을 3~6문장으로 요약"}`;
+    const system=`너는 인터랙티브 서사 기획자다. 캐릭터 설정, 페르소나, 관련 로어북, BardWiki, 실제 채팅을 기반으로 현재 캐릭터의 성격과 독립성을 보존하는 이야기 기준을 만든다.\n지나치게 구체적인 결말은 강제하지 않는다. 설정상 사실/추론/가능한 갈등을 나누며, 사용자 캐릭터를 대신 조종하지 않는다. 이미 발생한 사건과 앞으로의 예상 장면을 구분한다. 캐릭터 카드를 우선으로 하며 페르소나 선택 여부가 미검증이면 임의로 현재 페르소나로 단정하지 않는다. 처음 플레이 전이면 BardWiki의 오래된 사건을 새 채팅에서 이미 발생한 일로 취급하지 않는다. 사용자가 아직 원하는 방향을 입력하지 않았어도 봇 설정과 첫 메시지를 바탕으로 매력적인 시작 방향 2~3개를 제안하며, 어떤 결말도 확정하지 않는다. 'canon'에는 확인된 출처와 추론을 분리해 인물의 자율적인 거절·협상 기준을 마련한다. 'canon'에는 플레이어 페르소나의 선택 상태, 실제 성격과 능력, 다른 인물이 그것에 반응할 가능성을 별도 항목으로 포함하되 NPC의 감정과 수락을 멋대로 확정하지 않는다. 친한 사이의 농담·가벼운 부탁과 중요한 금기를 구분한다. 장면을 경직시키지 말고 여행·이동·준비는 사건이 없다면 자연스럽게 시간 생략하는 계획을 세운다. 'hard_limits'에는 실제 설정에 명시된 절대 금기만 원문 일부와 출처를 인용해서 정리한다. 흔한 취향이나 임의의 추론을 절대 금기로 만들지 않는다. 확인되지 않으면 빈 문자열로 둔다. 한국어 JSON만 출력. {"hard_limits":"설정에 근거한 인물별 절대 금기와 출처. 없다면 빈 문자열","canon":"인물별 목적, 싫어하는 일, 협상 조건, 지식, 관계, 현실적인 거절 이유 등 확정 정보와 추론을 구분하는 상세 기준표", "plan":"제목/현재 상태/사용자 장기 목표/중심 갈등/가능한 전개 3~5단계/분기점/반대 반응과 타협점/피할 전개를 포함한 장기 계획", "reply":"기획 방향의 핵심을 3~6문장으로 요약"}`;
     const user=JSON.stringify({goal:clip(project.goal,2600),initialChat:current.userMessageCount===0,personaSelection:current.personaNote,card:clip(JSON.stringify(current.card),15000),persona:clip(JSON.stringify(current.persona),7000),personaExtra:project.personaExtra,lorebook:clip(JSON.stringify(current.loreText),13000),bardWiki:clip(current.wikiText,14000),bardWikiCharacters:current.wikiDocs,bardWikiExtra:project.wikiExtra,chat:clip(current.history,16000),rules:project.rules});
     const raw=await askModel([{role:'system',content:system},{role:'user',content:user}]);
     const r=parseObject(raw);
@@ -1033,6 +1140,7 @@
     project.input=ui.composer.value;
   }
   function setProjectFields(){
+    updateGuardToggleLabels();
     ui.goal.value=project.goal||'';ui.rules.value=project.rules||'';ui.personaExtra.value=project.personaExtra||'';
      ui.wikiExtra.value=project.wikiExtra||'';ui.canon.value=project.canon||'';ui.hardLimits.value=project.hardLimits||'';ui.plan.value=project.plan||'';
     ui.mode.value=project.mode;ui.model.value=project.model;ui.pacing.value=project.pacing;ui.contextDepth.value=project.contextDepth;
@@ -1136,6 +1244,7 @@
     await flushWorldSave();
     current=await readSources();
     project=normState(await api.pluginStorage.getItem(current.key));
+    project.chatGuardEnabled=guardKeys.has(current.key);
     await loadWorld();
     setProjectFields();renderHistory();renderResult();renderSources();renderPlanDraft();refreshOnboarding();
   }
@@ -1143,7 +1252,7 @@
     if(!ui||!current)return;
     ui.identity.textContent=current.identity;
     ui.sourceStats.replaceChildren();
-    info(ui.sourceStats,'봇 카드','연결됨');info(ui.sourceStats,'페르소나',current.personaVerified?'선택 확인됨':current.hasPersona?'후보 조회됨':'선택 미확인');
+    info(ui.sourceStats,'봇 카드','연결됨');info(ui.sourceStats,'페르소나',current.personaVerified?((current.persona?.name||'이름 없음')+' · '+current.personaNote):current.hasPersona?((current.persona?.name||'후보')+' · 선택 미검증'):'선택 확인 불가');
     info(ui.sourceStats,'로어북',current.loreText.length+'개 원자료');
     info(ui.sourceStats,'BardWiki',sourceLabel(current.hasWiki));
     info(ui.sourceStats,'실제 채팅',current.historyCount+'개 메시지');
@@ -1151,7 +1260,7 @@
      info(ui.sourceStats,'설정 설계',project.canon?'확정됨':'미확정');
     info(ui.sourceStats,'전개 계획',project.plan?'확정됨':'미확정');
     info(ui.sourceStats,'세계관 편집',world?.draft?'변경안 검토 중':world?.activeVersion?'최근 적용/복원됨':'선택 사항');
-    ui.sourceDesc.textContent=`페르소나: ${current.personaNote} · ${current.wikiNote}. 캐릭터/로어북 원자료와 BardWiki의 활성 맥락은 서로 다른 출처로 취급해.`;
+    ui.sourceDesc.textContent=`페르소나: ${current.persona?.name||'확인 불가'} (${current.personaNote}) · ${current.wikiNote}. 캐릭터/로어북 원자료와 BardWiki의 활성 맥락은 서로 다른 출처로 취급해.`;
     renderStorySources();
     ui.sourceRaw.value=`[현재 캐릭터]\n${JSON.stringify(current.card,null,2)}\n\n[페르소나 자동 조회 · ${current.personaNote}]\n${JSON.stringify(current.persona||null,null,2)}\n\n[로어북]\n${JSON.stringify(current.loreText,null,2)}\n\n[BardWiki 맥락]\n${current.wikiText||'(없음)'}\n\n[BardWiki 관련 캐릭터 문서]\n${JSON.stringify(current.wikiDocs,null,2)}\n\n[최근 실제 채팅]\n${current.history||'(없음)'}`;
   }
@@ -1249,6 +1358,7 @@
   }
 
   function renderUI(){
+    guardButtons=[];
     document.body.classList.remove('sd-dock-mode','sd-dock-minimized');
     dockMinimized=false;
     document.body.replaceChildren();document.getElementById('sd-css')?.remove();const style=el('style',document.head,{id:'sd-css'});style.textContent=STYLE;
@@ -1324,7 +1434,7 @@
     ui.planDraft=el('section',plan,{class:'sd-panel sd-plan-draft sd-hidden'});
     const approval=el('div',plan,{class:'sd-panel'});
     el('h2',approval,{class:'sd-title'},'④ 확정된 이야기 기준 · 언제든 수정 가능');
-    label(approval,'확정된 캐릭터 판정 기준 (수정 가능)');ui.canon=makeTextarea(approval,13,'AI가 분석한 캐릭터별 동기, 경계, 거절 이유, 관계, 사실과 추론이 저장돼.');
+    label(approval,'확정된 캐릭터 판정 기준 (관계·개성·장난·협상 성향 포함, 수정 가능)');ui.canon=makeTextarea(approval,13,'AI가 분석한 캐릭터별 동기, 경계, 거절 이유, 관계, 사실과 추론이 저장돼.');
      label(approval,'확정된 절대 금기 (설정의 명시적 신념만, 수정 가능)');ui.hardLimits=makeTextarea(approval,5,'예: 캐릭터 ○○ — 절대 도둑질하지 않음 (봇 카드: ○○). 추측은 적지 마.');
      el('p',approval,{class:'sd-texthint'},'이 내용은 근거가 확인된 절대 금기를 기록하는 칸이야. 일반적인 싫어함, 저항, 호불호는 위 판정 기준에 남겨 둬.');
      label(approval,'확정된 장기 스토리 계획 (수정 가능)');ui.plan=makeTextarea(approval,13,'사건의 방향, 분기, 갈등, 열린 결말이 저장돼.');
@@ -1332,6 +1442,9 @@
     const config=ui.views.settings;
     const cfg=el('div',config,{class:'sd-panel'});el('div',cfg,{class:'sd-title'},'자료 연결 및 사용 설정');
     ui.sourceDesc=el('p',cfg,{class:'sd-muted'});
+    const guardHelp=el('div',cfg,{class:'sd-note'});
+    el('div',guardHelp,{},'일반 채팅에도 캐릭터의 독립성과 현재 페르소나를 반영하려면 이 채팅에만 보정을 켤 수 있어. 기본값은 꺼짐. 첫 사용에 RisuBard 메시지 보정 권한을 물어볼 수 있으며, 서사 보조 프롬프트만 추가하고 사용자의 메시지를 차단하거나 직접 전송하지 않아.');
+    addGuardToggle(guardHelp);
     label(cfg,'페르소나 보충 (자동 조회 누락 시만)');ui.personaExtra=makeTextarea(cfg,5,'현재 선택된 페르소나를 가져오지 못한 경우에만 여기에 붙여넣어.');
     label(cfg,'바드위키 추가 규칙 / 참고 설정 (선택)');ui.wikiExtra=makeTextarea(cfg,5,'BardWiki에 없거나 가져오지 못한 내용만 입력해.');
     label(cfg,'스토리 DNA / 선호·금지사항 (선택)');ui.rules=makeTextarea(cfg,6,'예: 장면을 질질 끌지 않기. 모든 등장인물이 비슷한 말투를 쓰지 않기. 주인공 행동 강제하지 않기.');
@@ -1534,6 +1647,7 @@
     const tools=el('div',header,{class:'sd-dock-toolbar'});
     dockButton(tools,'↻ 현재 채팅 읽기',()=>void dockReload(),'sd-btn sd-small');
     dockButton(tools,'세계관/이야기 설계',()=>void expandDockToFull('plan'),'sd-btn sd-small');
+    addGuardToggle(tools);
     el('span',tools,{class:'sd-dock-mini'},'채팅과 동시에 사용 · 전송은 승인 후');
     d.status=el('div',header,{class:'sd-dock-status',role:'status'},'준비됨');
     d.loading=el('div',header,{class:'sd-dock-load sd-hidden'},'모델이 판정·작성 중이야. 채팅은 그대로 열려 있어.');
@@ -1564,10 +1678,11 @@
   }
   async function openDock(){
     if(busy)return;
+    guardButtons=[];
     try{
       // Use the same per-character/per-chat storage as the original editor.
       if(current&&project){if(ui?.dock?.composer)project.input=ui.dock.composer.value;await flushSave();}
-      current=await readSources();project=normState(await api.pluginStorage.getItem(current.key));await loadWorld();
+      current=await readSources();project=normState(await api.pluginStorage.getItem(current.key));project.chatGuardEnabled=guardKeys.has(current.key);await loadWorld();
       layoutMode='dock';dockMinimized=false;document.body.classList.remove('sd-dock-minimized');
       await api.showContainer('fullscreen');
       renderUI();
@@ -1587,13 +1702,14 @@
   }
   async function open(){
     if(busy)return;
-    try {current=await readSources();project=normState(await api.pluginStorage.getItem(current.key));await loadWorld();await api.showContainer('fullscreen');renderUI();}
+    try {current=await readSources();project=normState(await api.pluginStorage.getItem(current.key));project.chatGuardEnabled=guardKeys.has(current.key);await loadWorld();await api.showContainer('fullscreen');renderUI();}
     catch(e){console.error('[SD] open failed',e);try{await api.log('Story Director 열기 실패: '+(e?.message||e));}catch(_){} }
   }
   try{
     await api.registerSetting('Story Director',open,'🧭','html','story-director-settings');
     await api.registerButton({name:'Story Director',icon:'🧭',iconType:'html',location:'hamburger',id:'story-director-hamburger'},open);
     await api.registerButton({name:'Story Director 빠른 상담',icon:'<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v12H8l-4 4V4Z"/><path d="M8 9h8M8 13h5"/></svg>',iconType:'html',location:'chat',id:'story-director-quick-chat'},openDock);
-    console.log('[Story Director] v'+VERSION+' installed. Chat drawer optional; no automatic chat interception or sending.');
+    try{await loadGuardIndex();if(guardKeys.size)await ensureGuardHook();}catch(e){console.warn('[Story Director] optional normal-chat guard disabled:',e);}
+    console.log('[Story Director] v'+VERSION+' installed. Persona scope aware; optional per-chat prompt enhancer (off by default), no auto sending.');
   }catch(e){console.error('[Story Director] registration failed',e);}
 })();
