@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.2.3
-//@description 채팅별 페르소나 정확 선택, 유연한 인물 반응·전개 압축 및 선택형 일반 채팅 일관성 보정.
+//@version 1.2.4
+//@description 세계관 상담에 실제 플레이어 페르소나 연동, 주인공/NPC 혼동 자동 교정, 승인형 채팅별 주인공 성향 연출.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.2.3';
+  const VERSION = '1.2.4';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -29,7 +29,7 @@
   const DEFAULTS = {
     goal:'',canon:'',hardLimits:'',plan:'',rules:'',personaExtra:'',wikiExtra:'',input:'',
     mode:'auto',model:'otherAx',pacing:'balanced',contextDepth:'standard',
-    talks:[],last:null,pendingPlan:null,applied:[],review:'',dockDraft:'',chatGuardEnabled:false,updatedAt:0
+    talks:[],last:null,pendingPlan:null,applied:[],review:'',dockDraft:'',chatGuardEnabled:false,playerStoryVersions:[],updatedAt:0
   };
   const STYLE = `
   :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0f151e;color:#eaf0f7;font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
@@ -190,6 +190,7 @@
     if (!['compact','standard','deep'].includes(v.contextDepth)) v.contextDepth='standard';
     v.talks=list(v.talks).slice(-28);v.applied=list(v.applied).slice(-30);
     v.chatGuardEnabled=v.chatGuardEnabled===true;
+    v.playerStoryVersions=list(v.playerStoryVersions).filter(x=>x&&typeof x.before==='string').slice(-8);
     return v;
   }
   // Opt-in only: an ordinary user chat does not automatically run Story
@@ -200,12 +201,13 @@
     const saved=await api.pluginStorage.getItem(CHAT_GUARD_INDEX);
     guardKeys=new Set(list(saved).filter(x=>typeof x==='string'&&x.startsWith(PREFIX)));
   }
-  function guardCue(){
+  function guardCue(storyGuidance=''){
     return '[Story Director · 이 채팅에서 사용자가 선택한 일반 채팅 보정]\n'+
       '플레이어 페르소나는 실제 선택·연결된 설정의 특징, 말투, 능력과 존재감으로 존중한다. 캐릭터들이 이를 전혀 못 느끼는 것처럼 무시하지 말되, NPC 전원이 자동으로 수락하거나 같은 반응을 보이도록 만들지 않는다.\n'+
       'NPC 각자의 기존 성격·관계·농담·선호·명시된 금기를 보존한다. 사용자가 어떤 행동을 시도했다고 해서 상대의 반응/동의도 이미 결정된 것은 아니다. 반대로 가벼운 농담·부탁·친한 사이의 장난은 매번 딱딱하게 거절하지 말고 인물답게 웃고 투덜거리고 협상하도록 해.\n'+
       '이동, 정산, 대기, 반복 준비는 사건이 없으면 자연스럽게 생략하고 다음 중요한 장소나 사건으로 진행한다. 한 번의 지시에서 모든 인물의 작은 행동을 일일이 배정하지 않는다. 실제 채팅에 없는 사건을 확정하지 않는다.\n'+
-      '이 보정은 캐릭터 설정·첫 메시지·사용자 지시를 대체하지 않는 가벼운 서사 일관성 안내다.';
+      '이 보정은 캐릭터 설정·첫 메시지·사용자 지시를 대체하지 않는 가벼운 서사 일관성 안내다.'+
+      (storyGuidance?'\n[이 채팅에서 사용자가 승인한 플레이어 성향 연출 기준. NPC들의 반응이나 동의를 자동 확정하지 않는다]\n'+clip(storyGuidance,1700):'');
   }
   async function ordinaryChatGuard(messages,type){
     if(!guardKeys.size||!Array.isArray(messages)||!messages.length)return messages;
@@ -232,7 +234,8 @@
       const start=plain.slice(0,Math.min(plain.length,34));
       const end=plain.length>60?plain.slice(-26):'';
       if(!excerpts.some(s=>normalize(s).includes(start)||(end&&normalize(s).includes(end))))return messages;
-      return [{role:'system',content:guardCue()},...messages];
+      const saved=key===current?.key?project:await api.pluginStorage.getItem(key);
+      return [{role:'system',content:guardCue(saved?.personaExtra||'')},...messages];
     }catch(error){console.warn('[Story Director] optional chat guard skipped:',error);return messages;}
   }
   async function ensureGuardHook(){
@@ -388,13 +391,14 @@
   function worldRaw(v){if(typeof v==='string'){try{return JSON.parse(v);}catch(_){return null;}}return v;}
   function worldCharacterId(c){return idOf(c?.chaId||c?.id||c?.name||'unknown');}
   function worldStorageKey(){return WORLD_STORE+encodeURIComponent(current.characterId);}
-  function worldDefault(){return {notes:'',input:'',dialogue:[],draft:null,versions:[],versionName:'',activeVersion:'',summary:'',importedLegacy:false,updatedAt:0};}
+  function worldDefault(){return {notes:'',input:'',dialogue:[],draft:null,playerDraft:null,versions:[],versionName:'',activeVersion:'',summary:'',importedLegacy:false,updatedAt:0};}
   function normalizeWorld(v){
     const raw=worldRaw(v)||{},state=Object.assign(worldDefault(),raw);
     state.notes=clip(state.notes,10000);state.input=clip(state.input,4500);
     state.dialogue=list(state.dialogue).filter(x=>x&&['user','assistant'].includes(x.role)&&typeof x.content==='string').slice(-20);
     state.versions=list(state.versions).filter(x=>x&&x.id&&x.snapshot).slice(0,12);
     state.draft=state.draft&&typeof state.draft==='object'?state.draft:null;
+    state.playerDraft=state.playerDraft&&typeof state.playerDraft==='object'?state.playerDraft:null;
     return state;
   }
   async function saveWorld(){
@@ -459,6 +463,36 @@
     if(owner&&owner.mode&&owner.mode!=='original')throw new Error('Mutation State Router의 '+owner.mode+' 모드가 활성화돼 있어. 원작 모드로 복귀한 뒤 적용해 줘.');
     if(meta?.appliedAt&&!meta.invalidatedAt)throw new Error('Mutation State Router의 개변 적용 기록이 있어. 먼저 원작 상태를 확인해 줘.');
   }
+  function playerIdentityContext(input=''){
+    const p=current?.persona||null;
+    const n=clip(p?.name||'',120);
+    const hint=/(?:한성(?:이|은|을|의|에게|과|도|아|이가)|Han\s+Seong)/i.test(String(input||''))
+      ?'이번 요청의 한성은 사용자 지정 인물 이름이다. 세계관 봇의 다른 멤버나 한 성(性)이라는 일반 명사로 바꾸지 마라.' :'';
+    return {role:'플레이어/사용자 캐릭터(세계관 봇이나 NPC가 아님)',name:n||'선택 페르소나 이름을 확인하지 못함',
+      selection:current?.personaNote||'조회 안 됨',selectionVerified:!!current?.personaVerified,
+      personaDescription:clip(p?.personaPrompt||'',8500),personaNote:clip(p?.note||'',1300),
+      approvedPerChatGuidance:clip(project?.personaExtra||'',3800),userNameDisambiguation:hint,
+      warning:'사용자가 플레이어의 성향을 바꾸려는 경우 동아리 NPC의 성격을 대신 바꾸거나 이름 오기라고 단정하지 않는다.'};
+  }
+  function worldRelevantUserRequest(){
+    return clip([world?.notes||'',...list(world?.dialogue).filter(x=>x.role==='user').slice(-4).map(x=>x.content)].join('\n'),10000);
+  }
+  function isPlayerFocusedWorldRequest(request){
+    const s=String(request||'');
+    const npcEdit=/(?:민태오|정현석|천하연|구민지|천소연|주시후).{0,30}(?:성격|설정|바꾸|수정)/.test(s);
+    const playerFocus=/(?:한성(?:이|은|의|을|도|에게)|플레이어|내\s*페르소나|주인공.{0,14}(?:성격|성향|버릇))/.test(s);
+    return playerFocus&&!npcEdit;
+  }
+  function worldIdentityError(answer,request){
+    if(!isPlayerFocusedWorldRequest(request))return false;
+    const t=String(answer||'');
+    return /(?:한성.{0,90}(?:이름이 아니|캐릭터 이름이 아니|인물이 아니|오기|오타)|한\s*성\s*\(性\)|기존 (?:일곱|7)\s*명 중|대상은 누구로|대상만 정해)/.test(t);
+  }
+  async function refreshWorldPersona(query){
+    const newer=await readSources(query);
+    if(newer.key!==current.key)throw new Error('다른 봇/채팅으로 전환됐어. 다시 열어서 진행해 줘.');
+    current=newer;
+  }
   function worldSourceSummary(char){
     const s=snapshotWorld(char);
     return {name:clip(char.name,130),fields:Object.fromEntries(WORLD_FIELDS.map(key=>[key,clip(s.fields[key].value,6500)])),
@@ -498,19 +532,76 @@
     const input=world.input.trim();
     if(input){world.dialogue.push({role:'user',content:clip(input,4500)});world.dialogue=world.dialogue.slice(-20);world.input='';await saveWorld();}
     else if(world.dialogue.at(-1)?.role!=='user')throw new Error('먼저 바꾸고 싶은 세계관 내용을 입력해 줘.');
+    const request=worldRelevantUserRequest();
+    await refreshWorldPersona(request);
     const {char}=await worldLive();
+    const identity=playerIdentityContext(request);
+    const system='너는 한국어 인터랙티브 세계관 설계 파트너다. 출처를 구분한다: PLAYER_PERSONA는 사용자가 조종하는 주인공의 신원·성향이고, WORLD_BOT_CARD는 동아리 전체를 담당하는 봇 설정이며, NPC들은 별개의 인물이다.\n'+
+      '사용자가 「한성이 스킨십이 많다」고 말하면 한성(플레이어)의 접촉이 잦은 성격이 장점과 단점으로 나타나는 전개를 논의해야 한다. 「한 성(性)」의 오타로 단정하거나 민태오 같은 NPC의 성격을 대신 고르지 않는다.\n'+
+      '플레이어 성향은 NPC별로 장난·편안함·오해·불쾌함·갈등 등 다양한 상황별 반응을 만들 수 있다. 어느 누구도 항상 예스맨이거나 항상 차갑게 거절하는 사람으로 고정하지 않는다. 일상 장면은 가볍고 빠르게 진행하며 필요한 큰 갈등만 구체적으로 다룬다.\n'+
+      '사용자가 원하지 않은 기존 이름 수정·정체성 재해석·일행 중 다른 인물 추천은 하지 않는다. 전임 AI의 상담 답변은 확정 설정이 아니다. 채팅별 플레이어 성향 지침과 실제 원본 페르소나 편집은 서로 다른 일이며, 승인이 있기 전에는 무엇도 적용하지 않는다. 첫 메시지·선택지·페르소나·원본 캐릭터를 임의 수정하지 않는다. 질문은 정말 필요한 경우만 한다.';
     const messages=[
-      {role:'system',content:'너는 한국어 인터랙티브 세계관 설계 파트너다. 사용자의 설정 변경 요구를 캐릭터 원본과 비교하고, 성격·세계관·관계·전개의 논리적 영향을 토론한다. 변경된 척 하지 마라. 아직 봇 카드나 로어북은 수정하지 않았다. 캐릭터의 독립성과 갈등을 보존하고, 중요한 모순은 짚되 질문은 꼭 필요한 경우에만 한다. 첫 메시지와 기존 선택지는 변경하지 않는다.'},
-      {role:'user',content:'[현재 캐릭터 참조 데이터]\n'+JSON.stringify(worldSourceSummary(char))+'\n[현재 이야기 목표(아직 설정으로 확정된 것은 아님)]\n'+clip(project.goal,2200)},
+      {role:'system',content:system},
+      {role:'user',content:'[PLAYER_PERSONA: 현재 선택된 사용자/주인공 페르소나]\n'+JSON.stringify(identity)+'\n[WORLD_BOT_CARD: 동아리 및 NPC 세계관, 플레이어 아님]\n'+JSON.stringify(worldSourceSummary(char))+'\n[현재 이야기 목표]\n'+clip(project.goal,2200)+'\n[실제 채팅 요약: 모델이 확인할 사실]\n'+clip(current.history,4200)},
       ...world.dialogue.slice(-16).map(x=>({role:x.role,content:x.content}))
     ];
-    const answer=clip(await askModel(messages),7800);
-    if(!answer)throw new Error('세계관 상담 결과가 비었어. 다시 시도해 줘.');
+    let answer=clip(await askModel(messages),7800);
+    if(worldIdentityError(answer,request)){
+      const retry=[...messages,{role:'assistant',content:answer},{role:'user',content:'방금 답변에서 인물 식별 오류가 발생했다. 한성은 사용자가 지정한 주인공 이름이다. 한 성(性)이나 민태오 같은 다른 인물로 바꾸지 마라. 한성의 습관과 NPC별 서로 다른 반응, 이야기 속 장단점으로 처음부터 올바르게 다시 답하라. 이미 설정을 수정했다고 주장하지 마라.'}];
+      answer=clip(await askModel(retry),7800);
+    }
+    if(!answer||worldIdentityError(answer,request))throw new Error('세계관 AI가 플레이어 한성의 정체를 잘못 해석했어. 잘못된 답변은 저장하지 않았어. 다시 시도하거나 다른 모델을 선택해 줘.');
     world.dialogue.push({role:'assistant',content:answer});world.dialogue=world.dialogue.slice(-20);
     world.summary='AI와 세계관 상의를 마쳤어. 실제 봇 설정은 그대로야.';
     await saveWorld();
   }
+  const STORY_GUIDANCE_START='[Story Director 채팅별 플레이어 성향 연출 지침]';
+  const STORY_GUIDANCE_END='[/Story Director 채팅별 플레이어 성향 연출 지침]';
+  function mergePlayerStoryGuidance(previous,guidance){
+    let base=String(previous||'');const start=base.indexOf(STORY_GUIDANCE_START),end=base.indexOf(STORY_GUIDANCE_END);
+    if(start>=0&&end>start)base=(base.slice(0,start)+base.slice(end+STORY_GUIDANCE_END.length)).trim();
+    return [base,STORY_GUIDANCE_START+'\n'+guidance.trim()+'\n'+STORY_GUIDANCE_END].filter(Boolean).join('\n\n');
+  }
+  async function createPlayerStoryDraft(){
+    const req=worldRelevantUserRequest();if(!req)throw new Error('먼저 주인공 성향과 그 장단점이 어떻게 드러났으면 하는지 입력해 줘.');
+    await refreshWorldPersona(req);
+    const {char}=await worldLive();
+    const messages=[
+      {role:'system',content:'You are a Korean interactive-story planning assistant. Return exactly one JSON object. This is a PLAYER persona STORY CUE, NOT a change to the group NPC bot. Do not assign the player personality trait to a different NPC. The player name (including 한성) is a proper name, not a typo or "한 성(性)". Draft 2-5 practical Korean sentences for future narrative direction: spontaneous physical familiarity even with less-close acquaintances can be a genuine strength (warmth, easy rapport) and weakness (misreading social distance, mismatched expectations), different NPCs react according to their own established personalities and relationship; no automatic everyone-agrees or everyone-rejects. Do not predetermine every interaction or write a novel scene. Keep pace fast. Never imply another person has agreed solely because the player initiates touch. Never modify the persona card or bot. Return {"summary":"short explanation","guidance":"short reusable story guidance, plain text, not a full novel scene","warnings":[]}. Dialogue history is tentative; prior assistant outputs are not established canon.'},
+      {role:'user',content:'PLAYER_PERSONA\n'+JSON.stringify(playerIdentityContext(req))+'\nWORLD_BOT_CARD (NPC group, not player)\n'+JSON.stringify(worldSourceSummary(char))+'\nUSER_GOAL\n'+clip(project.goal,2200)+'\nUSER_CONFIRMED_NOTES\n'+clip(world.notes,7200)+'\nDISCUSSION\n'+JSON.stringify(world.dialogue.slice(-16))}
+    ];
+    let raw=await askModel(messages),j=parseObject(raw);
+    if(j&&worldIdentityError((j.summary||'')+' '+(j.guidance||''),req)){
+      raw=await askModel([...messages,{role:'assistant',content:raw},{role:'user',content:'플레이어 한성을 NPC나 일반 명사로 오해했어. 주인공 한성의 성향을 지침으로 정확히 다시 작성해.'}]);j=parseObject(raw);
+    }
+    if(!j||typeof j.guidance!=='string'||!j.guidance.trim()||worldIdentityError((j.summary||'')+' '+j.guidance,req))throw new Error('주인공 성향 수정안을 안전하게 만들지 못했어. 잘못된 설정은 적용하지 않았어.');
+    world.playerDraft={guidance:clip(j.guidance,4000),summary:clip(j.summary,900),warnings:list(j.warnings).map(x=>clip(x,180)).slice(0,6),before:project.personaExtra||'',createdAt:now()};
+    world.summary='주인공 성향 지침 초안이 준비됐어. 아래에서 확인하고 승인하면 이 채팅의 Story Director 지침에만 반영돼.';
+    await saveWorld();
+  }
+  async function applyPlayerStoryDraft(){
+    const draft=world.playerDraft;
+    if(!draft||!draft.guidance.trim())throw new Error('승인할 주인공 성향 초안이 없어.');
+    await verifySession();
+    if((project.personaExtra||'')!==draft.before)throw new Error('초안 작성 이후 기존 지침이 수정됐어. 제안서를 다시 만들어 줘.');
+    if(!window.confirm('이 채팅에서 사용할 주인공 성향 연출 지침을 승인할까?\n기존 페르소나 카드·NPC 세계관·실제 채팅은 변경하지 않아.'))return;
+    const before=project.personaExtra||'';
+    project.personaExtra=mergePlayerStoryGuidance(before,draft.guidance);
+    if(ui?.personaExtra)ui.personaExtra.value=project.personaExtra;
+    project.playerStoryVersions=[...list(project.playerStoryVersions),{id:'player-'+Date.now(),at:now(),before,after:project.personaExtra,summary:draft.summary}].slice(-8);
+    world.playerDraft=null;world.summary='승인한 주인공 성향이 이 채팅의 이야기 지침에 반영됐어. 실제 페르소나와 봇 원문은 그대로야.';
+    await save();await saveWorld();
+  }
+  async function undoPlayerStoryGuidance(){
+    const history=list(project.playerStoryVersions);const last=history.at(-1);
+    if(!last)throw new Error('복원할 이전 주인공 성향 지침이 없어.');
+    if(project.personaExtra!==last.after)throw new Error('승인 후 지침을 직접 수정했어. 자동으로 되돌리면 변경사항이 사라질 수 있으니 자료·설정에서 직접 확인해 줘.');
+    if(!window.confirm('직전 주인공 성향 지침 적용을 되돌릴까? 봇·페르소나 원문은 수정하지 않아.'))return;
+    project.personaExtra=last.before;if(ui?.personaExtra)ui.personaExtra.value=project.personaExtra;project.playerStoryVersions=history.slice(0,-1);world.summary='주인공 성향 지침을 적용 전 상태로 되돌렸어.';
+    await save();await saveWorld();
+  }
   async function createWorldDraft(){
+    if(isPlayerFocusedWorldRequest(worldRelevantUserRequest()))return createPlayerStoryDraft();
     const {char}=await worldLive();
     if(!world.notes.trim()&&!world.dialogue.length)throw new Error('변경할 세계관 내용을 먼저 입력하거나 AI와 상의해 줘.');
     const origin=snapshotWorld(char);
@@ -615,6 +706,7 @@
       session:c.identity,
       initialChat:c.userMessageCount===0,
       sourceNotes:{persona:options.excludePersona?'페르소나 영향 비교를 위해 제외':c.personaNote,personaVerified:options.excludePersona?false:c.personaVerified,wiki:c.wikiNote},
+      roles:{USER_PLAYER_PERSONA:options.excludePersona?'excluded for diagnostic':playerIdentityContext(input),BOT_CARD_NPC_WORLD:'이름이 동아리 단체라면 단일 NPC로 해석하지 않는다. 플레이어와 서로 다른 역할'},
       sourcePriority:'현재 실제 채팅 사실과 관계 > 캐릭터 카드의 개성·농담·말투·동기·명시된 신념 > 채팅에 실제 연결된 플레이어 페르소나의 행동·능력·성격 효과(인물에 따라 반응은 달라짐) > 활성 로어북·세계관 > 검증된 BardWiki 과거사 > 승인된 이야기 목표. 과거 디렉터의 예측은 사실 증거가 아님. 페르소나의 실제 효과는 반영하되 NPC의 독립적 선택까지 자동으로 대신하지 않는다.',
       character:clip(JSON.stringify(c.card),Math.floor(LIMITS.card*b)),
       persona:options.excludePersona?'[이번 비교 판정에서는 제외]':clip(JSON.stringify(c.persona||{}),Math.floor(LIMITS.persona*b)),
@@ -1001,8 +1093,8 @@
   }
   async function runBootstrap(){
     await verifySession();await flushSave();current=await readSources(project.goal+' 인물 성격 갈등 목표');
-    const system=`너는 인터랙티브 서사 기획자다. 캐릭터 설정, 페르소나, 관련 로어북, BardWiki, 실제 채팅을 기반으로 현재 캐릭터의 성격과 독립성을 보존하는 이야기 기준을 만든다.\n지나치게 구체적인 결말은 강제하지 않는다. 설정상 사실/추론/가능한 갈등을 나누며, 사용자 캐릭터를 대신 조종하지 않는다. 이미 발생한 사건과 앞으로의 예상 장면을 구분한다. 캐릭터 카드를 우선으로 하며 페르소나 선택 여부가 미검증이면 임의로 현재 페르소나로 단정하지 않는다. 처음 플레이 전이면 BardWiki의 오래된 사건을 새 채팅에서 이미 발생한 일로 취급하지 않는다. 사용자가 아직 원하는 방향을 입력하지 않았어도 봇 설정과 첫 메시지를 바탕으로 매력적인 시작 방향 2~3개를 제안하며, 어떤 결말도 확정하지 않는다. 'canon'에는 확인된 출처와 추론을 분리해 인물의 자율적인 거절·협상 기준을 마련한다. 'canon'에는 플레이어 페르소나의 선택 상태, 실제 성격과 능력, 다른 인물이 그것에 반응할 가능성을 별도 항목으로 포함하되 NPC의 감정과 수락을 멋대로 확정하지 않는다. 친한 사이의 농담·가벼운 부탁과 중요한 금기를 구분한다. 장면을 경직시키지 말고 여행·이동·준비는 사건이 없다면 자연스럽게 시간 생략하는 계획을 세운다. 'hard_limits'에는 실제 설정에 명시된 절대 금기만 원문 일부와 출처를 인용해서 정리한다. 흔한 취향이나 임의의 추론을 절대 금기로 만들지 않는다. 확인되지 않으면 빈 문자열로 둔다. 한국어 JSON만 출력. {"hard_limits":"설정에 근거한 인물별 절대 금기와 출처. 없다면 빈 문자열","canon":"인물별 목적, 싫어하는 일, 협상 조건, 지식, 관계, 현실적인 거절 이유 등 확정 정보와 추론을 구분하는 상세 기준표", "plan":"제목/현재 상태/사용자 장기 목표/중심 갈등/가능한 전개 3~5단계/분기점/반대 반응과 타협점/피할 전개를 포함한 장기 계획", "reply":"기획 방향의 핵심을 3~6문장으로 요약"}`;
-    const user=JSON.stringify({goal:clip(project.goal,2600),initialChat:current.userMessageCount===0,personaSelection:current.personaNote,card:clip(JSON.stringify(current.card),15000),persona:clip(JSON.stringify(current.persona),7000),personaExtra:project.personaExtra,lorebook:clip(JSON.stringify(current.loreText),13000),bardWiki:clip(current.wikiText,14000),bardWikiCharacters:current.wikiDocs,bardWikiExtra:project.wikiExtra,chat:clip(current.history,16000),rules:project.rules});
+    const system=`너는 인터랙티브 서사 기획자다. USER_PLAYER_PERSONA는 사용자/주인공이며, BOT_CARD는 NPC와 배경을 포함하는 동아리 봇이다. 플레이어의 이름(예: 한성)을 일반 명사나 오기로 해석하거나, 주인공의 성향을 민태오 같은 NPC의 성격으로 넘기지 않는다. 캐릭터 설정, 페르소나, 관련 로어북, BardWiki, 실제 채팅을 기반으로 현재 캐릭터의 성격과 독립성을 보존하는 이야기 기준을 만든다.\n지나치게 구체적인 결말은 강제하지 않는다. 설정상 사실/추론/가능한 갈등을 나누며, 사용자 캐릭터를 대신 조종하지 않는다. 이미 발생한 사건과 앞으로의 예상 장면을 구분한다. 캐릭터 카드를 우선으로 하며 페르소나 선택 여부가 미검증이면 임의로 현재 페르소나로 단정하지 않는다. 처음 플레이 전이면 BardWiki의 오래된 사건을 새 채팅에서 이미 발생한 일로 취급하지 않는다. 사용자가 아직 원하는 방향을 입력하지 않았어도 봇 설정과 첫 메시지를 바탕으로 매력적인 시작 방향 2~3개를 제안하며, 어떤 결말도 확정하지 않는다. 'canon'에는 확인된 출처와 추론을 분리해 인물의 자율적인 거절·협상 기준을 마련한다. 'canon'에는 플레이어 페르소나의 선택 상태, 실제 성격과 능력, 다른 인물이 그것에 반응할 가능성을 별도 항목으로 포함하되 NPC의 감정과 수락을 멋대로 확정하지 않는다. 친한 사이의 농담·가벼운 부탁과 중요한 금기를 구분한다. 장면을 경직시키지 말고 여행·이동·준비는 사건이 없다면 자연스럽게 시간 생략하는 계획을 세운다. 'hard_limits'에는 실제 설정에 명시된 절대 금기만 원문 일부와 출처를 인용해서 정리한다. 흔한 취향이나 임의의 추론을 절대 금기로 만들지 않는다. 확인되지 않으면 빈 문자열로 둔다. 한국어 JSON만 출력. {"hard_limits":"설정에 근거한 인물별 절대 금기와 출처. 없다면 빈 문자열","canon":"인물별 목적, 싫어하는 일, 협상 조건, 지식, 관계, 현실적인 거절 이유 등 확정 정보와 추론을 구분하는 상세 기준표", "plan":"제목/현재 상태/사용자 장기 목표/중심 갈등/가능한 전개 3~5단계/분기점/반대 반응과 타협점/피할 전개를 포함한 장기 계획", "reply":"기획 방향의 핵심을 3~6문장으로 요약"}`;
+    const user=JSON.stringify({goal:clip(project.goal,2600),initialChat:current.userMessageCount===0,USER_PLAYER_PERSONA:playerIdentityContext(project.goal),BOT_CARD_NPC_WORLD:clip(JSON.stringify(current.card),15000),personaSelection:current.personaNote,card:clip(JSON.stringify(current.card),15000),persona:clip(JSON.stringify(current.persona),7000),personaExtra:project.personaExtra,lorebook:clip(JSON.stringify(current.loreText),13000),bardWiki:clip(current.wikiText,14000),bardWikiCharacters:current.wikiDocs,bardWikiExtra:project.wikiExtra,chat:clip(current.history,16000),rules:project.rules});
     const raw=await askModel([{role:'system',content:system},{role:'user',content:user}]);
     const r=parseObject(raw);
     if(!r || typeof r.canon!=='string'||typeof r.plan!=='string')throw new Error('설계 결과 형식을 읽지 못했어. 기존 자료는 그대로 보존했어. 다시 시도해줘.');
@@ -1276,8 +1368,9 @@
     el('span',heading,{},'② 세계관 편집실');
     el('span',heading,{class:'sd-soft-tag'},'World Editor Lab 기능 통합');
     const content=el('div',panel,{class:'sd-world-main'});
-    el('p',content,{class:'sd-muted'},'AI와 설정을 상의하고 실제 봇 카드·개인 로어북에 반영할 수정안을 만들 수 있어. 변경 전/후를 확인하고 승인하기 전에는 원본을 건드리지 않아. 이야기 설계만 할 거라면 이 단계는 건너뛰어도 돼.');
-    el('div',content,{class:'sd-note sd-world-warning'},'첫 메시지·초기 선택지·페르소나·외부 모듈·실제 채팅은 수정하지 않아. BardWiki는 참고 자료로만 읽어. Mutation State가 원본을 개변 중이면 적용/복원은 차단해.');
+    el('p',content,{class:'sd-muted'},'플레이어의 성향은 채팅별 연출 지침으로, 동아리 NPC 설정 변경은 별도 봇 수정안으로 다뤄. 두 대상은 섞지 않아. AI와 상의만 할 때는 원본이 바뀌지 않아.');
+    el('div',content,{class:'sd-note'},'현재 플레이어 페르소나: '+(current.persona?.name||'선택 확인 필요')+' · '+current.personaNote+' / 세계관 봇: '+(current.card?.name||'이름 미상')+' (플레이어와 다른 대상)');
+    el('div',content,{class:'sd-note sd-world-warning'},'플레이어 성향 지침은 이 채팅에만 승인 반영하며 실제 페르소나 카드 원문은 수정하지 않아. 봇 수정안은 별도 승인 필요. 첫 메시지·초기 선택지·외부 모듈·실제 채팅은 수정하지 않아.');
     if(world.summary)el('div',content,{class:'sd-note sd-world-ok'},world.summary);
     if(project.worldNeedsReview)el('div',content,{class:'sd-note sd-world-warning'},'캐릭터의 실제 세계관이 수정됐어. 기존에 확정한 인물 판정 기준과 장기 계획이 새 설정과 충돌하지 않는지 확인하고 AI 설계안을 갱신해 줘.');
     if(world.importedLegacy)el('p',content,{class:'sd-texthint'},'기존 World Editor Lab의 저장된 논의·버전 기록을 복사해 왔어. 기존 플러그인 저장값은 유지돼.');
@@ -1305,11 +1398,35 @@
     const notes=makeTextarea(content,5,'AI와 상의하지 않아도 변경할 내용을 직접 적고 수정안을 만들 수 있어. 예: 핸콕의 독립적인 거절 기준을 성격 및 로어북에 반영한다.');
     notes.value=world.notes;notes.addEventListener('input',()=>{world.notes=notes.value;scheduleWorldSave();});
     const actions=el('div',content,{class:'sd-actionbar'});
-    btn(actions,'AI 수정안 만들기 (원본 변경 없음)',()=>action('세계관 변경안 생성',async()=>{
+    btn(actions,'AI 수정안 만들기 (플레이어면 채팅별 지침)',()=>action('세계관 변경안 생성',async()=>{
       await flushWorldSave();await createWorldDraft();renderWorldPanel();
       ui.worldRoot?.scrollIntoView?.({block:'nearest'});
     }),'sd-btn sd-primary');
-    el('div',content,{class:'sd-texthint'},'수정안은 바뀌는 캐릭터 정보와 로어북 항목만 제안해. 실제 적용은 별도의 승인 버튼을 눌러야 해.');
+    el('div',content,{class:'sd-texthint'},'한성처럼 플레이어를 대상으로 한 요청은 채팅별 성향 지침 초안을 만들고, NPC 세계관을 대상으로 한 요청은 봇 카드/로어북 수정안을 만들어. 어느 경우든 승인 전 원본은 바뀌지 않아.');
+    if(world.playerDraft){
+      const draft=world.playerDraft;
+      const box=el('div',content,{class:'sd-panel sd-plan-draft'});
+      el('div',box,{class:'sd-section'},'플레이어 성향 연출 지침 · 검토 및 승인');
+      el('div',box,{class:'sd-note'},'이 채팅에만 적용돼. 페르소나 카드/동아리 봇/로어북을 변경하거나 모든 NPC 반응을 자동 결정하지 않아.');
+      if(draft.summary)el('div',box,{class:'sd-response'},draft.summary);
+      if(draft.warnings?.length)el('div',box,{class:'sd-note sd-world-warning'},draft.warnings.join(' · '));
+      label(box,'승인할 주인공 성향 지침 (직접 수정 가능)');
+      const edit=makeTextarea(box,6,'한성의 습관이 장단점으로 드러나도록 ...');edit.value=draft.guidance;
+      edit.addEventListener('input',()=>{world.playerDraft.guidance=edit.value;scheduleWorldSave();});
+      const row=el('div',box,{class:'sd-actionbar'});
+      btn(row,'이 채팅의 스토리 연출에 반영',()=>action('주인공 성향 승인',async()=>{
+        await flushWorldSave();await applyPlayerStoryDraft();renderWorldPanel();renderSources();
+      }),'sd-btn sd-primary');
+      btn(row,'초안 폐기',()=>action('주인공 성향 초안 폐기',async()=>{
+        world.playerDraft=null;world.summary='플레이어 성향 초안을 버렸어. 기존 설정은 그대로야.';await saveWorld();renderWorldPanel();
+      }),'sd-btn sd-soft');
+    }
+    if(list(project.playerStoryVersions).length){
+      const row=el('div',content,{class:'sd-actionbar'});
+      btn(row,'직전 플레이어 성향 반영 되돌리기',()=>action('플레이어 성향 지침 복원',async()=>{
+        await undoPlayerStoryGuidance();renderWorldPanel();renderSources();
+      }),'sd-btn sd-soft');
+    }
     if(world.draft){
       const draft=world.draft;
       const block=el('div',content,{class:'sd-world-diff'});
