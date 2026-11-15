@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.2.4
-//@description 세계관 상담에 실제 플레이어 페르소나 연동, 주인공/NPC 혼동 자동 교정, 승인형 채팅별 주인공 성향 연출.
+//@version 1.2.5
+//@description 대화 한 곳에 입력하면 AI가 상담/이야기/세계관/주인공 성향을 분류해 확인 후 연결; 세계관 변경점만 강조 표시.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.2.4';
+  const VERSION = '1.2.5';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -22,6 +22,27 @@
   const WORLD_OLD_STORE = "world_editor_lab_010_";
   const WORLD_FIELDS = ["desc","personality","scenario","exampleMessage"];
   const LIMITS = {card:14000,persona:7000,lore:13500,wiki:14500,history:18000,notes:6500};
+  const ROUTES=[
+    ['talk','스토리 상담','질문·의견을 대화로 논의 · 설정 변경 없음'],
+    ['check','인물 반응 확인','성격·관계상 가능한 반응 판정 · 실제 사건 없음'],
+    ['scene','다음 장면 지시문','GM 판정 후 짧은 지시문 제안 · 채팅 자동 전송 없음'],
+    ['plan','이야기 방향·계획','요청을 이야기 목표에 추가하고 검토용 장기 계획 작성'],
+    ['world_talk','세계관 상담','NPC/세계관 규칙을 먼저 논의 · 원본 수정 없음'],
+    ['npc_change','NPC·세계관 수정안','캐릭터 카드/로어북 수정안 만들기 · 승인 전 적용 안 함'],
+    ['player_guidance','주인공 성향 연출','선택 페르소나를 참고해 채팅별 연출 지침 초안 만들기']
+  ];
+  const routeName=k=>ROUTES.find(x=>x[0]===k)?.[1]||'스토리 상담';
+  const routeMeaning=k=>ROUTES.find(x=>x[0]===k)?.[2]||ROUTES[0][2];
+  const routeActualDraft=k=>k==='npc_change'||k==='player_guidance'||k==='plan';
+  const routeSemanticSystem=`너는 Story Director의 작업 분류 담당자다. 사용자의 최신 입력을 무엇으로 처리하면 좋은지 분류한다. 입력 자체는 채팅에 전송하거나 장면에서 실행하지 않는다. 한국어 JSON 객체만 출력.
+
+    route: talk(일반 스토리 상담), check(인물 반응·허용 가능성·가정 질문), scene(다음 장면 서술을 명시적으로 요청), plan(장기 이야기 목표·진행 방향 추가), world_talk(세계관 규칙을 질문하거나 논의), npc_change(실제 NPC·세계관 봇 설정을 바꿀 수정안을 명시적으로 희망), player_guidance(플레이어 페르소나의 습관/성격을 스토리 연출에 녹이려는 요청).
+
+    주인공/한성의 성향을 이야기 속 장단점으로 드러내고 싶다는 요청은 player_guidance이며, NPC 세계관 원문 수정이 아니다. '한성'을 한 성(性)이라는 오기로 절대 판단하지 않는다. 플레이어의 성격을 다른 NPC에게 부여하지 않는다.
+
+    실제 장면으로 써 달라는 의도가 명확하지 않으면 scene으로 분류하지 않는다. 질문·정정·의견은 talk 또는 check. 영구 변경을 명확히 요청하지 않으면 npc_change 아님.
+
+    JSON 스키마: {"route":"talk|check|scene|plan|world_talk|npc_change|player_guidance","summary":"사용자 의도 한 문장","reason":"추천 이유 한 문장"}. 사용자의 본문을 각색하거나 개별 설정을 적용하지 마라.`;
   const MODES = [
     ['auto','다음 장면 작성 (기본)'],['judge','판정 + 지시문'],['instruct','지시문만 작성'],
     ['talk','스토리 상담 (지시문 없음)'],['check','인물 반응·허용 범위 확인'],['revise','계획 조정'],['review','진행 점검']
@@ -29,7 +50,7 @@
   const DEFAULTS = {
     goal:'',canon:'',hardLimits:'',plan:'',rules:'',personaExtra:'',wikiExtra:'',input:'',
     mode:'auto',model:'otherAx',pacing:'balanced',contextDepth:'standard',
-    talks:[],last:null,pendingPlan:null,applied:[],review:'',dockDraft:'',chatGuardEnabled:false,playerStoryVersions:[],updatedAt:0
+    talks:[],last:null,pendingPlan:null,applied:[],review:'',dockDraft:'',chatGuardEnabled:false,playerStoryVersions:[],unifiedInput:'',pendingRoute:null,updatedAt:0
   };
   const STYLE = `
   :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0f151e;color:#eaf0f7;font:14px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
@@ -90,6 +111,27 @@
   .sd-world-log{max-height:280px;overflow:auto;padding-right:4px}
   .sd-world-warning{border-color:#7d5944;color:#f7cba8;background:#30251d}
   .sd-world-ok{border-color:#367b6d;color:#a3ead4}
+
+  /* Human-readable change review: only changes first, unmodified source collapses. */
+  .sd-diff-overview{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}
+  .sd-diff-count{padding:5px 9px;font-size:12px;border:1px solid #466174;border-radius:8px;color:#c0d4e0;background:#152b3a}
+  .sd-diff-added{background:#163c32;color:#aff1c8;border:1px solid #39765c;border-radius:3px;padding:1px 2px;white-space:pre-wrap}
+  .sd-diff-removed{background:#492b34;color:#ffc6cb;text-decoration:line-through;border:1px solid #87505c;border-radius:3px;padding:1px 2px;white-space:pre-wrap}
+  .sd-diff-equal{color:#a9bbc8;white-space:pre-wrap}
+  .sd-diff-gap{color:#738b9b;letter-spacing:1px;margin:0 4px}
+  .sd-diff-preview{border:1px solid #39546a;border-radius:10px;background:#10212e;padding:11px 12px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;max-height:270px;overflow:auto}
+  .sd-diff-preview.sd-diff-full{max-height:410px}
+  .sd-route-panel{border:1px solid #397a77;background:#112b36;padding:14px;border-radius:12px;margin:10px 0}
+  .sd-route-panel .sd-field{margin:6px 0 8px}
+  .sd-route-preview-title{font-size:15px;font-weight:750;color:#a7eee0}
+  .sd-route-edit-hint{color:#c2d2de;font-size:12px;margin:8px 0}
+  .sd-unified-comp{border-color:#367c78;background:#132735}
+  .sd-unified-comp textarea{min-height:105px}
+  .sd-advanced{border:1px solid #364d61;border-radius:11px;margin:12px 0;padding:10px 12px}
+  .sd-advanced>summary{cursor:pointer;color:#a3becf;font-weight:700;list-style:disclosure-closed}
+  .sd-advanced[open]>summary{list-style:disclosure-open}
+  .sd-route-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .sd-route-actions .sd-btn{flex:0 1 auto}
   .sd-world-diff{margin:10px 0}
   .sd-world-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:9px 0}
   .sd-world-columns>div{min-width:0}
@@ -191,6 +233,8 @@
     v.talks=list(v.talks).slice(-28);v.applied=list(v.applied).slice(-30);
     v.chatGuardEnabled=v.chatGuardEnabled===true;
     v.playerStoryVersions=list(v.playerStoryVersions).filter(x=>x&&typeof x.before==='string').slice(-8);
+    v.unifiedInput=clip(v.unifiedInput||'',4500);
+    if(!v.pendingRoute||!ROUTES.some(x=>x[0]===v.pendingRoute.route)||typeof v.pendingRoute.input!=='string')v.pendingRoute=null;
     return v;
   }
   // Opt-in only: an ordinary user chat does not automatically run Story
@@ -562,8 +606,8 @@
     if(start>=0&&end>start)base=(base.slice(0,start)+base.slice(end+STORY_GUIDANCE_END.length)).trim();
     return [base,STORY_GUIDANCE_START+'\n'+guidance.trim()+'\n'+STORY_GUIDANCE_END].filter(Boolean).join('\n\n');
   }
-  async function createPlayerStoryDraft(){
-    const req=worldRelevantUserRequest();if(!req)throw new Error('먼저 주인공 성향과 그 장단점이 어떻게 드러났으면 하는지 입력해 줘.');
+  async function createPlayerStoryDraft(explicitRequest=''){
+    const req=explicitRequest||worldRelevantUserRequest();if(!req)throw new Error('먼저 주인공 성향과 그 장단점이 어떻게 드러났으면 하는지 입력해 줘.');
     await refreshWorldPersona(req);
     const {char}=await worldLive();
     const messages=[
@@ -600,10 +644,10 @@
     project.personaExtra=last.before;if(ui?.personaExtra)ui.personaExtra.value=project.personaExtra;project.playerStoryVersions=history.slice(0,-1);world.summary='주인공 성향 지침을 적용 전 상태로 되돌렸어.';
     await save();await saveWorld();
   }
-  async function createWorldDraft(){
-    if(isPlayerFocusedWorldRequest(worldRelevantUserRequest()))return createPlayerStoryDraft();
+  async function createWorldDraft(explicitRequest=''){
+    if(isPlayerFocusedWorldRequest(explicitRequest||worldRelevantUserRequest()))return createPlayerStoryDraft(explicitRequest);
     const {char}=await worldLive();
-    if(!world.notes.trim()&&!world.dialogue.length)throw new Error('변경할 세계관 내용을 먼저 입력하거나 AI와 상의해 줘.');
+    if(!explicitRequest&&!world.notes.trim()&&!world.dialogue.length)throw new Error('변경할 세계관 내용을 먼저 입력하거나 AI와 상의해 줘.');
     const origin=snapshotWorld(char);
     const source=worldSourceSummary(char);
     const output=await askModel([
@@ -616,7 +660,7 @@
         'Return schema exactly: {"summary":"...","fields":{"desc":"FULL updated field ONLY IF changed","personality":"...","scenario":"...","exampleMessage":"..."},"loreEdits":[{"index":0,"content":"FULL replacement"},{"index":-1,"comment":"new lore title","key":"optional key","content":"new lore content"}],"warnings":["..."]}.',
         'Your response is a REVIEW DRAFT only. Do not claim actual application.'
       ].join('\n')},
-      {role:'user',content:'CURRENT_CHARACTER\n'+JSON.stringify(source)+'\nCONFIRMED_DESIGN_NOTES\n'+clip(world.notes,10000)+'\nDISCUSSION\n'+JSON.stringify(world.dialogue.slice(-16))}
+      {role:'user',content:'CURRENT_CHARACTER\n'+JSON.stringify(source)+'\nLATEST_APPROVED_CHANGE_REQUEST\n'+clip(explicitRequest,5000)+'\nCONFIRMED_DESIGN_NOTES (historical, do not override latest request)\n'+clip(world.notes,10000)+'\nDISCUSSION (unconfirmed, advisory)\n'+JSON.stringify(world.dialogue.slice(-16))}
     ]);
     const json=parseObject(output);
     world.draft=Object.assign(normalizeWorldProposal(json,origin),{digest:fingerprintWorld(origin),createdAt:now()});
@@ -1356,6 +1400,154 @@
     renderStorySources();
     ui.sourceRaw.value=`[현재 캐릭터]\n${JSON.stringify(current.card,null,2)}\n\n[페르소나 자동 조회 · ${current.personaNote}]\n${JSON.stringify(current.persona||null,null,2)}\n\n[로어북]\n${JSON.stringify(current.loreText,null,2)}\n\n[BardWiki 맥락]\n${current.wikiText||'(없음)'}\n\n[BardWiki 관련 캐릭터 문서]\n${JSON.stringify(current.wikiDocs,null,2)}\n\n[최근 실제 채팅]\n${current.history||'(없음)'}`;
   }
+  // Pure token diff; DOM rendering uses textContent, never untrusted innerHTML.
+  function changeTokens(value){return String(value||'').match(/\s+|[^\s]+/gu)||[];}
+  function fieldTokenChanges(before,after){
+    const a=changeTokens(before),b=changeTokens(after),n=a.length,m=b.length;
+    let rows=[];
+    if(n*m<=640000){
+      const w=m+1,table=new Uint16Array((n+1)*w);
+      for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--){
+        table[i*w+j]=a[i]===b[j]?1+table[(i+1)*w+j]:Math.max(table[(i+1)*w+j],table[i*w+j+1]);
+      }
+      let i=0,j=0;
+      while(i<n&&j<m){if(a[i]===b[j]){rows.push({kind:'same',text:a[i++]});j++;}
+        else if(table[(i+1)*w+j]>=table[i*w+j+1])rows.push({kind:'remove',text:a[i++]});
+        else rows.push({kind:'add',text:b[j++]});}
+      while(i<n)rows.push({kind:'remove',text:a[i++]});
+      while(j<m)rows.push({kind:'add',text:b[j++]});
+    }else{
+      let i=0,j=0;while(i<n&&i<m&&a[i]===b[i]){rows.push({kind:'same',text:a[i]});i++;}
+      while(j<n-i&&j<m-i&&a[n-1-j]===b[m-1-j])j++;
+      for(let k=i;k<n-j;k++)rows.push({kind:'remove',text:a[k]});
+      for(let k=i;k<m-j;k++)rows.push({kind:'add',text:b[k]});
+      for(let k=n-j;k<n;k++)rows.push({kind:'same',text:a[k]});
+    }
+    const words=kind=>rows.filter(x=>x.kind===kind&&!/^\s+$/.test(x.text)).length;
+    const added=words('add'),removed=words('remove'),total=changeTokens(before).filter(x=>!/^\s+$/.test(x)).length;
+    // Character-level difference ratio; helps identify accidental rewrites.
+    const extensive=total>12&&removed/total>=0.38;
+    return {rows,added,removed,total,extensive};
+  }
+  function renderChangeTokens(container,changes,onlyChanged){
+    container.replaceChildren();
+    const rows=changes.rows,max=onlyChanged?1900:22000;let count=0,skipping=false;
+    for(let i=0;i<rows.length&&count<max;i++){
+      const item=rows[i];
+      const show=!onlyChanged||item.kind!=='same'||rows.slice(Math.max(0,i-7),Math.min(rows.length,i+8)).some(x=>x.kind!=='same');
+      if(!show){if(!skipping){el('span',container,{class:'sd-diff-gap'},' … ');skipping=true;}continue;}
+      skipping=false;const cls=item.kind==='add'?'sd-diff-added':item.kind==='remove'?'sd-diff-removed':'sd-diff-equal';
+      el('span',container,{class:cls},item.text);count+=item.text.length;
+    }
+    if(count>=max)el('span',container,{class:'sd-diff-gap'},' … (더 보려면 전체 원문 비교를 펼쳐줘)');
+  }
+  function worldDiffLabel(key){return ({desc:'캐릭터 설명',personality:'성격',scenario:'시나리오',exampleMessage:'예시 대화'})[key]||key;}
+  // Common writing area: the AI recommends a destination; the user confirms
+  // before any story plan or draft is persisted. Actual world editing requires
+  // a separate explicit approval after a diff review.
+  async function classifyUnifiedRequest(input){
+    const name=clip(current?.persona?.name||'',110),card=clip(current?.card?.name||'',120);
+    const data=JSON.stringify({request:clip(input,4500),selectedPlayerPersona:name,worldBot:card,
+      personaSelectionStatus:current?.personaNote||'',currentScene:clip(current?.history||'',1000)});
+    let j=null;
+    try{j=parseObject(await askModel([{role:'system',content:routeSemanticSystem},{role:'user',content:data}]));}
+    catch(e){console.warn('[SD] route classifier fallback',e);}
+    const valid=ROUTES.some(x=>x[0]===j?.route);
+    const safe=valid?j.route:'talk';
+    // A malformed classification cannot be trusted with a persistent setting.
+    return {input:clip(input,4500),route:safe,summary:clip(j?.summary||input,240),
+      reason:clip(valid?j.reason:'자동 분류 결과를 확신할 수 없어 안전한 상담을 추천했어. 아래에서 직접 바꿀 수 있어.',290),createdAt:now()};
+  }
+  function syncUnifiedInput(value){
+    const raw=String(value||'').slice(0,4500);
+    project.unifiedInput=raw;
+    if(project.pendingRoute&&project.pendingRoute.input!==raw.trim())project.pendingRoute=null;
+    if(ui?.smartEditors)for(const e of ui.smartEditors)if(e.value!==raw)e.value=raw;
+    if(ui?.dock?.composer&&ui.dock.composer.value!==raw)ui.dock.composer.value=raw;
+    scheduleSave();renderRoutePreviews();
+  }
+  async function startUnifiedRequest(input){
+    const value=String(input??project.unifiedInput??'').trim();
+    if(!value)throw new Error('스토리나 설정에 관해 하고 싶은 말을 적어 줘.');
+    await verifySession();
+    // Classification sees the current persona, not stale project notes.
+    const fresh=await readSources(value);
+    if(fresh.key!==current.key)throw new Error('봇/채팅이 바뀌었어. 다시 열어 줘.');
+    current=fresh;
+    project.unifiedInput=value;
+    project.pendingRoute=await classifyUnifiedRequest(value);
+    await save();
+    renderRoutePreviews();
+  }
+  function renderRoutePreviews(){
+    if(!ui?.routePreviews)return;
+    const r=project?.pendingRoute;
+    for(const root of ui.routePreviews){
+      root.replaceChildren();
+      if(!r||!r.input||r.input!==project.unifiedInput.trim())continue;
+      const panel=el('div',root,{class:'sd-route-panel'});
+      el('div',panel,{class:'sd-route-preview-title'},'AI 추천: '+routeName(r.route));
+      el('div',panel,{class:'sd-route-edit-hint'},(r.summary||r.input)+'\n'+(r.reason||''));
+      el('div',panel,{class:'sd-mini'},'이 요청을 어디로 보낼까? 다른 기능이 맞으면 여기서 변경할 수 있어.');
+      const select=el('select',panel,{class:'sd-field','aria-label':'요청 처리 위치 선택'});
+      for(const [key,label] of ROUTES)el('option',select,{value:key},label);
+      select.value=r.route;
+      select.addEventListener('change',()=>{project.pendingRoute.route=select.value;project.pendingRoute.reason='사용자가 직접 처리 위치를 선택했어.';scheduleSave();renderRoutePreviews();});
+      el('div',panel,{class:'sd-mini'},routeMeaning(r.route));
+      if(routeActualDraft(r.route))el('div',panel,{class:'sd-note'},'지금 실행해도 검토용 초안만 만들어. 기존 봇·페르소나·로어북은 따로 승인하기 전에는 바뀌지 않아.');
+      const row=el('div',panel,{class:'sd-route-actions'});
+      btn(row,'이곳에서 진행',()=>void action('추천한 작업 실행',executeUnifiedRoute),'sd-btn sd-primary');
+      btn(row,'취소 · 입력 유지',()=>{project.pendingRoute=null;renderRoutePreviews();scheduleSave();},'sd-btn sd-soft');
+    }
+  }
+  async function executeUnifiedRoute(){
+    const r=project.pendingRoute;if(!r||!r.input||!ROUTES.some(x=>x[0]===r.route))throw new Error('먼저 작업 분류를 확인해 줘.');
+    if(project.unifiedInput.trim()!==r.input)throw new Error('입력이 수정됐어. 다시 분류해 줘.');
+    await verifySession();
+    let to='main';
+    if(r.route==='talk'||r.route==='check'||r.route==='scene'){
+      await runDirector(r.input,{talk:'talk',check:'check',scene:'auto'}[r.route]);
+    }else if(r.route==='world_talk'){
+      world.input=r.input;await discussWorld();to='plan';
+    }else if(r.route==='npc_change'){
+      if(world?.draft&&!window.confirm('이전에 만든 미승인 세계관 수정안이 있어. 새 수정안으로 교체할까? 기존 설정은 아직 적용되지 않았어.'))throw new Error('기존 수정안을 그대로 보존했어.');
+      await createWorldDraft(r.input);to='plan';
+    }else if(r.route==='player_guidance'){
+      if(world?.playerDraft&&!window.confirm('이전에 만든 미승인 주인공 성향 초안이 있어. 새 초안으로 교체할까?'))throw new Error('기존 초안을 그대로 보존했어.');
+      await createPlayerStoryDraft(r.input);to='plan';
+    }else if(r.route==='plan'){
+      const old=project.goal||'';
+      project.goal=clip((old?old+'\n':'')+r.input,4500);
+      if(ui?.goal)ui.goal.value=project.goal;
+      if(ui?.goalMirror)ui.goalMirror.value=project.goal;
+      try{await runBootstrap();}catch(e){project.goal=old;if(ui?.goal)ui.goal.value=old;if(ui?.goalMirror)ui.goalMirror.value=old;throw e;}
+      to='plan';
+    }
+    project.pendingRoute=null;project.unifiedInput='';await save();
+    if(ui?.smartEditors)for(const e of ui.smartEditors)e.value='';
+    if(ui?.dock?.composer)ui.dock.composer.value='';
+    renderRoutePreviews();renderWorldPanel();renderPlanDraft();renderResult();renderHistory();renderSources();
+    if(to==='plan'){
+      ui.worldExpanded=true;renderWorldPanel();
+      if(layoutMode==='dock'){await expandDockToFull('plan',true);}
+      else visible('plan');
+      const dest=r.route==='plan'?ui?.planDraft:ui?.worldRoot;dest?.scrollIntoView?.({block:'nearest',behavior:'smooth'});
+    }else if(layoutMode==='dock'){renderDockHistory();renderDockResult();}
+    else visible('main');
+  }
+  function addUnifiedComposer(parent,location){
+    const root=el('div',parent,{class:'sd-panel sd-unified-comp'});
+    el('div',root,{class:'sd-title'},'하고 싶은 말을 여기에만 적어');
+    el('p',root,{class:'sd-muted'},'스토리 질문·장면 요청·세계관 수정·주인공 성향을 알아서 구분하고, 적용 위치를 먼저 확인할게.');
+    const entry=makeTextarea(root,4,'예: 한성은 안 친한 사람에게도 자연스럽게 스킨십을 하는 성격이야. 이게 장점이자 단점으로 이야기에서 드러났으면 좋겠어.');
+    entry.value=project.unifiedInput||'';ui.smartEditors.push(entry);
+    entry.addEventListener('input',()=>syncUnifiedInput(entry.value));
+    entry.addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();void action('요청 분류',()=>startUnifiedRequest(entry.value));}});
+    btn(root,'AI가 처리 위치 추천',()=>void action('요청 분류',()=>startUnifiedRequest(entry.value)),'sd-btn sd-primary');
+    el('div',root,{class:'sd-texthint'},'분류 시 AI 호출 1회. 위치를 확인한 뒤 상담/초안 생성으로 진행해. 원본 설정은 승인 전 그대로 유지.');
+    const preview=el('div',root);ui.routePreviews.push(preview);
+    return root;
+  }
   function renderWorldPanel(){
     if(!ui?.worldRoot||!world)return;
     const root=ui.worldRoot;root.replaceChildren();
@@ -1374,11 +1566,17 @@
     if(world.summary)el('div',content,{class:'sd-note sd-world-ok'},world.summary);
     if(project.worldNeedsReview)el('div',content,{class:'sd-note sd-world-warning'},'캐릭터의 실제 세계관이 수정됐어. 기존에 확정한 인물 판정 기준과 장기 계획이 새 설정과 충돌하지 않는지 확인하고 AI 설계안을 갱신해 줘.');
     if(world.importedLegacy)el('p',content,{class:'sd-texthint'},'기존 World Editor Lab의 저장된 논의·버전 기록을 복사해 왔어. 기존 플러그인 저장값은 유지돼.');
-    label(content,'바꾸거나 추가하고 싶은 세계관 · AI와 논의 (선택)');
-    const question=makeTextarea(content,4,'예: 핸콕은 낯선 사람의 명령을 쉽게 받아들이지 않고, 상대가 자존심을 건드리면 우선 거절하지만 협상 조건을 제시할 수 있게 하고 싶어.');
+    if(world.dialogue.at(-1)?.role==='assistant'){
+      el('div',content,{class:'sd-section'},'최근 AI 세계관 상담 답변');
+      el('div',content,{class:'sd-response'},clip(world.dialogue.at(-1).content,4200));
+    }
+    const worldAdvanced=el('details',content,{class:'sd-advanced'});
+    el('summary',worldAdvanced,{},'고급: 세계관 상담·확정 메모 직접 입력 (기본은 위 통합 입력 사용)');
+    label(worldAdvanced,'바꾸거나 추가하고 싶은 세계관 · AI와 논의 (선택)');
+    const question=makeTextarea(worldAdvanced,4,'예: 핸콕은 낯선 사람의 명령을 쉽게 받아들이지 않고, 상대가 자존심을 건드리면 우선 거절하지만 협상 조건을 제시할 수 있게 하고 싶어.');
     question.value=world.input;question.addEventListener('input',()=>{world.input=question.value;scheduleWorldSave();});
     if(world.dialogue.length){
-      const history=el('details',content,{class:'sd-details'});history.open=true;
+      const history=el('details',content,{class:'sd-details'});history.open=false;
       el('summary',history,{},'AI와 세계관 상담 · 최근 '+world.dialogue.length+'개 메시지');
       const log=el('div',history,{class:'sd-world-log'});
       for(const entry of world.dialogue.slice(-8)){
@@ -1387,17 +1585,17 @@
         el('div',bubble,{},clip(entry.content,3800));
       }
     }
-    const row=el('div',content,{class:'sd-actionbar'});
+    const row=el('div',worldAdvanced,{class:'sd-actionbar'});
     btn(row,'AI와 설정 상의',()=>action('세계관 상담',async()=>{await flushWorldSave();await discussWorld();renderWorldPanel();}),'sd-btn');
     if(world.dialogue.at(-1)?.role==='user')btn(row,'응답 다시 받기',()=>action('세계관 상담 재시도',async()=>{await discussWorld();renderWorldPanel();}),'sd-btn sd-soft');
     if(world.dialogue.length)btn(row,'상담만 초기화',()=>action('세계관 상담 초기화',async()=>{
       if(!window.confirm('세계관 상담 기록만 비울까? 설정 메모, 수정안, 버전 기록은 그대로 둬.'))return;
       world.dialogue=[];await saveWorld();renderWorldPanel();
     }),'sd-btn sd-soft');
-    label(content,'적용할 세계관 설정 · 확정 메모 (선택)');
-    const notes=makeTextarea(content,5,'AI와 상의하지 않아도 변경할 내용을 직접 적고 수정안을 만들 수 있어. 예: 핸콕의 독립적인 거절 기준을 성격 및 로어북에 반영한다.');
+    label(worldAdvanced,'적용할 세계관 설정 · 확정 메모 (선택)');
+    const notes=makeTextarea(worldAdvanced,5,'AI와 상의하지 않아도 변경할 내용을 직접 적고 수정안을 만들 수 있어. 예: 핸콕의 독립적인 거절 기준을 성격 및 로어북에 반영한다.');
     notes.value=world.notes;notes.addEventListener('input',()=>{world.notes=notes.value;scheduleWorldSave();});
-    const actions=el('div',content,{class:'sd-actionbar'});
+    const actions=el('div',worldAdvanced,{class:'sd-actionbar'});
     btn(actions,'AI 수정안 만들기 (플레이어면 채팅별 지침)',()=>action('세계관 변경안 생성',async()=>{
       await flushWorldSave();await createWorldDraft();renderWorldPanel();
       ui.worldRoot?.scrollIntoView?.({block:'nearest'});
@@ -1433,23 +1631,46 @@
       el('div',block,{class:'sd-section'},'변경안 미리보기 · 승인 전');
       if(draft.summary)el('div',block,{class:'sd-response'},draft.summary);
       if(list(draft.warnings).length)el('div',block,{class:'sd-note sd-world-warning'},draft.warnings.join(' · '));
-      const origin=snapshotWorld(current.ch);
-      const edits=[...Object.entries(draft.fields||{}).map(([key,value])=>({title:'캐릭터 설정 · '+key,old:origin.fields[key]?.value||'',value,field:key})),
-        ...list(draft.lore).map((change,index)=>({title:change.index<0?'신규 로어북 · '+(change.title||'추가 설정'):'로어북 #'+(change.index+1)+' · '+change.title,
-          old:change.index>=0?text(origin.globalLore[change.index]?.content):'(신규 추가)',value:change.content,edit:index}))];
-      for(const change of edits){
-        const detail=el('details',block,{class:'sd-details'});detail.open=edits.length===1;
-        el('summary',detail,{},change.title+' · 변경 전/후');
-        const cols=el('div',detail,{class:'sd-world-columns'});
-        const old=el('div',cols);el('div',old,{class:'sd-mini'},'기존 원문');el('div',old,{class:'sd-world-old'},change.old);
-        const revised=el('div',cols);el('div',revised,{class:'sd-mini'},'변경할 내용 · 직접 수정 가능');
-        const textarea=makeTextarea(revised,8,'');textarea.value=change.value;
-        textarea.addEventListener('input',()=>{
-          if(change.field)world.draft.fields[change.field]=textarea.value;
-          else world.draft.lore[change.edit].content=textarea.value;
-          scheduleWorldSave();
-        });
-      }
+       const origin=snapshotWorld(current.ch);
+       const edits=[...Object.entries(draft.fields||{}).map(([key,value])=>({title:'캐릭터 설정 · '+worldDiffLabel(key),old:origin.fields[key]?.value||'',value,field:key})),
+         ...list(draft.lore).map((change,index)=>({title:change.index<0?'신규 로어북 · '+(change.title||'추가 설정'):'로어북 #'+(change.index+1)+' · '+change.title,
+           old:change.index>=0?text(origin.globalLore[change.index]?.content):'',value:change.content,edit:index}))];
+       const summaryBar=el('div',block,{class:'sd-diff-overview'});
+       el('span',summaryBar,{class:'sd-diff-count'},'변경 대상 '+edits.length+'개');
+       const totalAdd=edits.reduce((s,x)=>s+fieldTokenChanges(x.old,x.value).added,0);
+       const totalRemove=edits.reduce((s,x)=>s+fieldTokenChanges(x.old,x.value).removed,0);
+       el('span',summaryBar,{class:'sd-diff-count'},'추가 +'+totalAdd+'단어');
+       el('span',summaryBar,{class:'sd-diff-count'},'삭제 −'+totalRemove+'단어');
+       el('div',block,{class:'sd-texthint'},'초록색 = 추가 / 빨간 취소선 = 삭제. 먼저 실제 변경된 구간만 보고, 필요한 경우 전체 원문이나 편집창을 펼쳐줘.');
+       for(const change of edits){
+         const detail=el('details',block,{class:'sd-details'});detail.open=true;
+         const heading=el('summary',detail,{},change.title+' · 실제 변경 부분');
+         const stats=el('div',detail,{class:'sd-texthint'});
+         const focus=el('div',detail,{class:'sd-diff-preview','aria-label':change.title+' 변경된 내용'});
+         const full=el('details',detail,{class:'sd-details'});
+         el('summary',full,{},'변경 전체 하이라이트 보기');
+         const fullBox=el('div',full,{class:'sd-diff-preview sd-diff-full'});
+         const editDetails=el('details',detail,{class:'sd-details'});
+         el('summary',editDetails,{},'기존 원문과 수정안 직접 편집');
+         const cols=el('div',editDetails,{class:'sd-world-columns'});
+         const old=el('div',cols);el('div',old,{class:'sd-mini'},'기존 원문 · 읽기 전용');el('div',old,{class:'sd-world-old'},change.old);
+         const revised=el('div',cols);el('div',revised,{class:'sd-mini'},'변경할 내용 · 직접 수정 가능');
+         const textarea=makeTextarea(revised,9,'');textarea.value=change.value;
+         const refresh=()=>{
+           const d=fieldTokenChanges(change.old,textarea.value);
+           heading.textContent=change.title+' · +'+d.added+' / −'+d.removed+'단어';
+           stats.textContent=d.extensive?'주의: 기존 문구 상당 부분을 삭제·재작성하고 있어. 의도한 변경인지 확인해.':
+             !change.old?'빈 항목에 신규 내용 추가':d.added||d.removed?'기존 내용과 달라진 부분만 강조했어.':'현재 수정안은 기존 원문과 같아.';
+           renderChangeTokens(focus,d,true);
+           renderChangeTokens(fullBox,d,false);
+         };
+         textarea.addEventListener('input',()=>{
+           if(change.field)world.draft.fields[change.field]=textarea.value;
+           else world.draft.lore[change.edit].content=textarea.value;
+           refresh();scheduleWorldSave();
+         });
+         refresh();
+       }
       label(block,'적용 후 버전 이름');
       const name=el('input',block,{class:'sd-field',type:'text',maxlength:'100',placeholder:'예: 핸콕 관계 설정 변경',value:world.versionName||'세계관 수정'});
       name.addEventListener('input',()=>{world.versionName=name.value;scheduleWorldSave();});
@@ -1479,7 +1700,7 @@
     document.body.classList.remove('sd-dock-mode','sd-dock-minimized');
     dockMinimized=false;
     document.body.replaceChildren();document.getElementById('sd-css')?.remove();const style=el('style',document.head,{id:'sd-css'});style.textContent=STYLE;
-    const root=el('main',document.body,{class:'sd-app'});ui={buttons:[],views:{},tabs:{},activeTab:'plan',instruction:null,worldExpanded:!project.canon&&!project.plan};
+    const root=el('main',document.body,{class:'sd-app'});ui={buttons:[],views:{},tabs:{},smartEditors:[],routePreviews:[],activeTab:'plan',instruction:null,worldExpanded:!!(world?.draft||world?.playerDraft)};
     const header=el('div',root,{class:'sd-header'}),brand=el('div',header);
     el('div',brand,{class:'sd-kicker'},'RISUBARD · STORY GM');el('div',brand,{class:'sd-brand'},'Story Director');
     const headBtns=el('div',header,{class:'sd-actions'});
@@ -1497,16 +1718,19 @@
     const compose=el('div',left,{class:'sd-panel'});
     el('h2',compose,{class:'sd-title'},'캐릭터에 관해 질문하거나, 다음 장면을 지시해');
     el('div',compose,{class:'sd-sub'},'상담은 질문에만 답하고 실제 장면을 진행하지 않아. 명시적으로 장면 작성할 때만 연출 지시문을 만들어.');
-    ui.composer=makeTextarea(compose,4,'예: 노트북에 일기를 쓰고 8시간 뒤 나미가 깨면 꿈에 대해 물어보고 싶어.\n예: 핸콕에게 여행을 제안해 볼래. 성격상 싫어한다면 거절하고 다른 조건을 제안하게 해.');
+    addUnifiedComposer(compose,'main');
+    const mainAdvanced=el('details',compose,{class:'sd-advanced'});
+    el('summary',mainAdvanced,{},'고급: 기존 모드·프롬프트 직접 선택');
+    ui.composer=makeTextarea(mainAdvanced,4,'예: 노트북에 일기를 쓰고 8시간 뒤 나미가 깨면 꿈에 대해 물어보고 싶어.\n예: 핸콕에게 여행을 제안해 볼래. 성격상 싫어한다면 거절하고 다른 조건을 제안하게 해.');
     ui.composer.addEventListener('input',()=>{project.input=ui.composer.value;scheduleSave();});
     ui.composer.addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();void submit();}});
-    const quick=el('div',compose,{class:'sd-chips'});
+    const quick=el('div',mainAdvanced,{class:'sd-chips'});
     const quickChoices=[['상대 반응','check','A라는 상황을 가정하면 상대가 어떤 반응을 할까? 아직 실행하지 않을 거야.'],['이어 협상','talk','상대 성격과 관계를 보았을 때 다음에는 어떤 조건을 제안할 수 있을까? 아직 장면을 쓰지 마.'],['다음 지시문','instruct','현재 대화가 자연스럽게 이어지도록 다음 장면 지시문을 써줘.'],['진행 점검','review','지금까지 실제로 진행된 일과 계획이 어디서 달라졌는지 점검해줘.']];
     quickChoices.forEach(([title,mode,seed],i)=>{const b=el('button',quick,{class:'sd-pill',type:'button'});iconLabel(b,['scales','handshake','pen','search'][i],title);b.onclick=()=>{ui.mode.value=mode;if(!ui.composer.value.trim())ui.composer.value=seed;ui.composer.focus();project.input=ui.composer.value;updateFullSubmitLabel();scheduleSave();};});
-    const sendRow=el('div',compose,{class:'sd-row sd-between'});
+    const sendRow=el('div',mainAdvanced,{class:'sd-row sd-between'});
     ui.mode=el('select',sendRow,{class:'sd-field sd-narrow'});MODES.forEach(([v,t])=>el('option',ui.mode,{value:v},t));
     const send=btn(sendRow,'다음 연출 지시문 만들기',()=>void submit(),'sd-btn sd-primary');ui.fullSubmit=send;
-    ui.fullHint=el('div',compose,{class:'sd-texthint'},'질문으로 입력하면 지시문이 아니라 사전 상담으로 처리해.');
+    ui.fullHint=el('div',mainAdvanced,{class:'sd-texthint'},'질문으로 입력하면 지시문이 아니라 사전 상담으로 처리해.');
     ui.mode.addEventListener('change',()=>{project.mode=ui.mode.value;updateFullSubmitLabel();scheduleSave();});updateFullSubmitLabel();
     const out=el('div',left,{class:'sd-panel'});ui.resultTitle=el('div',out,{class:'sd-title'},'상담·지시문 결과');ui.result=el('div',out);
     const historyPanel=el('div',left,{class:'sd-panel'});el('div',historyPanel,{class:'sd-title'},'이전 상담');ui.history=el('div',historyPanel,{class:'sd-log'});
@@ -1518,7 +1742,10 @@
     ui.goal=makeTextarea(mini,4,'예: 서로 적대적이지만 사건을 거치며 관계가 변한다. 무조건 호감을 갖지는 않는다.');
     ui.goal.addEventListener('input',()=>{project.goal=ui.goal.value;if(ui.onboardInput)ui.onboardInput.value=project.goal;scheduleSave();});
     const plan=ui.views.plan;
-    const intro=el('div',plan,{class:'sd-panel'});
+    addUnifiedComposer(plan,'plan');
+    const planAdvanced=el('details',plan,{class:'sd-advanced'});
+    el('summary',planAdvanced,{},'고급: 자료 원문·기존 입력칸 직접 열기');
+    const intro=el('div',planAdvanced,{class:'sd-panel'});
     el('div',intro,{class:'sd-breadcrumb'},'원본 설정 읽기 → 세계관 조정(선택) → 이야기 설계 → 확정');
     el('h2',intro,{class:'sd-title'},'① 봇의 설정을 먼저 읽었어');
     el('p',intro,{class:'sd-muted'},'이 자료를 참고하면서 이야기를 구상해. 원본을 직접 수정하지 않고 카드·페르소나·로어북·BardWiki와 현재 채팅을 별도 출처로 다뤄.');
@@ -1531,7 +1758,7 @@
     ui.storySources=el('div',intro);
 
     ui.worldRoot=el('div',plan,{class:'sd-world-host'});
-    const pHead=el('div',plan,{class:'sd-panel'});
+    const pHead=el('div',planAdvanced,{class:'sd-panel'});
     el('h2',pHead,{class:'sd-title'},'③ 이 자료로 이야기 설계하기');
     el('p',pHead,{class:'sd-muted'},'원하는 사건을 짧게 적어도 되고 비워도 돼. 비워 두면 AI가 읽은 자료를 바탕으로 여러 시작 방향을 제안해.');
     label(pHead,'이야기 방향 / 보고 싶은 소재');
@@ -1549,7 +1776,7 @@
     ui.onboardButton=btn(onboardingRow,'① 설정 기반 설계안 자동 생성',()=>{},'sd-btn sd-primary');
     ui.onboardHelp=el('div',ui.onboard,{class:'sd-hint'},'모델은 설계안 생성 버튼을 누를 때만 호출해.');
     ui.planDraft=el('section',plan,{class:'sd-panel sd-plan-draft sd-hidden'});
-    const approval=el('div',plan,{class:'sd-panel'});
+    const approval=el('div',planAdvanced,{class:'sd-panel'});
     el('h2',approval,{class:'sd-title'},'④ 확정된 이야기 기준 · 언제든 수정 가능');
     label(approval,'확정된 캐릭터 판정 기준 (관계·개성·장난·협상 성향 포함, 수정 가능)');ui.canon=makeTextarea(approval,13,'AI가 분석한 캐릭터별 동기, 경계, 거절 이유, 관계, 사실과 추론이 저장돼.');
      label(approval,'확정된 절대 금기 (설정의 명시적 신념만, 수정 가능)');ui.hardLimits=makeTextarea(approval,5,'예: 캐릭터 ○○ — 절대 도둑질하지 않음 (봇 카드: ○○). 추측은 적지 마.');
@@ -1585,7 +1812,7 @@
     btn(logButtons,'상담 기록 비우기',()=>action('상담 기록 정리',async()=>{if(!window.confirm('이 채팅의 디렉터 상담 기록만 지울까? 계획과 실제 채팅은 보존돼.'))return;project.talks=[];project.last=null;project.pendingPlan=null;project.pendingCanon=null;await save();renderHistory();renderResult();renderLogs();}),'sd-btn sd-danger');
     btn(logButtons,'전체 설정 초기화',()=>action('플러그인 설정 초기화',async()=>{if(!window.confirm('이 채팅의 Story Director 저장값(계획/판정/기록)을 모두 초기화할까? 봇과 실제 채팅은 그대로야.'))return;project=normState(null);await save();setProjectFields();renderHistory();renderResult();renderSources();renderLogs();}),'sd-btn sd-danger');
     ui.status=el('div',root,{class:'sd-status',role:'status'},'준비됨');ui.loading=el('div',root,{class:'sd-note sd-hidden'},'모델 응답을 기다리는 중이야. 이 창을 닫으면 생성 결과가 표시되지 않을 수 있어.');
-    setProjectFields();ui.goalMirror.value=project.goal;renderHistory();renderResult();renderSources();renderWorldPanel();renderPlanDraft();renderLogs();visible((project.canon&&project.plan&&!project.pendingPlan&&!project.pendingCanon)?'main':'plan');
+    setProjectFields();ui.goalMirror.value=project.goal;renderHistory();renderResult();renderSources();renderWorldPanel();renderPlanDraft();renderLogs();renderRoutePreviews();visible((project.canon&&project.plan&&!project.pendingPlan&&!project.pendingCanon)?'main':'plan');
   }
   function renderLogs(){if(!ui?.appliedArea)return;ui.appliedArea.replaceChildren();
     if(!project.applied.length){el('div',ui.appliedArea,{class:'sd-empty'},'아직 채팅에 전송한 지시문이 없어.');return;}
@@ -1686,7 +1913,7 @@
         if(sent)await api.hideContainer();
       }),'sd-btn sd-primary');
       if(preserved){
-        dockButton(actions,'상담 반영해 다시 만들기',()=>{d.composer.value='기존 지시문과 방금 논의한 판단을 반영해 다음 장면을 다시 판정하고 2~4문장 연출 지시문을 만들어줘.';project.input=d.composer.value;scheduleSave();d.composer.focus();});
+        dockButton(actions,'상담 반영해 다시 만들기',()=>{d.composer.value='기존 지시문과 방금 논의한 판단을 반영해 다음 장면을 다시 판정하고 2~4문장 연출 지시문을 만들어줘.';syncUnifiedInput(d.composer.value);d.composer.focus();});
       }else{
         dockButton(actions,'다시 작성',()=>action('판정/지시문 다시 작성',async()=>{
           await regenerateLastInstruction('현재 장면의 판정은 유지하면서 2~4문장 연출 지시문으로 간결하게 작성. 소설 본문 금지');
@@ -1709,7 +1936,7 @@
     if(r.options?.length){
       const picks=el('div',p,{class:'sd-dock-toolbar'});
       for(const choice of r.options.slice(0,3)){
-        dockButton(picks,'↳ '+clip(choice,46),()=>{d.composer.value=choice;project.input=choice;scheduleSave();d.composer.focus();},'sd-btn sd-small');
+        dockButton(picks,'↳ '+clip(choice,46),()=>{d.composer.value=choice;syncUnifiedInput(choice);d.composer.focus();},'sd-btn sd-small');
       }
     }
     if(project.pendingPlan||project.pendingCanon||project.pendingHardLimits){
@@ -1723,7 +1950,8 @@
       const input=d.composer.value.trim();if(!input)throw new Error('검토할 전개를 입력해 줘.');
       project.input=input;
       await runDirector(input,mode);
-      d.composer.value='';ui.composer.value='';project.input='';
+      d.composer.value='';ui.composer.value='';project.input='';project.unifiedInput='';project.pendingRoute=null;
+      if(ui?.smartEditors)for(const input of ui.smartEditors)input.value='';renderRoutePreviews();
       renderHistory();renderResult();renderSources();renderLogs();
       renderDockHistory();renderDockResult();
       d.scroll.scrollTop=d.scroll.scrollHeight;
@@ -1731,15 +1959,16 @@
   }
   async function dockReload(){
     await action('채팅 최신상태 반영',async()=>{
-      if(ui?.dock?.composer)project.input=ui.dock.composer.value;
+      if(ui?.dock?.composer)project.unifiedInput=ui.dock.composer.value;
       await reload();
-      if(ui?.dock){ui.dock.identity.textContent=current.identity;ui.dock.composer.value=project.input||'';}
+      if(ui?.dock){ui.dock.identity.textContent=current.identity;ui.dock.composer.value=project.unifiedInput||'';}
+      renderRoutePreviews();
       renderDockHistory();renderDockResult();
     });
   }
-  async function expandDockToFull(tab='main'){
-    if(busy)return;
-    if(ui?.dock?.composer)project.input=ui.dock.composer.value;
+  async function expandDockToFull(tab='main',approvedRouteAction=false){
+    if(busy&&!approvedRouteAction)return;
+    if(ui?.dock?.composer)project.unifiedInput=ui.dock.composer.value;
     await flushSave();
     layoutMode='full';dockMinimized=false;document.body.classList.remove('sd-dock-mode','sd-dock-minimized');
     await api.showContainer('fullscreen');
@@ -1759,7 +1988,7 @@
     dockButton(controls,'전체',()=>void expandDockToFull('main'),'sd-btn sd-small');
     const mini=el('button',controls,{type:'button',class:'sd-btn sd-small',title:'빠른 상담 최소화','aria-label':'빠른 상담 최소화'},'−');
     mini.onclick=()=>void minimizeDock().catch(e=>console.warn('[SD] minimize failed:',e));
-    dockButton(controls,'×',()=>{project.input=d.composer.value;void flushSave().finally(()=>api.hideContainer());},'sd-btn sd-small');
+    dockButton(controls,'×',()=>{project.unifiedInput=d.composer.value;void flushSave().finally(()=>api.hideContainer());},'sd-btn sd-small');
     d.identity=el('div',header,{class:'sd-dock-mini'},current.identity);
     const tools=el('div',header,{class:'sd-dock-toolbar'});
     dockButton(tools,'↻ 현재 채팅 읽기',()=>void dockReload(),'sd-btn sd-small');
@@ -1774,14 +2003,19 @@
     d.result=el('div',d.scroll,{class:'sd-dock-result'});
     const composer=el('div',shell,{class:'sd-dock-compose'});
     d.composer=makeTextarea(composer,3,'예: 다음 장면에서 ○○이 제안을 거절하는 게 설정에 맞아? 그 다음엔 어떻게 협상할까?');
-    d.composer.value=project.input||'';
-    d.composer.addEventListener('input',()=>{project.input=d.composer.value;scheduleSave();});
-    d.composer.addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();void dockSubmit('auto');}});
+    d.composer.value=project.unifiedInput||'';
+    d.composer.addEventListener('input',()=>syncUnifiedInput(d.composer.value));
+    d.composer.addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();void action('요청 분류',()=>startUnifiedRequest(d.composer.value));}});
     const actions=el('div',composer,{class:'sd-dock-actions'});
-    dockButton(actions,'질문·상담만',()=>void dockSubmit('talk'),'sd-btn');
-    dockButton(actions,'가능성만 판정',()=>void dockSubmit('check'),'sd-btn');
-    dockButton(actions,'판정 → 지시문',()=>void dockSubmit('auto'),'sd-btn sd-primary');
-    el('div',composer,{class:'sd-dock-mini'},'Ctrl+Enter: 질문은 상담, 장면 요청은 지시문 · 실제 전송은 승인 후');
+    dockButton(actions,'AI가 처리 위치 추천',()=>void action('요청 분류',()=>startUnifiedRequest(d.composer.value)),'sd-btn sd-primary');
+    const direct=el('details',composer,{class:'sd-advanced'});
+    el('summary',direct,{},'고급: 모드 직접 선택');
+    const manual=el('div',direct,{class:'sd-dock-actions'});
+    dockButton(manual,'질문·상담만',()=>void dockSubmit('talk'),'sd-btn');
+    dockButton(manual,'가능성만 판정',()=>void dockSubmit('check'),'sd-btn');
+    dockButton(manual,'판정 → 지시문',()=>void dockSubmit('auto'),'sd-btn sd-primary');
+    el('div',composer,{class:'sd-dock-mini'},'Ctrl+Enter: AI 분류 후 처리 위치 확인 · 실제 채팅 전송은 승인 후');
+    const routeView=el('div',composer);ui.routePreviews.push(routeView);renderRoutePreviews();
     // The mini tray stays in this same iframe. It never discards the editor or
     // restarts an in-progress model request when restoring the drawer.
     const tray=el('div',document.body,{class:'sd-dock-tray',role:'group','aria-label':'최소화한 Story Director'});
@@ -1790,7 +2024,7 @@
     vectorIcon('director',restore);el('span',restore,{},'Story Director 펼치기');
     restore.onclick=()=>void restoreDock().catch(e=>console.warn('[SD] restore failed:',e));
     const trayClose=el('button',tray,{type:'button',class:'sd-dock-tray-close',title:'빠른 상담 닫기','aria-label':'빠른 상담 닫기'},'×');
-    trayClose.onclick=()=>{project.input=d.composer.value;void flushSave().finally(()=>{dockMinimized=false;document.body.classList.remove('sd-dock-minimized');api.hideContainer();});};
+    trayClose.onclick=()=>{project.unifiedInput=d.composer.value;void flushSave().finally(()=>{dockMinimized=false;document.body.classList.remove('sd-dock-minimized');api.hideContainer();});};
     renderDockHistory();renderDockResult();
   }
   async function openDock(){
@@ -1798,7 +2032,7 @@
     guardButtons=[];
     try{
       // Use the same per-character/per-chat storage as the original editor.
-      if(current&&project){if(ui?.dock?.composer)project.input=ui.dock.composer.value;await flushSave();}
+      if(current&&project){if(ui?.dock?.composer)project.unifiedInput=ui.dock.composer.value;await flushSave();}
       current=await readSources();project=normState(await api.pluginStorage.getItem(current.key));project.chatGuardEnabled=guardKeys.has(current.key);await loadWorld();
       layoutMode='dock';dockMinimized=false;document.body.classList.remove('sd-dock-minimized');
       await api.showContainer('fullscreen');
