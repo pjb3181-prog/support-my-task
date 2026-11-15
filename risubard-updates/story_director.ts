@@ -1,20 +1,20 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.2.0
+//@version 1.2.1
 //@description 채팅 옆 빠른 상담 플로팅 창 + 독립 GM 판정, 연출 지시문, 승인 전송, 세계관 편집 및 복원.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.2.0';
+  const VERSION = '1.2.1';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
   let busy = false, saveTimer = null, worldSaveTimer = null;
   let world = null;
-  let dockHost = null, dockSide = 'right', layoutMode = 'full';
+  let dockHost = null, dockSide = 'right', layoutMode = 'full', dockMinimized = false;
   const WORLD_STORE = "story_director_world_v1:";
   const WORLD_OLD_STORE = "world_editor_lab_010_";
   const WORLD_FIELDS = ["desc","personality","scenario","exampleMessage"];
@@ -97,6 +97,15 @@
   .sd-soft-tag{font-size:11px;color:#a5c9c7;border:1px solid #4a6c6d;border-radius:5px;padding:2px 7px}
   body.sd-dock-mode{background:#101927;overflow:hidden}
   body.sd-dock-mode>.sd-app{display:none!important}
+  body.sd-dock-minimized{background:transparent;overflow:hidden}
+  body.sd-dock-minimized>.sd-dock{display:none!important}
+  .sd-dock-tray{display:none;height:100%;width:100%;align-items:stretch;gap:3px;padding:4px;background:#172331;border-radius:13px}
+  body.sd-dock-minimized>.sd-dock-tray{display:flex}
+  .sd-dock-tray button{border-radius:9px;border:1px solid #35566b;color:#eaf1f8;cursor:pointer;font-weight:700;font-size:12px}
+  .sd-dock-tray-open{flex:1;min-width:0;background:#1c716f;display:flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
+  .sd-dock-tray-open:hover{background:#208c87}
+  .sd-dock-tray-close{width:31px;flex:0 0 31px;background:#213249}
+  .sd-dock-tray-close:hover{background:#32465b}
   .sd-dock{height:100dvh;width:100%;display:flex;flex-direction:column;background:#172331;color:#eaf1f8;overflow:hidden}
   .sd-dock-head{flex:0 0 auto;border-bottom:1px solid #35516a;padding:11px 12px 9px;background:#152435}
   .sd-dock-headline{display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -1204,7 +1213,8 @@
   }
 
   function renderUI(){
-    document.body.classList.remove('sd-dock-mode');
+    document.body.classList.remove('sd-dock-mode','sd-dock-minimized');
+    dockMinimized=false;
     document.body.replaceChildren();document.getElementById('sd-css')?.remove();const style=el('style',document.head,{id:'sd-css'});style.textContent=STYLE;
     const root=el('main',document.body,{class:'sd-app'});ui={buttons:[],views:{},tabs:{},activeTab:'plan',instruction:null,worldExpanded:!project.canon&&!project.plan};
     const header=el('div',root,{class:'sd-header'}),brand=el('div',header);
@@ -1320,14 +1330,39 @@
   // drawer. Never modify the application's source, chat input, or other plugins.
   async function resizeDockHost(side=dockSide){
     if(!dockHost)return false;
-    const css={position:'fixed',display:'block',top:'clamp(8px, 5vh, 65px)',
+    const css=dockMinimized?{
+      position:'fixed',display:'block',top:'auto',
+      width:'min(224px, calc(100vw - 16px))',height:'54px',
+      left:side==='left'?'8px':'auto',right:side==='right'?'8px':'auto',
+      bottom:'clamp(82px, 11vh, 112px)',border:'1px solid #405b70',borderRadius:'14px',
+      boxShadow:'0 8px 28px rgba(0,0,0,.44)',zIndex:'1000',backgroundColor:'transparent'
+    }:{
+      position:'fixed',display:'block',top:'clamp(8px, 5vh, 65px)',
       width:'min(470px, calc(100vw - 16px))',height:'min(83vh, 760px)',
       left:side==='left'?'8px':'auto',right:side==='right'?'8px':'auto',
       bottom:'auto',border:'1px solid #405b70',borderRadius:'14px',
-      boxShadow:'0 18px 50px rgba(0,0,0,.52)',zIndex:'1000',backgroundColor:'#172331'};
+      boxShadow:'0 18px 50px rgba(0,0,0,.52)',zIndex:'1000',backgroundColor:'#172331'
+    };
     for(const [property,value] of Object.entries(css))await dockHost.setStyle(property,value);
     dockSide=side;
     return true;
+  }
+  async function minimizeDock(){
+    if(layoutMode!=='dock'||dockMinimized||!dockHost)return;
+    // Keep the active DOM, consultation history and unsent working draft intact.
+    // Minimizing is allowed while a model call is running; it does not cancel it.
+    if(ui?.dock?.composer){project.input=ui.dock.composer.value;scheduleSave();}
+    dockMinimized=true;
+    document.body.classList.add('sd-dock-minimized');
+    try{await resizeDockHost(dockSide);}
+    catch(error){dockMinimized=false;document.body.classList.remove('sd-dock-minimized');throw error;}
+  }
+  async function restoreDock(){
+    if(layoutMode!=='dock'||!dockMinimized||!dockHost)return;
+    dockMinimized=false;
+    document.body.classList.remove('sd-dock-minimized');
+    try{await resizeDockHost(dockSide);}
+    catch(error){dockMinimized=true;document.body.classList.add('sd-dock-minimized');throw error;}
   }
   async function findOwnDockHost(){
     try{
@@ -1434,7 +1469,7 @@
     if(busy)return;
     if(ui?.dock?.composer)project.input=ui.dock.composer.value;
     await flushSave();
-    layoutMode='full';document.body.classList.remove('sd-dock-mode');
+    layoutMode='full';dockMinimized=false;document.body.classList.remove('sd-dock-mode','sd-dock-minimized');
     await api.showContainer('fullscreen');
     renderUI();
     visible(tab);
@@ -1450,6 +1485,8 @@
     const controls=el('div',top,{class:'sd-actions'});
     dockButton(controls,'↔',()=>action('패널 위치',async()=>{await resizeDockHost(dockSide==='right'?'left':'right');}),'sd-btn sd-small');
     dockButton(controls,'전체',()=>void expandDockToFull('main'),'sd-btn sd-small');
+    const mini=el('button',controls,{type:'button',class:'sd-btn sd-small',title:'빠른 상담 최소화','aria-label':'빠른 상담 최소화'},'−');
+    mini.onclick=()=>void minimizeDock().catch(e=>console.warn('[SD] minimize failed:',e));
     dockButton(controls,'×',()=>{project.input=d.composer.value;void flushSave().finally(()=>api.hideContainer());},'sd-btn sd-small');
     d.identity=el('div',header,{class:'sd-dock-mini'},current.identity);
     const tools=el('div',header,{class:'sd-dock-toolbar'});
@@ -1471,6 +1508,15 @@
     dockButton(actions,'의논만 하기',()=>void dockSubmit('talk'),'sd-btn');
     dockButton(actions,'판정 → 지시문 만들기',()=>void dockSubmit('auto'),'sd-btn sd-primary');
     el('div',composer,{class:'sd-dock-mini'},'Ctrl+Enter: 판정·지시문 · 복사/화면닫기 없이 직접 전송 가능');
+    // The mini tray stays in this same iframe. It never discards the editor or
+    // restarts an in-progress model request when restoring the drawer.
+    const tray=el('div',document.body,{class:'sd-dock-tray',role:'group','aria-label':'최소화한 Story Director'});
+    d.minimizeTray=tray;
+    const restore=el('button',tray,{type:'button',class:'sd-dock-tray-open',title:'빠른 상담 다시 펼치기','aria-label':'빠른 상담 다시 펼치기'});
+    vectorIcon('director',restore);el('span',restore,{},'Story Director 펼치기');
+    restore.onclick=()=>void restoreDock().catch(e=>console.warn('[SD] restore failed:',e));
+    const trayClose=el('button',tray,{type:'button',class:'sd-dock-tray-close',title:'빠른 상담 닫기','aria-label':'빠른 상담 닫기'},'×');
+    trayClose.onclick=()=>{project.input=d.composer.value;void flushSave().finally(()=>{dockMinimized=false;document.body.classList.remove('sd-dock-minimized');api.hideContainer();});};
     renderDockHistory();renderDockResult();
   }
   async function openDock(){
@@ -1479,7 +1525,7 @@
       // Use the same per-character/per-chat storage as the original editor.
       if(current&&project){if(ui?.dock?.composer)project.input=ui.dock.composer.value;await flushSave();}
       current=await readSources();project=normState(await api.pluginStorage.getItem(current.key));await loadWorld();
-      layoutMode='dock';
+      layoutMode='dock';dockMinimized=false;document.body.classList.remove('sd-dock-minimized');
       await api.showContainer('fullscreen');
       renderUI();
       const floating=await findOwnDockHost();
