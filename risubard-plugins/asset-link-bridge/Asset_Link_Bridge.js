@@ -1,6 +1,6 @@
 //@name risubard_asset_link_bridge
 //@api 3.0
-//@version 0.8.0
+//@version 0.8.1
 //@display-name Asset Link Bridge - Multi Module
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-plugins/asset-link-bridge/Asset_Link_Bridge.js
 // @ts-nocheck
@@ -64,6 +64,91 @@
     }
     return [...counts].filter(([,n])=>n>=2).sort((a,b)=>b[1]-a[1]).slice(0,24);
   }
+
+  // All suggestions come from installed module assets. Never infer missing files.
+  const filenameIndexes=new WeakMap();
+  let suggestedRows=[],selectedRow=-1,suggestTimer=null;
+  function filenameIndex(module){
+    if(!module)return {names:[],groups:[],top:[]};
+    if(filenameIndexes.has(module))return filenameIndexes.get(module);
+    const names=availableAssets(module).map(x=>String(x[0])),map=new Map();
+    for(const name of names){
+      const base=name.trim().toLowerCase().replace(/\.[a-z0-9]{2,6}$/i,'');
+      if(!base)continue;
+      const prefixes=new Set([base]),separator=/[_\-\s]+/g;
+      let hit,parts=0;
+      while((hit=separator.exec(base))!==null&&parts++<7){
+        const prefix=base.slice(0,hit.index).trim();
+        if(prefix.length>=3)prefixes.add(prefix);
+      }
+      for(const value of prefixes){
+        if(value.length<3)continue;
+        let entry=map.get(value);
+        if(!entry){entry={value,count:0,samples:[]};map.set(value,entry);}
+        entry.count++;if(entry.samples.length<2)entry.samples.push(name);
+      }
+    }
+    const groups=[...map.values()].filter(x=>x.count>=2);
+    const top=groups.slice().sort((a,b)=>b.count-a.count||a.value.length-b.value.length).slice(0,16);
+    const index={names,groups,top};filenameIndexes.set(module,index);return index;
+  }
+  function suggestAssetPatterns(module,query){
+    const idx=filenameIndex(module),q=String(query||'').trim().toLowerCase();
+    if(!q)return idx.top.slice(0,12);
+    const priority=x=>x.value===q?0:x.value.startsWith(q)?1:x.value.includes('_'+q)?2:3;
+    const rows=idx.groups.filter(x=>x.value.includes(q));
+    rows.sort((a,b)=>priority(a)-priority(b)||b.count-a.count||a.value.length-b.value.length);
+    const answer=rows.slice(0,12),seen=new Set(answer.map(x=>x.value));
+    if(q.length>=3&&answer.length<10){
+      for(const name of idx.names){
+        const value=name.toLowerCase().replace(/\.[a-z0-9]{2,6}$/i,'');
+        if(!value.includes(q)||seen.has(value))continue;
+        seen.add(value);answer.push({value,count:1,samples:[name],single:true});
+        if(answer.length>=12)break;
+      }
+    }
+    return answer;
+  }
+  function previewPattern(module,query,mode){
+    const q=String(query||'').trim().toLowerCase();
+    if(!q)return {count:0,examples:[]};
+    let count=0;const examples=[];
+    for(const name of filenameIndex(module).names){
+      const n=name.toLowerCase();
+      if(mode==='prefix'?!n.startsWith(q):!n.includes(q))continue;
+      count++;if(examples.length<3)examples.push(name);
+    }
+    return {count,examples};
+  }
+  function chooseSuggestion(index){
+    const row=suggestedRows[index];if(!row)return;
+    $('filter').value=row.value;$('mode').value='prefix';renderAutocomplete();$('filter').focus();
+  }
+  function highlightSuggestion(){
+    const list=$('filterSuggestions')?.querySelectorAll('[data-pick]')||[];
+    list.forEach((node,i)=>node.classList.toggle('selected',selectedRow===i));
+    if(selectedRow>=0&&list[selectedRow]?.scrollIntoView)list[selectedRow].scrollIntoView({block:'nearest'});
+  }
+  function renderAutocomplete(){
+    const el=$('filterSuggestions'),status=$('filterPreview');if(!el||!status)return;
+    const m=getModule($('module').value),query=$('filter').value.trim(),mode=$('mode').value;
+    if(!m){el.textContent='이미지가 있는 모듈을 선택해.';status.textContent='모듈의 에셋 이름을 읽지 못했어.';suggestedRows=[];return;}
+    const idx=filenameIndex(m),preview=previewPattern(m,query,mode);
+    status.textContent=query?
+      '현재 패턴: '+preview.count.toLocaleString()+' / '+idx.names.length.toLocaleString()+'개 연결'+(preview.examples.length?' · 예: '+preview.examples.slice(0,2).join(', '):' · 일치하는 에셋 없음'):
+      '에셋 '+idx.names.length.toLocaleString()+'개를 분석했어. 전체 또는 세부 유형을 골라.';
+    status.classList.toggle('warning',!!query&&preview.count===0);
+    suggestedRows=suggestAssetPatterns(m,query);selectedRow=-1;
+    const title='<div class="auto-title">'+(query?'입력한 글자에 맞는 파일명 패턴':'많이 쓰는 파일명 그룹')+'</div>';
+    const buttons=suggestedRows.map((x,i)=>{
+      const segments=x.value.split(/[_\-\s]+/).length;
+      const kind=x.single?'개별 파일':segments<=2?'전체/넓은 범위':segments<=3?'하위 유형':'세부 그룹';
+      return '<button type="button" data-pick="'+i+'"><span class="auto-line"><b>'+esc(x.value)+'</b><small>'+kind+'</small></span><small>'+x.count.toLocaleString()+'개 · 예: '+esc(x.samples[0]||'')+'</small></button>';
+    }).join('');
+    el.innerHTML=title+(buttons||'<div class="auto-empty">일치하는 후보가 없어. 다른 이름으로 검색해.</div>');
+    el.querySelectorAll('[data-pick]').forEach(node=>node.onclick=()=>chooseSuggestion(Number(node.dataset.pick)));
+  }
+
   // Read only a bounded, non-mutating sample of the selected character's existing chat and metadata.
   // Explicit speaker labels rank highest. Free text is never treated as a reliable character list.
   function findActorCandidates(character) {
@@ -145,15 +230,15 @@
       const r=rules.find(r=>r.id===b.dataset.edit); if(!r)return;
       refreshActorCandidates(r.actor); $('module').value=r.module; updateHints();
       $('filter').value=r.filter; $('mode').value=r.mode; $('prefix').value=r.prefix;
-      $('editing').value=r.id; $('saveRule').textContent='규칙 수정';
+      $('editing').value=r.id; $('saveRule').textContent='규칙 수정'; renderAutocomplete();
       window.scrollTo(0,document.body.scrollHeight);
     });
   }
-  function updateHints() {
-    const m=getModule($('module').value), counts=suggestedFilters(m);
-    $('hints').innerHTML=counts.length ? '파일명 접두어 후보 (클릭해서 필터에 입력): '+counts.map(([name,n])=>`<button data-hint="${esc(name)}">${esc(name)} (${n})</button>`).join('') : '자동 추정 가능한 접두어가 없어. 실제 파일명 목록을 보고 검색어를 입력해.';
-    $('hints').querySelectorAll('[data-hint]').forEach(b=>b.onclick=()=>{$('filter').value=b.dataset.hint;$('mode').value='prefix';});
-    $('samples').textContent=availableAssets(m).slice(0,16).map(a=>a[0]).join('\n') || '에셋 없음';
+  function updateHints(){
+    const m=getModule($('module').value),idx=filenameIndex(m);
+    $('hints').textContent=idx.names.length?'실제 모듈 파일명에서 추출한 패턴이야. 연결 수를 확인하고 저장해.':'선택한 모듈에서 에셋을 찾지 못했어.';
+    $('samples').textContent=idx.names.slice(0,36).join('\n')||'에셋 없음';
+    renderAutocomplete();
   }
   function plansForTarget() {
     const selectedRules=rules.filter(r=>r.target===selected);
@@ -341,11 +426,11 @@
     document.body.innerHTML=`<style>
       body{background:#161b29;color:#edf1fa;font:14px/1.5 system-ui,sans-serif;margin:0}main{max-width:920px;margin:20px auto;padding:20px;background:#252d40;border-radius:14px}
       h2{margin:0 0 8px}h3{margin:20px 0 10px}.muted,small{color:#bcc6d9}label{display:block;margin:9px 0 3px}input,select,button{box-sizing:border-box;background:#141d2d;border:1px solid #55627c;color:#fff;padding:9px;border-radius:7px;font:inherit}
-      input,select{width:100%}button{cursor:pointer;margin:5px 5px 5px 0}button:disabled{opacity:.4}.primary{background:#365ca6} .rule{border:1px solid #526078;border-radius:8px;padding:10px;margin-bottom:8px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap} .fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 15px}#hints button{font-size:12px;padding:4px 7px}pre{white-space:pre-wrap;word-break:break-all;background:#111929;border-radius:7px;padding:12px;max-height:300px;overflow:auto}@media(max-width:650px){.fields{display:block}}
-    </style><main><h2>Asset Link Bridge v0.8.0</h2><p class="muted">하나의 봇에 여러 모듈을 연결하고, 등장인물별 이미지 출처를 분리해. 이미지 복사/원본 모듈 수정 없음.</p>
+      input,select{width:100%}button{cursor:pointer;margin:5px 5px 5px 0}button:disabled{opacity:.4}.primary{background:#365ca6} .rule{border:1px solid #526078;border-radius:8px;padding:10px;margin-bottom:8px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap} .fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 15px}#filterSuggestions{max-height:320px;overflow:auto;border:1px solid #485e78;border-radius:8px;padding:7px;margin-top:7px;background:#151e2e;display:grid;gap:5px}#filterSuggestions button{width:100%;margin:0;text-align:left;display:grid;gap:3px;padding:8px 10px;background:#202e45}#filterSuggestions button:hover,#filterSuggestions button.selected{background:#325270;border-color:#8bddc5}#filterSuggestions .auto-line{display:flex;align-items:center;gap:9px;flex-wrap:wrap;overflow-wrap:anywhere}#filterSuggestions .auto-line small{color:#9ee2ce}#filterSuggestions small{overflow-wrap:anywhere}#filterSuggestions .auto-title{font-size:12px;font-weight:bold;color:#c0d3e4}#filterSuggestions .auto-empty{padding:8px;font-size:12px}#filterPreview{font-size:12px;margin-top:7px;color:#95decc;overflow-wrap:anywhere}#filterPreview.warning{color:#ffafa6}pre{white-space:pre-wrap;word-break:break-all;background:#111929;border-radius:7px;padding:12px;max-height:300px;overflow:auto}@media(max-width:650px){.fields{display:block}}
+    </style><main><h2>Asset Link Bridge v0.8.1</h2><p class="muted">하나의 봇에 여러 모듈을 연결하고, 등장인물별 이미지 출처를 분리해. 이미지 복사/원본 모듈 수정 없음.</p>
     <label>대상 봇 (대화하는 봇)</label><select id="target"></select><h3>등장인물별 에셋 연결 규칙</h3><div id="rules"></div>
     <h3>규칙 추가 / 수정</h3><div class="fields"><div><label>봇 안에 등장하는 인물 선택</label><select id="actorSelect"></select><small id="actorInfo"></small><div id="actorManual" style="display:none"><label>목록에 없는 인물 직접 입력</label><input id="actor" placeholder="예: 클로이 / 아르토리아"/></div></div><div><label>이미지 출처 모듈</label><select id="module"></select></div>
-    <div><label>모듈 안에서 선택할 캐릭터의 파일명 패턴</label><input id="filter" placeholder="예: artoria_alter"/></div><div><label>패턴 일치 방식</label><select id="mode"><option value="prefix">파일명 시작 부분 일치</option><option value="contains">파일명에 포함</option></select></div>
+    <div><label>모듈 안에서 선택할 캐릭터의 파일명 패턴</label><input id="filter" placeholder="예: artoria_alter" autocomplete="off" aria-controls="filterSuggestions" aria-autocomplete="list"/><div id="filterPreview" aria-live="polite"></div><div id="filterSuggestions" role="listbox" aria-label="파일명 자동완성"></div></div><div><label>패턴 일치 방식</label><select id="mode"><option value="prefix">파일명 시작 부분 일치</option><option value="contains">파일명에 포함</option></select></div>
     <div><label>이미지 별칭 접두사 (다른 인물과 겹치지 않게)</label><input id="prefix" placeholder="예: chloe_artoria__"/></div></div>
     <p id="hints" class="muted"></p><details><summary>선택된 모듈 에셋 이름 샘플</summary><pre id="samples"></pre></details>
     <input type="hidden" id="editing"/><button class="primary" id="saveRule">이 규칙 저장</button><button id="reset">입력 초기화</button>
@@ -365,6 +450,18 @@
     $('target').onchange=()=>{selected=$('target').value;resetForm();refreshActorCandidates();renderRules();};
     $('actorSelect').onchange=()=>{const v=$('actorSelect').value;$('actorManual').style.display=v===AUTO_ACTOR?'block':'none';$('actor').value=v===AUTO_ACTOR?'':v;};
     $('module').onchange=updateHints;
+    $('filter').oninput=()=>{
+      if(suggestTimer)clearTimeout(suggestTimer);
+      suggestTimer=setTimeout(()=>{suggestTimer=null;renderAutocomplete();},70);
+    };
+    $('filter').onfocus=renderAutocomplete;
+    $('mode').onchange=renderAutocomplete;
+    $('filter').onkeydown=e=>{
+      if((e.key==='ArrowDown'||e.key==='ArrowUp')&&suggestedRows.length){
+        e.preventDefault();selectedRow=(selectedRow+(e.key==='ArrowDown'?1:-1)+suggestedRows.length)%suggestedRows.length;highlightSuggestion();
+      }else if(e.key==='Enter'&&selectedRow>=0){e.preventDefault();chooseSuggestion(selectedRow);}
+      else if(e.key==='Escape'){selectedRow=-1;highlightSuggestion();}
+    };
     $('preview').onclick=()=>sync(true);$('sync').onclick=()=>sync(false);
     $('close').onclick=()=>Risuai.hideContainer();
     function resetForm(){ $('editing').value='';$('actor').value='';$('actorSelect').value='';$('actorManual').style.display='none';$('filter').value='';$('prefix').value='';$('mode').value='prefix';$('saveRule').textContent='이 규칙 저장';updateHints(); }
