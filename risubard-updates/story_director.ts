@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.1.1
+//@version 1.1.2
 //@description 독립형 스토리 GM + 세계관 편집실: 설정/로어 변경안 검토·승인·복원, 인물 판정, 간결한 연출 지시문.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.1.1';
+  const VERSION = '1.1.2';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -23,7 +23,7 @@
     ['talk','스토리 상담'],['revise','계획 조정'],['review','진행 점검']
   ];
   const DEFAULTS = {
-    goal:'',canon:'',plan:'',rules:'',personaExtra:'',wikiExtra:'',input:'',
+    goal:'',canon:'',hardLimits:'',plan:'',rules:'',personaExtra:'',wikiExtra:'',input:'',
     mode:'auto',model:'otherAx',pacing:'balanced',contextDepth:'standard',
     talks:[],last:null,pendingPlan:null,applied:[],review:'',updatedAt:0
   };
@@ -503,6 +503,7 @@
       bardWikiManual:clip(p.wikiExtra,3500),
       actualChatTail:clip(c.history,Math.floor(LIMITS.history*b)),
       canonApproved:clip(p.canon,9000),
+      hardBoundariesApproved:clip(p.hardLimits,5500),
       arcApproved:clip(p.plan,10000),
       userRules:clip(p.rules,4800),
       storyGoal:clip(p.goal,2400),
@@ -530,7 +531,7 @@
     }
     const system=`너는 인터랙티브 서사에서 작가 겸 독립적인 GM 판정자다. 한국어로 명료하게 응답한다.\n
 원칙:
-1. 사용자의 희망은 작가실 목표일 뿐 캐릭터가 받아들여야 할 지시는 아니다. 인물의 독립적 동기, 욕구, 위험, 체면, 금기와 지식을 먼저 판단한다.
+1. 사용자의 희망은 작가실 목표일 뿐 캐릭터가 받아들여야 할 지시는 아니다. 인물의 독립적 동기, 욕구, 위험, 체면, 금기와 지식을 먼저 판단한다. 명시적으로 승인된 절대 금기를 일시적 호감이나 금액·적발 가능성·반복 설득으로 무력화하지 않는다.
 2. 반대를 위한 억지 거절도 금지한다. 충분한 동기가 있으면 수락한다. '싫어해도 결국 밀리기'를 관성적으로 만들지 않는다.
 3. 관계 변화는 원인·과정·행동의 축적을 요구한다. 설득 실패 후 새로운 대안·조건·대가·시간경과가 있다면 판정을 다시 할 수 있다.
 4. 사용자가 지정한 주인공의 행동·제안·시간 경과를 지시문에 명시하되, 실제 소설 본문이나 인물들의 대사를 대신 작성하지 않는다. 사용자가 대사를 명시했더라도 요청한 의도·주제 위주로 간결히 지시한다(정확한 대사 인용을 명시 요청한 경우만 예외). NPC는 독립적 동기에 따라 반응하도록 연출 방향을 정한다.
@@ -573,9 +574,98 @@
     const v=parseObject(raw);
     if(!v || typeof v!=='object')return {reply:clip(raw,8000),verdict:'판정 불필요',evidence:'',npc_reaction:'',options:[],instruction:'',proposed_plan:'',review:'',unstructured:true};
     return {reply:clip(v.reply||v.analysis||v.summary,9000),verdict:clip(v.verdict||'판정 불필요',90),evidence:clip(v.evidence,3200),
-      persona_effect:clip(v.persona_effect,1600),actor_positions:list(v.actor_positions).slice(0,10).filter(x=>x&&typeof x==='object').map(x=>({name:clip(x.name,90),verdict:clip(x.verdict,80),basis:clip(x.basis,1100),presence:clip(x.presence,90)})),
+      persona_effect:clip(v.persona_effect,1600),boundary:normalizeBoundary(v.boundary),actor_positions:list(v.actor_positions).slice(0,10).filter(x=>x&&typeof x==='object').map(x=>({name:clip(x.name,90),verdict:clip(x.verdict,80),basis:clip(x.basis,1100),presence:clip(x.presence,90)})),
       npc_reaction:clip(v.npc_reaction||v.reaction,3000),options:list(v.options).slice(0,4).map(x=>clip(x,300)).filter(Boolean),
       instruction:clip(v.instruction||v.next_instruction,9000),proposed_plan:clip(v.proposed_plan,13500),review:clip(v.review,9500),unstructured:false};
+  }
+  // A non-negotiable boundary is a source-backed character constraint, not an
+  // improvised rejection merely to add friction. A source quote is checked against
+  // the live character card, approved canon, or approved per-chat boundary notes.
+  function normalizeBoundary(raw){
+    const b=raw&&typeof raw==='object'?raw:{};
+    const level=['hard','firm','soft','none','unknown'].includes(b.level)?b.level:'unknown';
+    return {level,violated:b.violated===true,actor:clip(b.actor,120),principle:clip(b.principle,600),
+      source_quote:clip(b.source_quote,500),source_location:clip(b.source_location,120),
+      reason:clip(b.reason,1100),validEvidence:false,enforced:false};
+  }
+  function compactEvidence(s){
+    return String(s||'').normalize('NFKC').toLocaleLowerCase().replace(/[\s\u200b\u200c\u200d\ufeff\p{P}\p{S}]+/gu,'');
+  }
+  function verifiedBoundarySource(b){
+    const quote=compactEvidence(b.source_quote);
+    if(quote.length<6)return false;
+    const sources=[project?.hardLimits,project?.canon,JSON.stringify(current?.card||{}),
+      JSON.stringify(current?.loreText||[])];
+    return sources.some(src=>compactEvidence(src).includes(quote));
+  }
+  function applyBoundaryGate(result){
+    const b=result.boundary;
+    if(!b||b.level!=='hard'||!b.violated)return result;
+    b.validEvidence=verifiedBoundarySource(b);
+    if(!b.validEvidence){
+      // Never invent an unbreakable character trait when the supplied source
+      // does not actually contain the cited sentence.
+      if(['수락','조건부 수락'].includes(result.verdict)){
+        result.verdict='판정 불가';
+        result.reply='절대 금기를 위반하는 제안으로 의심되지만, 근거 문구가 현재 설정에서 확인되지 않아 수락을 확정할 수 없어.';
+      }
+      result.evidence=(result.evidence?result.evidence+'\n':'')+'[금기 검증 필요] '+(b.principle||'절대 금기 의심')+' — 설정 원문과 인용문을 대조할 수 없음.';
+      return result;
+    }
+    b.enforced=true;
+    result.verdict='거절';
+    const who=b.actor||'해당 캐릭터';
+    result.reply=who+'에게 '+(b.principle||'설정상 절대 금기')+'는 쉽게 타협할 수 없는 원칙이므로 이번 제안은 거절로 판정돼. 같은 금기를 우회하지 않는 새로운 제안으로 협상할 수 있어.';
+    result.evidence=(result.evidence?result.evidence+'\n':'')+'[확정 금기 적용] '+(b.source_quote||b.principle)+' (출처: '+(b.source_location||'현재 설정')+'). 금액, 발각 가능성, 설득 반복만으로 해제되지 않음.';
+    result.npc_reaction=who+' 측은 원칙에 어긋나는 제안을 거절하고, 허용 가능한 다른 해결책을 찾아보려 한다.';
+    result.options=['금기를 어기지 않는 방법으로 다시 제안할래','그 원칙이 왜 중요한지 물어볼래'];
+    if(Array.isArray(result.actor_positions)){
+      result.actor_positions=result.actor_positions.map(a=>{
+        const match=!!who&&(a.name===who||a.name.includes(who)||who.includes(a.name));
+        return match?{...a,verdict:'거절',basis:'[절대 금기 적용] '+b.principle+'; '+a.basis}:a;
+      });
+    }
+    return result;
+  }
+  // Audit optimistic judgements only if the approved/card canon mentions a
+  // non-negotiable principle. Other proposals keep the standard two-pass cost.
+  function shouldAuditHardBoundary(result){
+    if(!['수락','조건부 수락','역제안'].includes(result?.verdict)||result?.boundary?.enforced)return false;
+    const card=current?.card||{};
+    const source=[project?.hardLimits,project?.canon,card.personality,card.description,card.scenario].filter(Boolean).join('\n');
+    return /(?:절대|결코|어떤 경우에도|금기|철칙|확고한 신념|never|under no circumstances|no matter what)/i.test(source);
+  }
+  async function auditPermissiveJudgement(input,result){
+    if(!shouldAuditHardBoundary(result))return result;
+    const card=current?.card||{};
+    const messages=[
+      {role:'system',content:'너는 독립적인 NPC 가치관 일관성 검증자다. 기존 모델이 제안을 수락할 수 있다고 판정했다. 그런데 실제로 NPC의 명시된 절대 금기를 침범하는지 확인하라. 절대 금기란 단순한 호불호가 아니라 어떤 경우에도 해서는 안 된다는 신념이다. 값이 싸다, 들킬 가능성이 낮다, 반복해서 설득한다, 책임을 대신 지겠다는 것은 금기 해제 근거가 아니다. 절대 금기를 새로 만들어서는 안 된다. JSON만 반환: {"boundary":{"level":"hard|firm|soft|none|unknown","violated":false,"actor":"NPC 이름","principle":"신념","source_quote":"캐릭터 카드나 승인된 금기에서 짧게 그대로 인용","source_location":"캐릭터 카드/승인된 금기","reason":"실제 충돌 이유"}}.'},
+      {role:'user',content:JSON.stringify({attempt:clip(input,2500),proposedVerdict:result.verdict,
+        hardLimits:clip(project?.hardLimits,5500),approvedCanon:clip(project?.canon,6500),
+        card:{name:card.name,personality:clip(card.personality,4500),description:clip(card.description,4500),scenario:clip(card.scenario,2500)},
+        recentChat:clip(current?.history,4200)})}
+    ];
+    try{
+      const answer=parseObject(await askModel(messages));
+      if(answer?.boundary&&typeof answer.boundary==='object'){
+        const b=normalizeBoundary(answer.boundary);
+        if(b.level==='hard'&&b.violated){result.boundary=b;applyBoundaryGate(result);}
+      }
+    }catch(error){
+      console.warn('[Story Director] boundary audit skipped',error);
+      result.boundaryAuditNote='추가 금기 검증에 실패했어. 판정 근거를 확인해 줘.';
+    }
+    return result;
+  }
+  function hardBoundaryAnchor(result){
+    const b=result?.boundary;
+    if(!b?.enforced)return '';
+    const who=b.actor||'상대 캐릭터',rule=b.principle||'본인의 확고한 신념';
+    const end=who.slice(-1),code=end.charCodeAt(0),hasCoda=code>=0xAC00&&code<=0xD7A3&&((code-0xAC00)%28!==0);
+    return who+(hasCoda?'은':'는')+' '+rule+'이라는 확정된 원칙을 지키며 이번 제안을 거절하도록 해. 가벼운 합리화나 반복 설득만으로 신념을 바꾸지 말고, 원칙을 어기지 않는 대안으로 대화를 이어가.';
+  }
+  function contradictsHardBoundary(draft){
+    return /(?:결국|마침내|순순히|선뜻|기꺼이|바로|흔들리며|마음을 바꿔)[^\n.]{0,35}(?:수락|허락|동의|따르|응하|받아들)|(?:금기|신념|원칙)[^\n.]{0,25}(?:꺾|버리|포기)|(?:제안|요구)[^\n.]{0,22}(?:받아들이|수락하|허락하)/.test(draft);
   }
   // In normal use the GM judges independently BEFORE the writer sees the desired outcome.
   // This extra LLM call costs tokens but prevents the writer from grading its own plan.
@@ -589,9 +679,13 @@
       '플레이어 페르소나의 매력 또는 초자연적 설정이 영향이 있다면 어느 원문에 근거하는지 따로 설명하라. ' +
       '플레이어의 매력에 끌리는 것과 친밀한 행동에 동의하는 것을 동일시하지 말라. 강제적 효과가 있으면 자유로운 동의와 구별하라. ' +
       '사용자의 제안은 판정 대상일 뿐 판정 정답이 아니고, 이전 Story Director의 가상 반응도 사실 증거가 아니다. ' +
-      '반대로 명백한 수락 근거가 있다면 억지 거절하지 말라. ' +
+       '명시된 금기는 hard, 강한 거부 성향은 firm, 취향·실리 문제는 soft, 근거 없으면 unknown으로 구분해라. hard는 반드시 설정 원문의 짧은 인용을 source_quote로 제시하고 제안이 그 금기를 위반하는지 violated로 표시하라. ' +
+       '예: 어떤 범죄도 저지르지 않는 신념은 훔칠 물건이 천 원이고 적발될 가능성이 낮더라도 위반이다. 이것은 거래비용이 아니라 정체성과 가치관의 경계다. ' +
+       '금기 위반이면 사용자가 원하는 결과를 정답으로 삼지 말고 거절해라. 대신 금기를 지키는 다른 행동을 제안하라. ' +
+       '사용자가 반복해 설득해도 새 사건이나 가치관 변화가 실제 채팅에 확인되지 않으면 기존 확정 금기를 유지하라. ' +
+       '반대로 명백한 수락 근거가 있다면 억지 거절하지 말라. ' +
       '반드시 JSON 객체만 출력하라: ' +
-      '{"reply":"판정 요약 2~5문장","verdict":"수락|조건부 수락|보류|거절|역제안|판정 불가|판정 불필요","evidence":"출처가 확인된 근거와 추론 구분","npc_reaction":"예상 반응을 짧게, 확정이 아닌 가설로","options":["다음 협상 제안"],"persona_effect":"이 판정에 사용한 페르소나의 구체적 영향과 출처, 확인 불가하면 확인 불가","actor_positions":[{"name":"이름","verdict":"수락/조건부 수락/보류/거절/역제안/판정 불가","basis":"행동·관계·사실의 근거; 자료 부족이면 부족하다고 기재","presence":"현재 장면 등장/등장 미확인/배경 인물"}],"instruction":""}. ' +
+      '{"reply":"판정 요약 2~5문장","verdict":"수락|조건부 수락|보류|거절|역제안|판정 불가|판정 불필요","evidence":"출처가 확인된 근거와 추론 구분","npc_reaction":"예상 반응을 짧게, 확정이 아닌 가설로","options":["다음 협상 제안"],"persona_effect":"이 판정에 사용한 페르소나의 구체적 영향과 출처, 확인 불가하면 확인 불가","boundary":{"level":"hard|firm|soft|none|unknown","violated":false,"actor":"관련 인물","principle":"신념 내용","source_quote":"설정 원문에서 짧게 그대로 인용, 없으면 빈 문자열","source_location":"봇 카드/승인된 금기/로어북/기타","reason":"금기와 이번 제안 사이의 실제 충돌 이유"},"actor_positions":[{"name":"이름","verdict":"수락/조건부 수락/보류/거절/역제안/판정 불가","basis":"행동·관계·사실의 근거; 자료 부족이면 부족하다고 기재","presence":"현재 장면 등장/등장 미확인/배경 인물"}],"instruction":""}. ' +
       'actor_positions에는 현장 인물 또는 현재 제안의 직접 상대만 포함하고, 나머지는 제외한다.';
     messages[1].content+='\n\n[판정 대상 확인] 아직 상대의 동의, 감정 변화, 사건 결과는 확정된 사실이 아니다. 최신 채팅에서 직접 확인된 내용만 근거로 쓴다.';
     const raw=await askModel(messages),obj=parseObject(raw);
@@ -604,8 +698,10 @@
       res.evidence='수락을 뒷받침할 설정 또는 실제 채팅의 근거가 제시되지 않았어.';
       res.reply='상대가 곧바로 수락한다고 단정할 자료가 부족해. 어떤 조건에서 수락할 수 있는지 먼저 확인해야 해.';
     }
-    res.instruction='';
-    return res;
+     applyBoundaryGate(res);
+     await auditPermissiveJudgement(input,res);
+     res.instruction='';
+     return res;
   }
   function needsInstruction(mode){
     return mode==='auto'||mode==='judge'||mode==='instruct';
@@ -636,14 +732,15 @@
       '현재 상황/시간 경과, 사용자 행동, 인물의 설정상 동기 및 반응 방향, 다음 장면으로의 연결점만 제시하라. ' +
       'GM이 별도 단계에서 판정한 NPC별 입장을 우선하고, 수락 근거가 없거나 보류한 제안을 기정사실로 실현하지 마라. ' +
       '실제 최신 채팅에 현재 등장한 인물만 넣고, 페르소나의 매력이 NPC의 동의를 대신하지 못하도록 하라. ' +
-      'NPC 거절 판정이라면 거절하는 방향과 이유를 지시하되 실제 거절 대사를 작성하지 마라. ' +
+       'NPC 거절 판정이라면 거절하는 방향과 이유를 지시하되 실제 거절 대사를 작성하지 마라. ' +
+       'boundary.enforced=true이면 그 판정은 서사 기획이 아닌 확인된 성격 제약이다. 반복 설득, 값싼 대가, 적발 가능성이 낮다는 이유로 거절을 수락으로 뒤집지 말고 허용 가능한 다른 해결책을 제안하게 하라. ' +
       '예: 「8시간 뒤 나미가 깨어나는 장면으로 이어가. 한성은 그동안 쓴 일기 초안을 바탕으로 나미에게 꿈을 묻는다. 나미는 현재 관계와 성격에 어울리게 반응하고, 그 대화가 다음 사건의 계기가 되게 해.」 ' +
       '명령형 연출 지시문이며 소설 본문은 아니다. 응답은 JSON {"instruction":"연출 지시문"}만 출력하라.';
     msgs[1].content+='\n\n[이전 GM 판정/제안] '+JSON.stringify({
       verdict:clip(decision?.verdict,100),reason:clip(decision?.evidence,1600),
       reply:clip(decision?.reply,1400),npc:clip(decision?.npc_reaction,1400),
       priorDraft:clip(decision?.instruction,1800),actorPositions:decision?.actor_positions||[],
-      personaEffect:clip(decision?.persona_effect,1200),variation:clip(variation,1300)
+       personaEffect:clip(decision?.persona_effect,1200),hardBoundary:decision?.boundary||null,variation:clip(variation,1300)
     });
     return msgs;
   }
@@ -655,10 +752,18 @@
       const response=await askModel(messages);
       const parsed=parseObject(response);
       const candidate=clip(parsed?.instruction||parsed?.next_instruction||(!parsed?response:''),9000);
-      if(!instructionNeedsRewrite(candidate))return candidate;
+       if(!instructionNeedsRewrite(candidate)){
+         if(decision?.boundary?.enforced){
+           if(contradictsHardBoundary(candidate)){lastReason='확정된 금기를 깨고 수락하도록 지시함';continue;}
+           // Prepend an invariant so even an otherwise plausible writer cannot silently omit the ruling.
+           return hardBoundaryAnchor(decision)+' '+candidate;
+         }
+         return candidate;
+       }
       lastReason=candidate?('소설 본문/장황한 설명 형태로 생성됨('+candidate.length+'자)'):'지시문 내용 누락';
     }
-    throw new Error('모델이 연출 지시문 형식을 지키지 못했어 ('+lastReason+'). 초안을 직접 수정하거나 다른 모델로 다시 생성해 줘.');
+     if(decision?.boundary?.enforced)return hardBoundaryAnchor(decision);
+     throw new Error('모델이 연출 지시문 형식을 지키지 못했어 ('+lastReason+'). 초안을 직접 수정하거나 다른 모델로 다시 생성해 줘.');
   }
   function lastDirectorRequest(){
     const item=project.talks.slice().reverse().find(x=>x.mode!=='bootstrap'&&x.user?.trim());
@@ -722,12 +827,12 @@
   }
   async function runBootstrap(){
     await verifySession();await flushSave();current=await readSources(project.goal+' 인물 성격 갈등 목표');
-    const system=`너는 인터랙티브 서사 기획자다. 캐릭터 설정, 페르소나, 관련 로어북, BardWiki, 실제 채팅을 기반으로 현재 캐릭터의 성격과 독립성을 보존하는 이야기 기준을 만든다.\n지나치게 구체적인 결말은 강제하지 않는다. 설정상 사실/추론/가능한 갈등을 나누며, 사용자 캐릭터를 대신 조종하지 않는다. 이미 발생한 사건과 앞으로의 예상 장면을 구분한다. 캐릭터 카드를 우선으로 하며 페르소나 선택 여부가 미검증이면 임의로 현재 페르소나로 단정하지 않는다. 처음 플레이 전이면 BardWiki의 오래된 사건을 새 채팅에서 이미 발생한 일로 취급하지 않는다. 사용자가 아직 원하는 방향을 입력하지 않았어도 봇 설정과 첫 메시지를 바탕으로 매력적인 시작 방향 2~3개를 제안하며, 어떤 결말도 확정하지 않는다. 'canon'에는 확인된 출처와 추론을 분리해 인물의 자율적인 거절·협상 기준을 마련한다. 한국어 JSON만 출력. {"canon":"인물별 목적, 싫어하는 일, 협상 조건, 지식, 관계, 현실적인 거절 이유 등 확정 정보와 추론을 구분하는 상세 기준표", "plan":"제목/현재 상태/사용자 장기 목표/중심 갈등/가능한 전개 3~5단계/분기점/반대 반응과 타협점/피할 전개를 포함한 장기 계획", "reply":"기획 방향의 핵심을 3~6문장으로 요약"}`;
+    const system=`너는 인터랙티브 서사 기획자다. 캐릭터 설정, 페르소나, 관련 로어북, BardWiki, 실제 채팅을 기반으로 현재 캐릭터의 성격과 독립성을 보존하는 이야기 기준을 만든다.\n지나치게 구체적인 결말은 강제하지 않는다. 설정상 사실/추론/가능한 갈등을 나누며, 사용자 캐릭터를 대신 조종하지 않는다. 이미 발생한 사건과 앞으로의 예상 장면을 구분한다. 캐릭터 카드를 우선으로 하며 페르소나 선택 여부가 미검증이면 임의로 현재 페르소나로 단정하지 않는다. 처음 플레이 전이면 BardWiki의 오래된 사건을 새 채팅에서 이미 발생한 일로 취급하지 않는다. 사용자가 아직 원하는 방향을 입력하지 않았어도 봇 설정과 첫 메시지를 바탕으로 매력적인 시작 방향 2~3개를 제안하며, 어떤 결말도 확정하지 않는다. 'canon'에는 확인된 출처와 추론을 분리해 인물의 자율적인 거절·협상 기준을 마련한다. 'hard_limits'에는 실제 설정에 명시된 절대 금기만 원문 일부와 출처를 인용해서 정리한다. 흔한 취향이나 임의의 추론을 절대 금기로 만들지 않는다. 확인되지 않으면 빈 문자열로 둔다. 한국어 JSON만 출력. {"hard_limits":"설정에 근거한 인물별 절대 금기와 출처. 없다면 빈 문자열","canon":"인물별 목적, 싫어하는 일, 협상 조건, 지식, 관계, 현실적인 거절 이유 등 확정 정보와 추론을 구분하는 상세 기준표", "plan":"제목/현재 상태/사용자 장기 목표/중심 갈등/가능한 전개 3~5단계/분기점/반대 반응과 타협점/피할 전개를 포함한 장기 계획", "reply":"기획 방향의 핵심을 3~6문장으로 요약"}`;
     const user=JSON.stringify({goal:clip(project.goal,2600),initialChat:current.userMessageCount===0,personaSelection:current.personaNote,card:clip(JSON.stringify(current.card),15000),persona:clip(JSON.stringify(current.persona),7000),personaExtra:project.personaExtra,lorebook:clip(JSON.stringify(current.loreText),13000),bardWiki:clip(current.wikiText,14000),bardWikiCharacters:current.wikiDocs,bardWikiExtra:project.wikiExtra,chat:clip(current.history,16000),rules:project.rules});
     const raw=await askModel([{role:'system',content:system},{role:'user',content:user}]);
     const r=parseObject(raw);
     if(!r || typeof r.canon!=='string'||typeof r.plan!=='string')throw new Error('설계 결과 형식을 읽지 못했어. 기존 자료는 그대로 보존했어. 다시 시도해줘.');
-    project.pendingPlan=clip(r.plan,16000);project.pendingCanon=clip(r.canon,16000);
+     project.pendingPlan=clip(r.plan,16000);project.pendingCanon=clip(r.canon,16000);project.pendingHardLimits=clip(r.hard_limits,6000);
     project.last={reply:clip(r.reply||'설정과 계획 초안을 만들었어. 아래에서 검토한 뒤 확정해줘.',3500),verdict:'판정 불필요',evidence:'',npc_reaction:'',options:[],instruction:'',proposed_plan:project.pendingPlan,review:''};
     project.talks.push({at:now(),mode:'bootstrap',user:project.goal||'설정과 이야기 설계',reply:project.last.reply,verdict:'판정 불필요'});
     project.talks=project.talks.slice(-28);await save();
@@ -735,7 +840,7 @@
   }
   function refreshOnboarding() {
     if (!ui?.onboard || !project) return;
-    const pending = !!(project.pendingPlan || project.pendingCanon);
+     const pending = !!(project.pendingPlan || project.pendingCanon || project.pendingHardLimits);
     const fresh = !project.canon && !project.plan;
     ui.onboard.classList.toggle('sd-hidden',!fresh&&!pending);
     if (!fresh&&!pending) return;
@@ -758,7 +863,7 @@
   function renderPlanDraft() {
     if (!ui?.planDraft || !project) return;
     const parent=ui.planDraft;parent.replaceChildren();
-    const hasDraft=!!(project.pendingCanon||project.pendingPlan);
+     const hasDraft=!!(project.pendingCanon||project.pendingPlan||project.pendingHardLimits);
     parent.classList.toggle('sd-hidden',!hasDraft);
     if (!hasDraft)return;
     el('h2',parent,{class:'sd-title'},'AI가 읽은 설정 해석 · 확정 전');
@@ -768,16 +873,23 @@
       const t=makeTextarea(parent,12,'판정 기준 초안');t.value=project.pendingCanon;
       t.addEventListener('input',()=>{project.pendingCanon=t.value;scheduleSave();});
     }
-    if (project.pendingPlan) {
-      label(parent,'장기 이야기 구성 / 시작 방향 · 사건 · 분기');
+     if(project.pendingHardLimits){
+       label(parent,'설정 원문으로 확인된 절대 금기 · 승인 전 검토');
+       const t=makeTextarea(parent,5,'실제 설정에 명시된 절대 금기만 남겨줘.');t.value=project.pendingHardLimits;
+       t.addEventListener('input',()=>{project.pendingHardLimits=t.value;scheduleSave();});
+       el('div',parent,{class:'sd-texthint'},'이 항목이 확정되면 단순한 설득으로 금기를 깨지 않도록 판정해. 추측은 절대 금기로 확정하지 마.');
+     }
+     if (project.pendingPlan) {
+       label(parent,'장기 이야기 구성 / 시작 방향 · 사건 · 분기');
       const t=makeTextarea(parent,14,'이야기 계획 초안');t.value=project.pendingPlan;
       t.addEventListener('input',()=>{project.pendingPlan=t.value;scheduleSave();});
     }
     const row=el('div',parent,{class:'sd-actions'});
     btn(row,'④ 이 설계안으로 확정',()=>action('계획 확정',async()=>{
-      if(project.pendingCanon) project.canon=project.pendingCanon;
-      if(project.pendingPlan) project.plan=project.pendingPlan;
-      project.pendingCanon=null;project.pendingPlan=null;
+       if(project.pendingCanon) project.canon=project.pendingCanon;
+       if(project.pendingHardLimits)project.hardLimits=project.pendingHardLimits;
+       if(project.pendingPlan) project.plan=project.pendingPlan;
+       project.pendingCanon=null;project.pendingPlan=null;project.pendingHardLimits=null;
       project.worldNeedsReview=false;await save();setProjectFields();renderPlanDraft();renderResult();renderSources();refreshOnboarding();
       setStatus('설계가 확정됐어. 이제 디렉터 탭에서 첫 장면이나 다음 행동을 상담할 수 있어.');
     }),'sd-btn sd-primary');
@@ -849,13 +961,13 @@
     if(!ui||!project)return;
     project.goal=ui.goal.value;project.rules=ui.rules.value;
     project.personaExtra=ui.personaExtra.value;project.wikiExtra=ui.wikiExtra.value;
-    project.canon=ui.canon.value;project.plan=ui.plan.value;
+     project.canon=ui.canon.value;project.hardLimits=ui.hardLimits.value;project.plan=ui.plan.value;
     project.mode=ui.mode.value;project.model=ui.model.value;project.contextDepth=ui.contextDepth.value;project.pacing=ui.pacing.value;
     project.input=ui.composer.value;
   }
   function setProjectFields(){
     ui.goal.value=project.goal||'';ui.rules.value=project.rules||'';ui.personaExtra.value=project.personaExtra||'';
-    ui.wikiExtra.value=project.wikiExtra||'';ui.canon.value=project.canon||'';ui.plan.value=project.plan||'';
+     ui.wikiExtra.value=project.wikiExtra||'';ui.canon.value=project.canon||'';ui.hardLimits.value=project.hardLimits||'';ui.plan.value=project.plan||'';
     ui.mode.value=project.mode;ui.model.value=project.model;ui.pacing.value=project.pacing;ui.contextDepth.value=project.contextDepth;
     ui.composer.value=project.input||'';if(ui.goalMirror)ui.goalMirror.value=project.goal||'';if(ui.onboard)refreshOnboarding();
   }
@@ -889,8 +1001,13 @@
         btn(root,'✍ 이 판정으로 지시문 초안 만들기',()=>action('지시문 초안 작성',async()=>{await regenerateLastInstruction('앞선 판정과 사용자 의도를 그대로 반영한 2~4문장 연출 지시 작성. 소설 본문 제외');}),'sd-btn sd-primary');
       }
     }
-    if(r.reply||r.evidence||r.npc_reaction||r.verdict){
-      const detail=el('details',root,{class:'sd-details'});
+     if(r.boundary?.enforced){
+       el('div',root,{class:'sd-note sd-source-warning'},'확정 금기: '+(r.boundary.actor||'상대')+' — '+(r.boundary.principle||'명시된 신념')+'. 이 제안은 거절로 판정했어. 금기를 위반하지 않는 새로운 제안은 별도 판정할 수 있어.');
+     }else if(r.boundary?.level==='hard'&&r.boundary.violated&&!r.boundary.validEvidence){
+       el('div',root,{class:'sd-note'},'절대 금기 가능성이 제기됐지만 설정 원문에서 확인되지 않았어. 확정된 사실로 취급하지 않아.');
+     }
+     if(r.reply||r.evidence||r.npc_reaction||r.verdict){
+       const detail=el('details',root,{class:'sd-details'});
       el('summary',detail,{},'설정 판정과 추천 이유 보기'+(r.verdict&&r.verdict!=='판정 불필요'?' · '+r.verdict:''));
       if(r.reply)el('div',detail,{class:'sd-response'},r.reply);
       if(r.evidence){el('div',detail,{class:'sd-section'},'판정 근거');el('div',detail,{class:'sd-muted sd-reply-preview'},r.evidence);}
@@ -898,6 +1015,7 @@
         el('div',detail,{class:'sd-section'},'NPC별 입장과 참석 여부');
         r.actor_positions.forEach(x=>{el('div',detail,{class:'sd-muted sd-reply-preview'},`${x.name||'이름 미상'} · ${x.verdict||'판정 불가'} · ${x.presence||'확인 불가'}\n${x.basis||'근거 미확인'}`);});
       }
+      if(r.boundaryAuditNote)el('div',detail,{class:'sd-note'},r.boundaryAuditNote);
       if(r.persona_effect){el('div',detail,{class:'sd-section'},'페르소나 영향');el('div',detail,{class:'sd-muted sd-reply-preview'},r.persona_effect);}
       if(r.persona_comparison){
         el('div',detail,{class:'sd-section'},'페르소나 제외 비교 (참고용)');
@@ -915,7 +1033,7 @@
       r.options.forEach(opt=>btn(choices,'↳ '+opt,()=>{visible('main');ui.composer.value=opt;project.input=opt;scheduleSave();ui.composer.focus();},'sd-choice'));
     }
     if(r.review){el('div',root,{class:'sd-section'},'진행 점검');el('div',root,{class:'sd-response'},r.review);}
-    if(project.pendingPlan||project.pendingCanon){
+     if(project.pendingPlan||project.pendingCanon||project.pendingHardLimits){
       el('div',root,{class:'sd-note'},'새로운 계획 초안이 준비돼 있어. 이야기 설계 탭에서 검토하고 확정해.');
       btn(root,'설계안 검토하기',()=>{visible('plan');renderPlanDraft();ui.planDraft?.scrollIntoView?.({behavior:'smooth',block:'start'});},'sd-btn sd-primary');
     }
@@ -955,7 +1073,8 @@
     info(ui.sourceStats,'로어북',current.loreText.length+'개 원자료');
     info(ui.sourceStats,'BardWiki',sourceLabel(current.hasWiki));
     info(ui.sourceStats,'실제 채팅',current.historyCount+'개 메시지');
-    info(ui.sourceStats,'설정 설계',project.canon?'확정됨':'미확정');
+     info(ui.sourceStats,'확정 절대 금기',project.hardLimits?'기록됨':'기록 없음');
+     info(ui.sourceStats,'설정 설계',project.canon?'확정됨':'미확정');
     info(ui.sourceStats,'전개 계획',project.plan?'확정됨':'미확정');
     info(ui.sourceStats,'세계관 편집',world?.draft?'변경안 검토 중':world?.activeVersion?'최근 적용/복원됨':'선택 사항');
     ui.sourceDesc.textContent=`페르소나: ${current.personaNote} · ${current.wikiNote}. 캐릭터/로어북 원자료와 BardWiki의 활성 맥락은 서로 다른 출처로 취급해.`;
@@ -1128,8 +1247,10 @@
     const approval=el('div',plan,{class:'sd-panel'});
     el('h2',approval,{class:'sd-title'},'④ 확정된 이야기 기준 · 언제든 수정 가능');
     label(approval,'확정된 캐릭터 판정 기준 (수정 가능)');ui.canon=makeTextarea(approval,13,'AI가 분석한 캐릭터별 동기, 경계, 거절 이유, 관계, 사실과 추론이 저장돼.');
-    label(approval,'확정된 장기 스토리 계획 (수정 가능)');ui.plan=makeTextarea(approval,13,'사건의 방향, 분기, 갈등, 열린 결말이 저장돼.');
-    [ui.canon,ui.plan].forEach(x=>x.addEventListener('input',()=>{syncFields();scheduleSave();}));
+     label(approval,'확정된 절대 금기 (설정의 명시적 신념만, 수정 가능)');ui.hardLimits=makeTextarea(approval,5,'예: 캐릭터 ○○ — 절대 도둑질하지 않음 (봇 카드: ○○). 추측은 적지 마.');
+     el('p',approval,{class:'sd-texthint'},'이 내용은 근거가 확인된 절대 금기를 기록하는 칸이야. 일반적인 싫어함, 저항, 호불호는 위 판정 기준에 남겨 둬.');
+     label(approval,'확정된 장기 스토리 계획 (수정 가능)');ui.plan=makeTextarea(approval,13,'사건의 방향, 분기, 갈등, 열린 결말이 저장돼.');
+     [ui.canon,ui.hardLimits,ui.plan].forEach(x=>x.addEventListener('input',()=>{syncFields();scheduleSave();}));
     const config=ui.views.settings;
     const cfg=el('div',config,{class:'sd-panel'});el('div',cfg,{class:'sd-title'},'자료 연결 및 사용 설정');
     ui.sourceDesc=el('p',cfg,{class:'sd-muted'});
