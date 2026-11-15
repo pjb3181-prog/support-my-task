@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.0.0
+//@version 1.0.1
 //@description 독립형 스토리 GM: 설정 분석, 인물 판정, 협상, 다음 지시문, 진행 점검. Story Runner 미사용.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.0.0';
+  const VERSION = '1.0.1';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -36,6 +36,7 @@
   .sd-nav{border-bottom:1px solid #314254;margin:14px 0 18px;gap:3px}.sd-nav button{border:0;background:transparent;color:#9ab0c4;padding:12px 14px;border-bottom:2px solid transparent}
   .sd-nav button[aria-selected=true]{color:#fff;border-color:#47d0c0;font-weight:800}
   .sd-panel{border:1px solid #2e4054;border-radius:15px;background:#172332;padding:17px;margin:12px 0}
+  .sd-onboard{border:1px solid #498579;background:#142831;max-width:100%}.sd-onboard h2{margin:0 0 4px;font-size:18px}.sd-onboard p{color:#b1cbd0;margin:4px 0 12px}.sd-onboard .sd-hint{font-size:12px;color:#9fbdbf;margin-top:11px}
   .sd-grid{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:15px;align-items:start}.sd-title{font-size:15px;font-weight:800;margin:0 0 6px}
   .sd-label{display:block;font-size:12px;color:#b7c9d8;font-weight:750;margin:13px 0 5px}.sd-field{width:100%;border:1px solid #3c526a;background:#0d1927;color:#eaf0f7;border-radius:10px;padding:11px 12px;outline:0}
   .sd-field:focus{border-color:#45b6ac;box-shadow:0 0 0 2px #46b9ad22}textarea.sd-field{resize:vertical;min-height:76px}.sd-field::placeholder{color:#7b91a5}
@@ -279,6 +280,32 @@
     project.last={reply:clip(r.reply||'설정과 계획 초안을 만들었어. 아래에서 검토한 뒤 확정해줘.',3500),verdict:'판정 불필요',evidence:'',npc_reaction:'',options:[],instruction:'',proposed_plan:project.pendingPlan,review:''};
     project.talks.push({at:now(),mode:'bootstrap',user:project.goal||'설정과 이야기 설계',reply:project.last.reply,verdict:'판정 불필요'});
     project.talks=project.talks.slice(-28);await save();
+    if(ui?.onboard)refreshOnboarding();
+  }
+  function refreshOnboarding() {
+    if (!ui?.onboard || !project) return;
+    const pending = !!(project.pendingPlan || project.pendingCanon);
+    const fresh = !project.canon && !project.plan;
+    ui.onboard.classList.toggle('sd-hidden',!fresh && !pending);
+    if (!fresh && !pending) return;
+    ui.onboardTitle.textContent = pending ? '2단계 · AI가 설계 초안을 만들었어' : '처음 시작하기 · 봇 설정은 자동으로 읽어';
+    ui.onboardDesc.textContent = pending
+      ? '캐릭터의 거절 기준과 장기 계획을 확인한 뒤 확정해. 확정하기 전에는 실제 채팅이나 봇 설정을 변경하지 않아.'
+      : '아직 플레이하지 않은 새로운 봇도 괜찮아. 원하는 이야기의 방향을 짧게 적고 버튼 하나만 누르면 돼.';
+    ui.onboardInput.classList.toggle('sd-hidden',pending);
+    ui.onboardLabel.classList.toggle('sd-hidden',pending);
+    ui.onboardButton.textContent = pending ? '② 설계 초안 확인하고 확정' : '① 봇 설정 분석 + 이야기 설계 시작';
+    if (!pending && ui.onboardInput.value !== project.goal) ui.onboardInput.value = project.goal || '';
+    ui.onboardButton.onclick = pending
+      ? () => {visible('main'); ui.result?.scrollIntoView?.({behavior:'smooth',block:'start'});}
+      : () => {void action('첫 이야기 설계',async()=>{
+          if (!ui.onboardInput.value.trim()) {ui.onboardInput.focus();throw new Error('먼저 보고 싶은 이야기 방향을 한 문장이라도 입력해줘.');}
+          syncFields();await runBootstrap();setProjectFields();renderResult();renderHistory();renderSources();refreshOnboarding();visible('main');
+          ui.result?.scrollIntoView?.({behavior:'smooth',block:'start'});
+        });};
+    ui.onboardHelp.textContent = pending
+      ? '초안을 승인한 후 첫 메시지를 그대로 플레이해. 아직 시작하지 않은 봇의 첫 선택지는 보존돼.'
+      : '페르소나·BardWiki·로어북은 자동 조회를 시도해. 자료·설정 탭의 입력칸은 필요할 때만 사용하면 돼.';
   }
   function visible(tab){
     if(!ui)return;Object.entries(ui.tabs).forEach(([k,n])=>n.setAttribute('aria-selected',String(k===tab)));
@@ -301,7 +328,7 @@
     ui.goal.value=project.goal||'';ui.rules.value=project.rules||'';ui.personaExtra.value=project.personaExtra||'';
     ui.wikiExtra.value=project.wikiExtra||'';ui.canon.value=project.canon||'';ui.plan.value=project.plan||'';
     ui.mode.value=project.mode;ui.model.value=project.model;ui.pacing.value=project.pacing;ui.contextDepth.value=project.contextDepth;
-    ui.composer.value=project.input||'';if(ui.goalMirror)ui.goalMirror.value=project.goal||'';
+    ui.composer.value=project.input||'';if(ui.goalMirror)ui.goalMirror.value=project.goal||'';if(ui.onboard)refreshOnboarding();
   }
   function renderHistory(){
     const p=ui.history;p.replaceChildren();
@@ -335,8 +362,8 @@
       if(project.pendingCanon){label(details,'설정 기준 초안');const c=makeTextarea(details,8,'');c.value=project.pendingCanon;c.addEventListener('input',()=>{project.pendingCanon=c.value;scheduleSave();});}
       if(project.pendingPlan){label(details,'장기 전개 초안');const p=makeTextarea(details,11,'');p.value=project.pendingPlan;p.addEventListener('input',()=>{project.pendingPlan=p.value;scheduleSave();});}
       const row=el('div',root,{class:'sd-actions'});
-      btn(row,'이 계획으로 확정',()=>action('계획 확정',async()=>{if(project.pendingCanon)project.canon=project.pendingCanon;if(project.pendingPlan)project.plan=project.pendingPlan;project.pendingCanon=null;project.pendingPlan=null;await save();setProjectFields();renderResult();}),'sd-btn sd-primary');
-      btn(row,'초안 버리기',()=>action('초안 폐기',async()=>{project.pendingPlan=null;project.pendingCanon=null;await save();renderResult();}),'sd-btn sd-soft');
+      btn(row,'이 계획으로 확정',()=>action('계획 확정',async()=>{if(project.pendingCanon)project.canon=project.pendingCanon;if(project.pendingPlan)project.plan=project.pendingPlan;project.pendingCanon=null;project.pendingPlan=null;await save();setProjectFields();renderResult();refreshOnboarding();}),'sd-btn sd-primary');
+      btn(row,'초안 버리기',()=>action('초안 폐기',async()=>{project.pendingPlan=null;project.pendingCanon=null;await save();renderResult();refreshOnboarding();}),'sd-btn sd-soft');
     }
     if(r.unstructured)el('p',root,{class:'sd-texthint'},'모델이 JSON 대신 일반 텍스트를 반환했어. 안전을 위해 채팅 전송 버튼은 만들지 않았어. 모델을 바꾸거나 다시 요청해봐.');
   }
@@ -362,7 +389,7 @@
     if(saveTimer){clearTimeout(saveTimer);saveTimer=null;}if(current && project)await save();
     current=await readSources();
     project=normState(await api.pluginStorage.getItem(current.key));
-    setProjectFields();renderHistory();renderResult();renderSources();
+    setProjectFields();renderHistory();renderResult();renderSources();refreshOnboarding();
   }
   function renderSources(){
     if(!ui||!current)return;
@@ -386,6 +413,21 @@
     btn(headBtns,'↻ 채팅 새로고침',()=>action('채팅 새로고침',reload),'sd-btn sd-small');
     btn(headBtns,'닫기',()=>{syncFields();void flushSave().finally(()=>api.hideContainer());},'sd-btn sd-small');
     ui.identity=el('div',root,{class:'sd-sub'});
+    ui.onboard=el('section',root,{class:'sd-panel sd-onboard'});
+    ui.onboardTitle=el('h2',ui.onboard,{},'처음 시작하기');
+    ui.onboardDesc=el('p',ui.onboard,{},'새로운 봇의 이야기 방향을 입력하면 돼.');
+    ui.onboardLabel=el('label',ui.onboard,{class:'sd-label'},'내가 원하는 이야기 방향 · 한두 문장도 충분');
+    ui.onboardInput=makeTextarea(ui.onboard,3,'예: 상대가 쉽게 마음을 열지 않고 자기 사정에 따라 거절하거나 타협했으면 좋겠어. 처음에는 긴장감 있게 만나고 싶어.');
+    ui.onboardInput.addEventListener('input',()=>{
+      if(!project)return;
+      project.goal=ui.onboardInput.value;
+      if(ui.goal)ui.goal.value=project.goal;
+      if(ui.goalMirror)ui.goalMirror.value=project.goal;
+      scheduleSave();
+    });
+    const onboardingRow=el('div',ui.onboard,{class:'sd-actions'});
+    ui.onboardButton=btn(onboardingRow,'① 봇 설정 분석 + 이야기 설계 시작',()=>{},'sd-btn sd-primary');
+    ui.onboardHelp=el('div',ui.onboard,{class:'sd-hint'},'설정은 자동으로 조회해.');
     const nav=el('nav',root,{class:'sd-nav'});
     [['main','⚡ 디렉터'],['plan','🧭 이야기 설계'],['settings','⚙ 자료·설정'],['logs','🗂 기록']].forEach(([key,title])=>{
       ui.tabs[key]=el('button',nav,{type:'button','aria-selected':key==='main'},title);ui.tabs[key].onclick=()=>{syncFields();scheduleSave();visible(key);};
@@ -414,13 +456,13 @@
     btn(side,'계획 확인 / 직접 수정',()=>{syncFields();visible('plan');},'sd-btn sd-soft');
     const mini=el('details',side,{class:'sd-details'});el('summary',mini,{},'내가 원하는 이야기 방향');
     ui.goal=makeTextarea(mini,4,'예: 서로 적대적이지만 사건을 거치며 관계가 변한다. 무조건 호감을 갖지는 않는다.');
-    ui.goal.addEventListener('input',()=>{project.goal=ui.goal.value;scheduleSave();});
+    ui.goal.addEventListener('input',()=>{project.goal=ui.goal.value;if(ui.onboardInput)ui.onboardInput.value=project.goal;scheduleSave();});
     const plan=ui.views.plan;
     const pHead=el('div',plan,{class:'sd-panel'});el('div',pHead,{class:'sd-title'},'이야기 기준선과 장기 설계');
     el('p',pHead,{class:'sd-muted'},'캐릭터의 입장·목적과 장기 목표를 분리해. 계획을 따르더라도 NPC의 동의와 결말을 보장하지 않아.');
     label(pHead,'이야기 방향 / 보고 싶은 소재');
     const mainGoal=makeTextarea(pHead,4,'예: 관계는 천천히 변하되 사건은 빠르게. 거절과 협상이 자주 등장했으면 좋겠어.');
-    const syncGoal=()=>{ui.goal.value=mainGoal.value;project.goal=mainGoal.value;scheduleSave();};
+    const syncGoal=()=>{ui.goal.value=mainGoal.value;project.goal=mainGoal.value;if(ui.onboardInput)ui.onboardInput.value=project.goal;scheduleSave();};
     mainGoal.addEventListener('input',syncGoal);ui.goal.addEventListener('input',()=>{mainGoal.value=ui.goal.value;});
     ui.goalMirror=mainGoal;
     const row1=el('div',pHead,{class:'sd-actions'});
