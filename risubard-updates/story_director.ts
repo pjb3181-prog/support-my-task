@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.2.7
+//@version 1.2.8
 //@description 사용자 지정 서사 전제·시스템 효과 우선, 불필요한 강제 갈등 차단, NPC의 자발적 반응만 독립 판정. 설계/디렉터 탭 독립 유지.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.2.7';
+  const VERSION = '1.2.8';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -39,9 +39,10 @@
   NPC나 봇 카드 자체를 수정하라는 의도가 분명하지 않으면 npc_change로 분류하지 마라. 장면을 직접 진행하거나 채팅에 글을 보내라는 요청도 여기에서는 실행하지 않고, 설정 상담인 world_talk 또는 계획 방향인 plan으로만 다뤄라.
   JSON: {"route":"plan|world_talk|npc_change|player_guidance","summary":"요청 의도 한 문장","reason":"이 탭에서 추천하는 이유 한 문장"}. 요청을 실행하지 마라.`;
   const MODES = [
-    ['auto','다음 장면 작성 (기본)'],['judge','판정 + 지시문'],['instruct','지시문만 작성'],
+    ['auto','AI 자율 전개 (기본)'],['judge','판정 + 지시문'],['instruct','지시문만 작성'],
     ['talk','스토리 상담 (지시문 없음)'],['check','인물 반응·허용 범위 확인'],['revise','계획 조정'],['review','진행 점검']
   ];
+  const AUTO_CONTINUE_REQUEST = '실제 채팅에서 이미 일어난 사건과 인물의 설정에 근거하여 AI가 다음 장면, 대사, 감정 변화, 다음 사건을 스스로 결정해 이야기를 이어가. 사용자에게 세부 지시나 선택을 다시 요구하지 마.';
   const DEFAULTS = {
     goal:'',canon:'',hardLimits:'',plan:'',rules:'',personaExtra:'',wikiExtra:'',input:'',
     mode:'auto',model:'otherAx',pacing:'balanced',contextDepth:'standard',
@@ -824,6 +825,7 @@
   }
 
   function modeInstructions(mode) {
+    if(mode==='auto')return '사용자는 이야기의 감독·편집자다. 대사·행동·감정·관계 변화와 다음 사건을 사용자에게 일일이 결정하라고 미루지 않는다. AI 집필자가 실제 채팅과 인물 설정에 근거하여 자율적으로 진행하도록 간단한 운영 브리프를 만든다. 사용자가 지정하지 않은 후회·부끄러움·안도·서운함, 대화 주제 순서, 결말을 미리 확정하지 않는다. 중요 조건만 지키고 나머지 선택은 집필 AI가 하도록 맡긴다.';
     if(mode==='judge') return '캐릭터의 현재 상황에 맞게 반응을 판정하고 중요 갈등에서만 엄격한 신념·경계를 검토한다. 사소한 장난이나 일상의 가벼운 부탁은 자연스러운 상호작용으로 다룬다. 다음 장면의 중요한 목표만 1~3문장 지시문으로 쓰며 대사나 부수적인 행동을 일일이 정하지 않는다.';
     if(mode==='instruct')return '해설 대신 2~4문장의 연출 지시문을 작성한다. 시간·사건·사용자가 원하는 행동과 상대 인물의 반응 방향을 명시하되 실제 소설 본문, 풍경 묘사, 대사, 상세 동작은 만들지 않는다.';
     if(mode==='talk')return '따뜻하고 재치 있는 공동 작가처럼 현재 장면·관계·인물별 말투와 농담의 맥락을 읽고, 사용자의 질문과 정정 의도를 직접 짚어 답한다. 사소한 투덜거림·장난·가벼운 역할분담은 갈등/접촉 상담/엄격한 규칙 검증으로 확대 해석하지 않는다. 막무가내로 찬성하거나 거절하지 않으며 캐릭터가 보일 법한 다양한 반응을 간단하게 제안한다. 실제 장면을 진행하거나 지시문을 쓰지 않는다. instruction은 빈 문자열.';
@@ -878,6 +880,13 @@
         pack[key]=value.slice(-3);size=JSON.stringify(pack).length;
       }
     }
+    const autonomyRules=mode==='auto'?[
+      '[AI 자율 집필 · 기존 일반 지시문 규칙보다 우선]',
+      '사용자는 조종자가 아닌 감독/편집자다. 매 장면의 대사, 행동, 인물 감정, 관계 변화와 결말을 사용자에게 정하라고 요구하지 않는다.',
+      '실제 채팅에서 일어난 사건을 출발점으로 집필 AI가 인물 성격·관계·세계관에 맞춰 장면과 감정의 흐름을 스스로 결정한다. 한성의 일상적 대사와 행동도 승인된 페르소나와 이미 확정한 선택 안에서 스스로 전개할 수 있다.',
+      '사용자가 직접 지정한 조건만 고정한다. NPC의 후회·부끄러움·안도·서운함, 대화의 순서, 다음 사건을 강제 배분하지 않는다. 설정상 필요한 자연스러운 마찰은 허용하되 재미를 위한 무근거 갈등은 발명하지 않는다.',
+      '집필 AI에게 자율적인 전개 권한을 위임하는 짧은 브리프 하나를 만들고 options는 빈 배열로 출력한다. 감정의 결론을 사용자에게 미루거나 다음 선택지를 요구하지 않는다.'
+    ].join('\n'):'';
     const system=`너는 인터랙티브 서사의 흐름과 설정을 해석하는 보조 GM이다. 사용자가 요청하지 않은 갈등을 만들어 사건을 조종하는 작가가 아니다. 한국어로 명료하게 응답한다.\n
 최상위 구분: 사용자가 지정한 가상 시스템·아이템·최면/마법 효과·시간 진행은 해당 장면의 작가 지시다. 봇 카드에 없다는 이유만으로 새 효과를 무효화하거나 캐릭터의 동의를 요구하지 않는다. 단, 아직 실제 채팅에 나온 일이 아니면 과거에 발생했다고 가장하지 않는다. 캐릭터의 자유로운 선택은 그 효과가 직접 결정하지 않는 부분에서만 성격과 관계에 따라 판단한다.\n
 원칙:
@@ -918,7 +927,7 @@
 - 첫 메시지와 실제 채팅에 없는 사건을 기정사실화하지 말고, 사용자에게 기획 설명이나 결과 보고서를 복사하게 하지 않는다. 장면에 없는 다른 NPC를 넣어 일제히 호의적인 반응을 하도록 연출하지 않는다.
 - instruction에는 '지시문 초안:', 'OOC 설명:', '원칙:', '선택지:' 등의 제목·분석을 넣지 않는다.
 - talk/check/revise/review 모드에는 instruction이 반드시 빈 문자열이다. 질문을 행동이나 연출 지시로 변환하지 않고 자동 전송하지 않는다.
-현재 수행 지침: ${modeInstructions(mode)}.`;
+${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     const consultationSystem = `너는 인터랙티브 이야기의 공동 작가다. 이번 턴은 실제 캐릭터를 움직이는 게 아니라 사용자의 질문에 답하는 상담이다.
 - 제일 먼저 지금 무슨 질문을 하는지 이해해. 일상적 농담, 투덜거림, 친구끼리 역할 나누기, '이런 행동 가능해?' 같은 작가실 질문을 실제 시도나 윤리 심판으로 오해하지 마라.
 - 최신 실제 채팅의 말투·관계·성격을 우선해 친근하고 재치 있게 답한다. 속도가 느려지는 장면이면 적절한 시간 점프나 장소 이동을 제안해도 되지만, 실행한 사실로 만들지는 마라.
@@ -1101,6 +1110,10 @@
     ui.fullSubmit.textContent={talk:'질문·상담하기',check:'인물 입장 확인 (지시문 없음)',revise:'계획 수정안 논의',review:'진행 점검',instruct:'지시문만 작성',judge:'판정 + 지시문 작성',auto:'다음 연출 지시문 만들기'}[mode]||'요청하기';
     if(ui.fullHint)ui.fullHint.textContent=['talk','check','revise','review'].includes(mode)?'상담 결과는 실제 채팅의 사건으로 반영되지 않아. 지시문은 별도로 요청할 때만 생성해.':'질문으로만 입력하면 자동으로 사전 상담으로 전환돼. 실제 지시문은 승인한 경우에만 전송해.';
   }
+  function autonomousDraftNeedsRewrite(value){
+    const s=clip(value,9000);
+    return /(?:방향만\s*잡아|감정의\s*결론은\s*본문에\s*맡겨|(?:사용자|독자|플레이어)(?:가|에게|의)?\s*(?:다음\s*)?(?:선택|결정|정하도록|고르도록)|(?:어느\s*장면을|어떤\s*반응을)\s*원하는지\s*물어)/.test(s);
+  }
   function instructionNeedsRewrite(value){
     const s=clip(value,9000);
     if(s.length<24||s.length>500)return true;
@@ -1119,8 +1132,17 @@
     if(s.length>400&&narrative>=2)return true;
     return false;
   }
-  function draftMessages(userRequest,decision,variation=''){
-    const msgs=preparePrompt('instruct',userRequest||'현재 상황에서 자연스러운 다음 장면');
+  function draftMessages(userRequest,decision,variation='',mode='instruct'){
+    const msgs=preparePrompt(mode==='auto'?'auto':'instruct',userRequest||AUTO_CONTINUE_REQUEST);
+    if(mode==='auto'){
+      msgs[0].content+='\n\n[AI 자율 전개 전용 · 기존 세부 연출 지시문 형식보다 최우선] '+
+        '이전 채팅에 일어난 사건과 기존 캐릭터·세계관을 바탕으로 본문을 쓰는 AI가 다음 장면과 대화·감정·관계 변화를 스스로 선택하도록 짧은 운영 브리프를 작성하라. '+
+        '사용자가 명시하지 않은 반응(부끄러움·후회·안도·서운함 등), 대화 순서, 특정 결말을 의무로 지정하지 마라. '+
+        '사용자에게 다음 선택·지시를 요구하지 말고, 본문 AI가 스스로 판단해 전개한다는 권한 위임을 명확히 하라. '+
+        '그럴듯한 자연스러운 마찰은 허용하지만 원작/채팅에 근거 없는 의심·발각·폭로·싸움은 의무로 만들지 않는다. '+
+        '장면에 이미 있는 사건을 충분히 다루면 자연스럽게 다음 사건으로 진행하도록 한다. '+
+        '1~3문장, 가능하면 60~230자로 간단히. JSON {"instruction":"AI 집필자에게 자율 집필을 위임하는 브리프"}만 출력한다.';
+    }else{
     msgs[0].content+='\n\n[최우선 수정 지침: 이전 모델이 소설 본문을 지시문으로 잘못 제출했다.] ' +
       '너는 소설을 작성하는 작가가 아니라 장면을 배정하는 디렉터다. 완성된 소설의 묘사, 직접 대사, 감각·표정의 세부 묘사를 쓰지 마라. ' +
       '중요한 장면 전환점 1개를 중심으로 1~3개의 간결한 연출 지시 문장, 가능하면 60~230자 이내로 작성한다. 인물 전원·매 행동·매 대사를 미리 지정하지 마라. 이미 사용자가 정한 장면 전개, 고정 상태와 비밀은 그대로 둔다. ' +
@@ -1131,6 +1153,7 @@
        'boundary.enforced=true이면 그 판정은 서사 기획이 아닌 확인된 성격 제약이다. 반복 설득, 값싼 대가, 적발 가능성이 낮다는 이유로 거절을 수락으로 뒤집지 말고 허용 가능한 다른 해결책을 제안하게 하라. ' +
       '예: 「8시간 뒤 나미가 깨어나는 장면으로 이어가. 한성은 그동안 쓴 일기 초안을 바탕으로 나미에게 꿈을 묻는다. 나미는 현재 관계와 성격에 어울리게 반응하고, 그 대화가 다음 사건의 계기가 되게 해.」 ' +
       '명령형 연출 지시문이며 소설 본문은 아니다. 응답은 JSON {"instruction":"연출 지시문"}만 출력하라.';
+    }
     msgs[1].content+='\n\n[이전 GM 판정/제안] '+JSON.stringify({
       verdict:clip(decision?.verdict,100),reason:clip(decision?.evidence,1600),
       reply:clip(decision?.reply,1400),npc:clip(decision?.npc_reaction,1400),
@@ -1140,16 +1163,16 @@
     });
     return msgs;
   }
-  async function generateInstruction(userRequest,decision,variation=''){
+  async function generateInstruction(userRequest,decision,variation='',mode='instruct'){
     let lastReason='';
     for(let attempt=0;attempt<2;attempt++){
-      const messages=draftMessages(userRequest,decision,variation);
-      if(attempt===1)messages[0].content+='\n\n[재시도] 앞선 결과는 지시문이 아니라 소설 본문 또는 형식 위반이었다. 본문/대사는 절대로 쓰지 말고 2~4문장 지시어미(-해, -하도록 해)로 끝내라.';
+      const messages=draftMessages(userRequest,decision,variation,mode);
+      if(attempt===1)messages[0].content+=mode==='auto'?'\n\n[재시도] 사용자에게 세부 결정을 넘기지 말고 집필 AI가 스스로 이야기를 진행하도록 하는 짧은 브리프만 써. 인물의 구체적 감정과 대화를 강제하지 마.':'\n\n[재시도] 앞선 결과는 지시문이 아니라 소설 본문 또는 형식 위반이었다. 본문/대사는 절대로 쓰지 말고 2~4문장 지시어미(-해, -하도록 해)로 끝내라.';
       const response=await askModel(messages);
       const parsed=parseObject(response);
       const candidate=clip(parsed?.instruction||parsed?.next_instruction||(!parsed?response:''),9000);
       const authorConflict=inventedConflictOrContradiction(candidate,userRequest);
-       if(!instructionNeedsRewrite(candidate)&&!authorConflict){
+       if(!instructionNeedsRewrite(candidate)&&!authorConflict&&!(mode==='auto'&&autonomousDraftNeedsRewrite(candidate))){
          if(decision?.boundary?.enforced){
            if(contradictsHardBoundary(candidate)){lastReason='확정된 금기를 깨고 수락하도록 지시함';continue;}
            // Prepend an invariant so even an otherwise plausible writer cannot silently omit the ruling.
