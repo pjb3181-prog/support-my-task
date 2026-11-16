@@ -1112,7 +1112,9 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     if(ui.fullHint)ui.fullHint.textContent=['talk','check','revise','review'].includes(mode)?'상담 결과는 실제 채팅의 사건으로 반영되지 않아. 지시문은 별도로 요청할 때만 생성해.':'질문으로만 입력하면 자동으로 사전 상담으로 전환돼. 실제 지시문은 승인한 경우에만 전송해.';
   }
   function autonomousDraftNeedsRewrite(value){
-    const s=clip(value,9000);
+    const source=clip(value,9000);
+    // A prohibition is not a request to hand decisions back to the user.
+    const s=source.replace(/(?:사용자|독자|플레이어)(?:가|에게|의)?\s*(?:다음\s*)?(?:선택|결정)[^\n.!?]{0,30}(?:요구하지|묻지|넘기지|하지\s*마)/g,'');
     return /(?:방향만\s*잡아|감정의\s*결론은\s*본문에\s*맡겨|(?:사용자|독자|플레이어)(?:가|에게|의)?\s*(?:다음\s*)?(?:선택|결정|정하도록|고르도록)|(?:어느\s*장면을|어떤\s*반응을)\s*원하는지\s*물어)/.test(s);
   }
   function instructionNeedsRewrite(value){
