@@ -1489,7 +1489,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
       }
       if(r.npc_reaction){el('div',detail,{class:'sd-section'},'상대 반응 참고');el('div',detail,{class:'sd-reply-preview'},r.npc_reaction);}
     }
-    if(r.options?.length){
+    if(r.options?.length&&r.mode!=='auto'){
       el('div',root,{class:'sd-section'},'다음 협상이나 다른 전개를 원하면');
       const choices=el('div',root,{class:'sd-choices'});
       r.options.forEach(opt=>btn(choices,'↳ '+opt,()=>{visible('main');syncDirectorInput(opt);ui.composer.focus();},'sd-choice'));
@@ -2105,7 +2105,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
       if(r.evidence)el('div',details,{class:'sd-bubble sd-ai'},r.evidence);
       for(const n of (r.actor_positions||[]))el('div',details,{class:'sd-dock-mini'},`${n.name||'?'} · ${n.verdict||'?'} · ${n.presence||'?'}: ${n.basis||''}`);
     }
-    if(r.options?.length){
+    if(r.options?.length&&r.mode!=='auto'){
       const picks=el('div',p,{class:'sd-dock-toolbar'});
       for(const choice of r.options.slice(0,3)){
         dockButton(picks,'↳ '+clip(choice,46),()=>{d.composer.value=choice;syncDirectorInput(choice);d.composer.focus();},'sd-btn sd-small');
