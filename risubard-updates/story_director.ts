@@ -263,6 +263,7 @@
       'NPC 각자의 기존 성격·관계·농담·선호·명시된 금기를 보존한다. 사용자가 어떤 행동을 시도했다고 해서 상대의 반응/동의도 이미 결정된 것은 아니다. 반대로 가벼운 농담·부탁·친한 사이의 장난은 매번 딱딱하게 거절하지 말고 인물답게 웃고 투덜거리고 협상하도록 해.\n'+
       '이동, 정산, 대기, 반복 준비는 사건이 없으면 자연스럽게 생략하고 다음 중요한 장소나 사건으로 진행한다. 한 번의 지시에서 모든 인물의 작은 행동을 일일이 배정하지 않는다. 실제 채팅에 없는 사건을 확정하지 않는다.\n'+
       '플레이어가 새로 정의한 가상의 시스템 규칙·마법 효과·장면 조건은 캐릭터의 자발적 동의 판정과 구분한다. 명시된 효과를 설정 충돌이라는 이유로 취소하거나, 사용자가 요청하지 않은 발각·의심·고백·해제 갈등을 필수 전개로 발명하지 않는다. 누가 무엇을 알고 있는지는 명시된 범위에 한정한다.\n'+
+      '사용자가 세부 연출 없이 이어가라고 요청한 장면에서는 집필 AI가 직접 다음 대사·감정·행동·이동과 사건 전개를 선택해 소설을 완성한다. 사용자에게 다음 선택을 되묻지 않고, 인물의 감정과 결말을 사용자에게 결정하라고 넘기지 않는다. 주인공도 승인된 페르소나 범위에서 자연스럽게 움직이되 실제 사용자 선택은 존중한다.\n'+
       '이 보정은 캐릭터 설정·첫 메시지·사용자 지시를 대체하지 않는 가벼운 서사 일관성 안내다.'+
       (storyGuidance?'\n[이 채팅에서 사용자가 승인한 플레이어 성향 연출 기준. NPC들의 반응이나 동의를 자동 확정하지 않는다]\n'+clip(storyGuidance,1700):'')+
       (list(authorDirectives).length?'\n[이 채팅에서 사용자가 직접 정한 가상 시스템 규칙 및 연출 조건. 디렉터가 지어낸 판정 아님. 이후 사용자 지시가 우선]\n'+list(authorDirectives).slice(-5).map(x=>clip(x.user,320)).join('\n'):'');
@@ -1446,8 +1447,8 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     }
     if(r.instruction){
       if(r.authorial)el('div',root,{class:'sd-note sd-world-ok'},'이번 요청은 사용자 지정 시스템·장면 전제로 처리했어. 새 갈등을 만들기 위한 NPC 동의 판정은 거치지 않았어. 실제 채팅에 적용하려면 지시문 전송이 필요해.');
-      el('div',root,{class:'sd-section'},'✍ 다음 장면 연출 지시문');
-      el('div',root,{class:'sd-texthint'},'소설 본문이 아니라 다음 장면의 방향을 정하는 짧은 지시문이야. 직접 수정해도 돼.');
+      el('div',root,{class:'sd-section'},r.mode==='auto'?'AI 자율 전개안':'✍ 다음 장면 연출 지시문');
+      el('div',root,{class:'sd-texthint'},r.mode==='auto'?'이걸 보내면 집필 AI가 직접 다음 장면의 대사·감정·사건을 결정해. 필요할 때만 전체 방향을 수정해.':'소설 본문이 아니라 다음 장면의 방향을 정하는 짧은 지시문이야. 직접 수정해도 돼.');
       if(instructionNeedsRewrite(r.instruction))el('div',root,{class:'sd-note'},'이전 버전에서 작성된 소설 본문 또는 장황한 초안일 수 있어. 아래의 ‘연출 지시문으로 다시 쓰기’를 눌러 변환할 수 있어.');
       const ta=makeTextarea(root,6,'짧은 다음 장면 연출 지시문');ta.value=r.instruction;ui.instruction=ta;
       ta.addEventListener('input',()=>{project.last.instruction=ta.value;project.dockDraft=ta.value;scheduleSave();});
