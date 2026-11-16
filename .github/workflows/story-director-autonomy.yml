@@ -1,0 +1,27 @@
+name: Story Director autonomous flow
+on:
+  push:
+    paths:
+      - 'risubard-updates/story_director.ts'
+      - 'risubard-updates/tests/story_director_autonomy.test.cjs'
+      - '.github/workflows/story-director-autonomy.yml'
+  pull_request:
+    paths:
+      - 'risubard-updates/story_director.ts'
+      - 'risubard-updates/tests/story_director_autonomy.test.cjs'
+      - '.github/workflows/story-director-autonomy.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check syntax
+        run: |
+          cp risubard-updates/story_director.ts /tmp/story_director_autonomy.js
+          node --check /tmp/story_director_autonomy.js
+      - name: Run autonomy regression tests
+        run: node --test risubard-updates/tests/story_director_autonomy.test.cjs
