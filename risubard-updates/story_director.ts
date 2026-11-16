@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.2.7
+//@version 1.2.8
 //@description 사용자 지정 서사 전제·시스템 효과 우선, 불필요한 강제 갈등 차단, NPC의 자발적 반응만 독립 판정. 설계/디렉터 탭 독립 유지.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.2.7';
+  const VERSION = '1.2.8';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -39,9 +39,10 @@
   NPC나 봇 카드 자체를 수정하라는 의도가 분명하지 않으면 npc_change로 분류하지 마라. 장면을 직접 진행하거나 채팅에 글을 보내라는 요청도 여기에서는 실행하지 않고, 설정 상담인 world_talk 또는 계획 방향인 plan으로만 다뤄라.
   JSON: {"route":"plan|world_talk|npc_change|player_guidance","summary":"요청 의도 한 문장","reason":"이 탭에서 추천하는 이유 한 문장"}. 요청을 실행하지 마라.`;
   const MODES = [
-    ['auto','다음 장면 작성 (기본)'],['judge','판정 + 지시문'],['instruct','지시문만 작성'],
+    ['auto','AI 자율 전개 (기본)'],['judge','판정 + 지시문'],['instruct','지시문만 작성'],
     ['talk','스토리 상담 (지시문 없음)'],['check','인물 반응·허용 범위 확인'],['revise','계획 조정'],['review','진행 점검']
   ];
+  const AUTO_CONTINUE_REQUEST = '실제 채팅에서 이미 일어난 사건과 인물의 설정에 근거하여 AI가 다음 장면, 대사, 감정 변화, 다음 사건을 스스로 결정해 이야기를 이어가. 사용자에게 세부 지시나 선택을 다시 요구하지 마.';
   const DEFAULTS = {
     goal:'',canon:'',hardLimits:'',plan:'',rules:'',personaExtra:'',wikiExtra:'',input:'',
     mode:'auto',model:'otherAx',pacing:'balanced',contextDepth:'standard',
@@ -262,6 +263,7 @@
       'NPC 각자의 기존 성격·관계·농담·선호·명시된 금기를 보존한다. 사용자가 어떤 행동을 시도했다고 해서 상대의 반응/동의도 이미 결정된 것은 아니다. 반대로 가벼운 농담·부탁·친한 사이의 장난은 매번 딱딱하게 거절하지 말고 인물답게 웃고 투덜거리고 협상하도록 해.\n'+
       '이동, 정산, 대기, 반복 준비는 사건이 없으면 자연스럽게 생략하고 다음 중요한 장소나 사건으로 진행한다. 한 번의 지시에서 모든 인물의 작은 행동을 일일이 배정하지 않는다. 실제 채팅에 없는 사건을 확정하지 않는다.\n'+
       '플레이어가 새로 정의한 가상의 시스템 규칙·마법 효과·장면 조건은 캐릭터의 자발적 동의 판정과 구분한다. 명시된 효과를 설정 충돌이라는 이유로 취소하거나, 사용자가 요청하지 않은 발각·의심·고백·해제 갈등을 필수 전개로 발명하지 않는다. 누가 무엇을 알고 있는지는 명시된 범위에 한정한다.\n'+
+      '사용자가 세부 연출 없이 이어가라고 요청한 장면에서는 집필 AI가 직접 다음 대사·감정·행동·이동과 사건 전개를 선택해 소설을 완성한다. 사용자에게 다음 선택을 되묻지 않고, 인물의 감정과 결말을 사용자에게 결정하라고 넘기지 않는다. 주인공도 승인된 페르소나 범위에서 자연스럽게 움직이되 실제 사용자 선택은 존중한다.\n'+
       '이 보정은 캐릭터 설정·첫 메시지·사용자 지시를 대체하지 않는 가벼운 서사 일관성 안내다.'+
       (storyGuidance?'\n[이 채팅에서 사용자가 승인한 플레이어 성향 연출 기준. NPC들의 반응이나 동의를 자동 확정하지 않는다]\n'+clip(storyGuidance,1700):'')+
       (list(authorDirectives).length?'\n[이 채팅에서 사용자가 직접 정한 가상 시스템 규칙 및 연출 조건. 디렉터가 지어낸 판정 아님. 이후 사용자 지시가 우선]\n'+list(authorDirectives).slice(-5).map(x=>clip(x.user,320)).join('\n'):'');
@@ -824,6 +826,7 @@
   }
 
   function modeInstructions(mode) {
+    if(mode==='auto')return '사용자는 이야기의 감독·편집자다. 대사·행동·감정·관계 변화와 다음 사건을 사용자에게 일일이 결정하라고 미루지 않는다. AI 집필자가 실제 채팅과 인물 설정에 근거하여 자율적으로 진행하도록 간단한 운영 브리프를 만든다. 사용자가 지정하지 않은 후회·부끄러움·안도·서운함, 대화 주제 순서, 결말을 미리 확정하지 않는다. 중요 조건만 지키고 나머지 선택은 집필 AI가 하도록 맡긴다.';
     if(mode==='judge') return '캐릭터의 현재 상황에 맞게 반응을 판정하고 중요 갈등에서만 엄격한 신념·경계를 검토한다. 사소한 장난이나 일상의 가벼운 부탁은 자연스러운 상호작용으로 다룬다. 다음 장면의 중요한 목표만 1~3문장 지시문으로 쓰며 대사나 부수적인 행동을 일일이 정하지 않는다.';
     if(mode==='instruct')return '해설 대신 2~4문장의 연출 지시문을 작성한다. 시간·사건·사용자가 원하는 행동과 상대 인물의 반응 방향을 명시하되 실제 소설 본문, 풍경 묘사, 대사, 상세 동작은 만들지 않는다.';
     if(mode==='talk')return '따뜻하고 재치 있는 공동 작가처럼 현재 장면·관계·인물별 말투와 농담의 맥락을 읽고, 사용자의 질문과 정정 의도를 직접 짚어 답한다. 사소한 투덜거림·장난·가벼운 역할분담은 갈등/접촉 상담/엄격한 규칙 검증으로 확대 해석하지 않는다. 막무가내로 찬성하거나 거절하지 않으며 캐릭터가 보일 법한 다양한 반응을 간단하게 제안한다. 실제 장면을 진행하거나 지시문을 쓰지 않는다. instruction은 빈 문자열.';
@@ -878,6 +881,13 @@
         pack[key]=value.slice(-3);size=JSON.stringify(pack).length;
       }
     }
+    const autonomyRules=mode==='auto'?[
+      '[AI 자율 집필 · 기존 일반 지시문 규칙보다 우선]',
+      '사용자는 조종자가 아닌 감독/편집자다. 매 장면의 대사, 행동, 인물 감정, 관계 변화와 결말을 사용자에게 정하라고 요구하지 않는다.',
+      '실제 채팅에서 일어난 사건을 출발점으로 집필 AI가 인물 성격·관계·세계관에 맞춰 장면과 감정의 흐름을 스스로 결정한다. 한성의 일상적 대사와 행동도 승인된 페르소나와 이미 확정한 선택 안에서 스스로 전개할 수 있다.',
+      '사용자가 직접 지정한 조건만 고정한다. NPC의 후회·부끄러움·안도·서운함, 대화의 순서, 다음 사건을 강제 배분하지 않는다. 설정상 필요한 자연스러운 마찰은 허용하되 재미를 위한 무근거 갈등은 발명하지 않는다.',
+      '집필 AI에게 자율적인 전개 권한을 위임하는 짧은 브리프 하나를 만들고 options는 빈 배열로 출력한다. 감정의 결론을 사용자에게 미루거나 다음 선택지를 요구하지 않는다.'
+    ].join('\n'):'';
     const system=`너는 인터랙티브 서사의 흐름과 설정을 해석하는 보조 GM이다. 사용자가 요청하지 않은 갈등을 만들어 사건을 조종하는 작가가 아니다. 한국어로 명료하게 응답한다.\n
 최상위 구분: 사용자가 지정한 가상 시스템·아이템·최면/마법 효과·시간 진행은 해당 장면의 작가 지시다. 봇 카드에 없다는 이유만으로 새 효과를 무효화하거나 캐릭터의 동의를 요구하지 않는다. 단, 아직 실제 채팅에 나온 일이 아니면 과거에 발생했다고 가장하지 않는다. 캐릭터의 자유로운 선택은 그 효과가 직접 결정하지 않는 부분에서만 성격과 관계에 따라 판단한다.\n
 원칙:
@@ -918,7 +928,7 @@
 - 첫 메시지와 실제 채팅에 없는 사건을 기정사실화하지 말고, 사용자에게 기획 설명이나 결과 보고서를 복사하게 하지 않는다. 장면에 없는 다른 NPC를 넣어 일제히 호의적인 반응을 하도록 연출하지 않는다.
 - instruction에는 '지시문 초안:', 'OOC 설명:', '원칙:', '선택지:' 등의 제목·분석을 넣지 않는다.
 - talk/check/revise/review 모드에는 instruction이 반드시 빈 문자열이다. 질문을 행동이나 연출 지시로 변환하지 않고 자동 전송하지 않는다.
-현재 수행 지침: ${modeInstructions(mode)}.`;
+${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     const consultationSystem = `너는 인터랙티브 이야기의 공동 작가다. 이번 턴은 실제 캐릭터를 움직이는 게 아니라 사용자의 질문에 답하는 상담이다.
 - 제일 먼저 지금 무슨 질문을 하는지 이해해. 일상적 농담, 투덜거림, 친구끼리 역할 나누기, '이런 행동 가능해?' 같은 작가실 질문을 실제 시도나 윤리 심판으로 오해하지 마라.
 - 최신 실제 채팅의 말투·관계·성격을 우선해 친근하고 재치 있게 답한다. 속도가 느려지는 장면이면 적절한 시간 점프나 장소 이동을 제안해도 되지만, 실행한 사실로 만들지는 마라.
@@ -1098,8 +1108,14 @@
   function updateFullSubmitLabel(){
     if(!ui?.mode||!ui?.fullSubmit)return;
     const mode=ui.mode.value;
-    ui.fullSubmit.textContent={talk:'질문·상담하기',check:'인물 입장 확인 (지시문 없음)',revise:'계획 수정안 논의',review:'진행 점검',instruct:'지시문만 작성',judge:'판정 + 지시문 작성',auto:'다음 연출 지시문 만들기'}[mode]||'요청하기';
+    ui.fullSubmit.textContent={talk:'질문·상담하기',check:'인물 입장 확인 (지시문 없음)',revise:'계획 수정안 논의',review:'진행 점검',instruct:'지시문만 작성',judge:'판정 + 지시문 작성',auto:'AI 자율 전개안 만들기'}[mode]||'요청하기';
     if(ui.fullHint)ui.fullHint.textContent=['talk','check','revise','review'].includes(mode)?'상담 결과는 실제 채팅의 사건으로 반영되지 않아. 지시문은 별도로 요청할 때만 생성해.':'질문으로만 입력하면 자동으로 사전 상담으로 전환돼. 실제 지시문은 승인한 경우에만 전송해.';
+  }
+  function autonomousDraftNeedsRewrite(value){
+    const source=clip(value,9000);
+    // A prohibition is not a request to hand decisions back to the user.
+    const s=source.replace(/(?:사용자|독자|플레이어)(?:가|에게|의)?\s*(?:다음\s*)?(?:선택|결정)[^\n.!?]{0,30}(?:요구하지|묻지|넘기지|하지\s*마)/g,'');
+    return /(?:방향만\s*잡아|감정의\s*결론은\s*본문에\s*맡겨|(?:사용자|독자|플레이어)(?:가|에게|의)?\s*(?:다음\s*)?(?:선택|결정|정하도록|고르도록)|(?:어느\s*장면을|어떤\s*반응을)\s*원하는지\s*물어)/.test(s);
   }
   function instructionNeedsRewrite(value){
     const s=clip(value,9000);
@@ -1119,8 +1135,17 @@
     if(s.length>400&&narrative>=2)return true;
     return false;
   }
-  function draftMessages(userRequest,decision,variation=''){
-    const msgs=preparePrompt('instruct',userRequest||'현재 상황에서 자연스러운 다음 장면');
+  function draftMessages(userRequest,decision,variation='',mode='instruct'){
+    const msgs=preparePrompt(mode==='auto'?'auto':'instruct',userRequest||AUTO_CONTINUE_REQUEST);
+    if(mode==='auto'){
+      msgs[0].content+='\n\n[AI 자율 전개 전용 · 기존 세부 연출 지시문 형식보다 최우선] '+
+        '이전 채팅에 일어난 사건과 기존 캐릭터·세계관을 바탕으로 본문을 쓰는 AI가 다음 장면과 대화·감정·관계 변화를 스스로 선택하도록 짧은 운영 브리프를 작성하라. '+
+        '사용자가 명시하지 않은 반응(부끄러움·후회·안도·서운함 등), 대화 순서, 특정 결말을 의무로 지정하지 마라. '+
+        '사용자에게 다음 선택·지시를 요구하지 말고, 본문 AI가 스스로 판단해 전개한다는 권한 위임을 명확히 하라. '+
+        '그럴듯한 자연스러운 마찰은 허용하지만 원작/채팅에 근거 없는 의심·발각·폭로·싸움은 의무로 만들지 않는다. '+
+        '장면에 이미 있는 사건을 충분히 다루면 자연스럽게 다음 사건으로 진행하도록 한다. '+
+        '1~3문장, 가능하면 60~230자로 간단히. JSON {"instruction":"AI 집필자에게 자율 집필을 위임하는 브리프"}만 출력한다.';
+    }else{
     msgs[0].content+='\n\n[최우선 수정 지침: 이전 모델이 소설 본문을 지시문으로 잘못 제출했다.] ' +
       '너는 소설을 작성하는 작가가 아니라 장면을 배정하는 디렉터다. 완성된 소설의 묘사, 직접 대사, 감각·표정의 세부 묘사를 쓰지 마라. ' +
       '중요한 장면 전환점 1개를 중심으로 1~3개의 간결한 연출 지시 문장, 가능하면 60~230자 이내로 작성한다. 인물 전원·매 행동·매 대사를 미리 지정하지 마라. 이미 사용자가 정한 장면 전개, 고정 상태와 비밀은 그대로 둔다. ' +
@@ -1131,6 +1156,7 @@
        'boundary.enforced=true이면 그 판정은 서사 기획이 아닌 확인된 성격 제약이다. 반복 설득, 값싼 대가, 적발 가능성이 낮다는 이유로 거절을 수락으로 뒤집지 말고 허용 가능한 다른 해결책을 제안하게 하라. ' +
       '예: 「8시간 뒤 나미가 깨어나는 장면으로 이어가. 한성은 그동안 쓴 일기 초안을 바탕으로 나미에게 꿈을 묻는다. 나미는 현재 관계와 성격에 어울리게 반응하고, 그 대화가 다음 사건의 계기가 되게 해.」 ' +
       '명령형 연출 지시문이며 소설 본문은 아니다. 응답은 JSON {"instruction":"연출 지시문"}만 출력하라.';
+    }
     msgs[1].content+='\n\n[이전 GM 판정/제안] '+JSON.stringify({
       verdict:clip(decision?.verdict,100),reason:clip(decision?.evidence,1600),
       reply:clip(decision?.reply,1400),npc:clip(decision?.npc_reaction,1400),
@@ -1140,16 +1166,16 @@
     });
     return msgs;
   }
-  async function generateInstruction(userRequest,decision,variation=''){
+  async function generateInstruction(userRequest,decision,variation='',mode='instruct'){
     let lastReason='';
     for(let attempt=0;attempt<2;attempt++){
-      const messages=draftMessages(userRequest,decision,variation);
-      if(attempt===1)messages[0].content+='\n\n[재시도] 앞선 결과는 지시문이 아니라 소설 본문 또는 형식 위반이었다. 본문/대사는 절대로 쓰지 말고 2~4문장 지시어미(-해, -하도록 해)로 끝내라.';
+      const messages=draftMessages(userRequest,decision,variation,mode);
+      if(attempt===1)messages[0].content+=mode==='auto'?'\n\n[재시도] 사용자에게 세부 결정을 넘기지 말고 집필 AI가 스스로 이야기를 진행하도록 하는 짧은 브리프만 써. 인물의 구체적 감정과 대화를 강제하지 마.':'\n\n[재시도] 앞선 결과는 지시문이 아니라 소설 본문 또는 형식 위반이었다. 본문/대사는 절대로 쓰지 말고 2~4문장 지시어미(-해, -하도록 해)로 끝내라.';
       const response=await askModel(messages);
       const parsed=parseObject(response);
       const candidate=clip(parsed?.instruction||parsed?.next_instruction||(!parsed?response:''),9000);
       const authorConflict=inventedConflictOrContradiction(candidate,userRequest);
-       if(!instructionNeedsRewrite(candidate)&&!authorConflict){
+       if(!instructionNeedsRewrite(candidate)&&!authorConflict&&!(mode==='auto'&&autonomousDraftNeedsRewrite(candidate))){
          if(decision?.boundary?.enforced){
            if(contradictsHardBoundary(candidate)){lastReason='확정된 금기를 깨고 수락하도록 지시함';continue;}
            // Prepend an invariant so even an otherwise plausible writer cannot silently omit the ruling.
@@ -1161,6 +1187,7 @@
       if(authorConflict)variation='사용자 지정 장면 조건에 위배된 초안을 버리고 다시 작성할 것. '+authorConflict+'. 숨긴 비밀을 폭로하거나 새로운 갈등을 강제하지 말 것. '+variation;
     }
      if(decision?.boundary?.enforced)return hardBoundaryAnchor(decision);
+     if(mode==='auto')return clip('실제 채팅과 기존 인물 성격·관계를 바탕으로 AI가 대사·행동·감정과 다음 사건을 스스로 선택해 계속 진행해. 사용자가 직접 확정한 조건을 지키고 세부 연출을 다시 묻지 마. 새로운 갈등은 근거가 있을 때만 자연스럽게 발생시켜.',490);
      // A writer's-room request can still be honoured if the model keeps
      // inventing side conflicts: use the author's own direction, not the
      // model's unwanted rewrite.
@@ -1179,8 +1206,9 @@
     const request=lastDirectorRequest(),fresh=await readSources(request);
     if(fresh.key!==current.key)throw new Error('채팅이 바뀌었어. 새로고침해 줘.');
     current=fresh;
-    const checked=isAuthorSceneDirection(request)?authoredDecision(request):await judgeSituation(request);
-    const draft=await generateInstruction(request,checked,variation);
+    const mode=project.last.mode==='auto'?'auto':'instruct';
+    const checked=isAuthorSceneDirection(request)?authoredDecision(request):mode==='auto'?autonomousDecision():await judgeSituation(request);
+    const draft=await generateInstruction(request,checked,variation,mode);
     project.last={...project.last,...checked,instruction:draft};
     project.dockDraft=draft;
     project.last.draftError='';
@@ -1204,8 +1232,14 @@
     const ci=await api.getCurrentCharacterIndex(),ti=await api.getCurrentChatIndex();
     if(ci!==current.ci||ti!==current.ti)throw new Error('다른 봇/채팅으로 전환됐어. 먼저 상단의 새로고침을 눌러줘.');
   }
+  function autonomousDecision(){
+    return {reply:'실제 채팅과 인물 설정을 바탕으로 AI가 다음 장면·대사·감정·사건을 스스로 결정하게 할게. 네가 세부 반응까지 지정할 필요는 없어.',
+      verdict:'판정 불필요',evidence:'자율 전개는 NPC의 특정 선택을 미리 판정하는 요청이 아니라 서사 전개를 집필 AI에 맡기는 요청이야.',
+      npc_reaction:'',options:[],actor_positions:[],boundary:{level:'none',violated:false,enforced:false},instruction:''};
+  }
   async function runDirector(input,mode) {
-    if(!input.trim())throw new Error('하고 싶은 전개를 한 줄이라도 입력해줘.');
+    if(!String(input||'').trim()&&mode!=='auto')throw new Error('상담하거나 세부 지시할 내용을 입력해 줘.');
+    input=String(input||'').trim()||AUTO_CONTINUE_REQUEST;
     await verifySession();
     await flushSave();
     const fresh=await readSources([input,project.goal].filter(Boolean).join('\n').slice(0,3000));
@@ -1216,8 +1250,8 @@
     if(needsInstruction(actualMode)){
       // Fictional system mechanics and explicit scene/time constraints belong
       // to the author, not a vote by NPCs. Adjudicate only voluntary choices.
-      res=isAuthorSceneDirection(input)?authoredDecision(input):await judgeSituation(input);
-      try{res.instruction=await generateInstruction(input,res,'이번 제안에 대한 별도 GM 판정에 따르는 짧은 연출 지시문 작성');}
+      res=isAuthorSceneDirection(input)?authoredDecision(input):actualMode==='auto'?autonomousDecision():await judgeSituation(input);
+      try{res.instruction=await generateInstruction(input,res,actualMode==='auto'?'NPC 감정과 대화, 다음 전개는 집필 AI가 스스로 선택':'이번 제안에 대한 별도 GM 판정에 따르는 짧은 연출 지시문 작성',actualMode);}
       catch(error){res.draftError='초안 생성 실패: '+(error?.message||error);console.warn('[SD] draft generation',error);}
     }else if(actualMode==='check'){
       // In an exploratory question, a full hard-boundary GM audit is rarely appropriate.
@@ -1405,8 +1439,8 @@
   }
   function renderResult(){
     const root=ui.result;root.replaceChildren();const r=project.last;
-    if(ui?.resultTitle)ui.resultTitle.textContent=lastModeIsConsultation()?'상담·가능성 검토 결과':'바로 사용할 다음 지시문';
-    if(!r){el('div',root,{class:'sd-empty'},'하고 싶은 장면을 간단히 말해 줘. 설정에 맞게 판정한 뒤 바로 사용할 지시문 초안을 써 줄게.');return;}
+    if(ui?.resultTitle)ui.resultTitle.textContent=lastModeIsConsultation()?'상담·가능성 검토 결과':r?.mode==='auto'?'AI 자율 전개안':'바로 사용할 다음 지시문';
+    if(!r){el('div',root,{class:'sd-empty'},'특별히 수정할 점이 없다면 입력 없이 AI 자율 전개를 선택해. 인물의 감정·대사·다음 사건은 집필 AI가 스스로 결정해.');return;}
     // The actual usable draft is the primary output. The analysis is optional.
     if(lastModeIsConsultation() && r.reply){
       el('div',root,{class:'sd-section'},r.mode==='check'?'인물 반응·가능성 확인 · 실제 장면 변화 없음':'스토리 상담 · 실제 장면 변화 없음');
@@ -1415,15 +1449,15 @@
     }
     if(r.instruction){
       if(r.authorial)el('div',root,{class:'sd-note sd-world-ok'},'이번 요청은 사용자 지정 시스템·장면 전제로 처리했어. 새 갈등을 만들기 위한 NPC 동의 판정은 거치지 않았어. 실제 채팅에 적용하려면 지시문 전송이 필요해.');
-      el('div',root,{class:'sd-section'},'✍ 다음 장면 연출 지시문');
-      el('div',root,{class:'sd-texthint'},'소설 본문이 아니라 다음 장면의 방향을 정하는 짧은 지시문이야. 직접 수정해도 돼.');
+      el('div',root,{class:'sd-section'},r.mode==='auto'?'AI 자율 전개안':'✍ 다음 장면 연출 지시문');
+      el('div',root,{class:'sd-texthint'},r.mode==='auto'?'이걸 보내면 집필 AI가 직접 다음 장면의 대사·감정·사건을 결정해. 필요할 때만 전체 방향을 수정해.':'소설 본문이 아니라 다음 장면의 방향을 정하는 짧은 지시문이야. 직접 수정해도 돼.');
       if(instructionNeedsRewrite(r.instruction))el('div',root,{class:'sd-note'},'이전 버전에서 작성된 소설 본문 또는 장황한 초안일 수 있어. 아래의 ‘연출 지시문으로 다시 쓰기’를 눌러 변환할 수 있어.');
       const ta=makeTextarea(root,6,'짧은 다음 장면 연출 지시문');ta.value=r.instruction;ui.instruction=ta;
       ta.addEventListener('input',()=>{project.last.instruction=ta.value;project.dockDraft=ta.value;scheduleSave();});
       const row=el('div',root,{class:'sd-actions'});
       btn(row,'지시문 복사',()=>action('복사',async()=>{await copyText(ta.value);}), 'sd-btn sd-primary');
-      btn(row,'이대로 채팅에 보내기',()=>action('전송',async()=>{const sent=await sendDraft(ta.value);if(sent)await api.hideContainer();}), 'sd-btn');
-      btn(row,'연출 지시문으로 다시 쓰기',()=>action('연출 지시문 재작성',async()=>{await regenerateLastInstruction('같은 장면 목적과 판정을 유지하되 2~4문장의 간결한 연출 지시로 작성. 소설 본문과 대사는 제외');}), 'sd-btn sd-soft');
+      btn(row,r.mode==='auto'?'AI에게 전개 맡기기':'이대로 채팅에 보내기',()=>action('전송',async()=>{const sent=await sendDraft(ta.value);if(sent)await api.hideContainer();}), 'sd-btn');
+      btn(row,r.mode==='auto'?'자율 전개안 다시 만들기':'연출 지시문으로 다시 쓰기',()=>action('연출 지시문 재작성',async()=>{await regenerateLastInstruction(r.mode==='auto'?'집필 AI에게 반응과 감정, 사건 전개를 자율적으로 결정하도록 위임해':'같은 장면 목적과 판정을 유지하되 2~4문장의 간결한 연출 지시로 작성. 소설 본문과 대사는 제외');}), 'sd-btn sd-soft');
     }else{
       ui.instruction=null;
       if(!project.pendingPlan&&!project.pendingCanon&&!lastModeIsConsultation()){
@@ -1457,7 +1491,7 @@
       }
       if(r.npc_reaction){el('div',detail,{class:'sd-section'},'상대 반응 참고');el('div',detail,{class:'sd-reply-preview'},r.npc_reaction);}
     }
-    if(r.options?.length){
+    if(r.options?.length&&r.mode!=='auto'){
       el('div',root,{class:'sd-section'},'다음 협상이나 다른 전개를 원하면');
       const choices=el('div',root,{class:'sd-choices'});
       r.options.forEach(opt=>btn(choices,'↳ '+opt,()=>{visible('main');syncDirectorInput(opt);ui.composer.focus();},'sd-choice'));
@@ -1478,7 +1512,7 @@
   async function sendDraft(value){
     const s=value.trim();if(!s)throw new Error('보낼 지시문이 없어.');
     await verifySession();
-    let question='이 지시문을 실제 채팅에 사용자 메시지로 보내고 답변을 생성할까?';
+    let question=project.last?.mode==='auto'?'AI가 다음 장면을 스스로 전개하도록 현재 채팅에 요청할까?':'이 지시문을 실제 채팅에 사용자 메시지로 보내고 답변을 생성할까?';
     if(current.userMessageCount===0)question='아직 실제 사용자 메시지가 없는 채팅이야. 첫 메시지의 선택지를 건너뛸 수 있어. 그래도 전송할까?';
     if(!window.confirm(question))return false;
     await flushSave();
@@ -1654,19 +1688,27 @@
     ui.planRoutePreview=el('div',root);
     return root;
   }
+  async function autoContinueAndSend(input){
+    const result=await runDirector(input,'auto');
+    if(!result.instruction)throw new Error(result.draftError||'AI 자율 전개안 생성에 실패해 채팅을 변경하지 않았어.');
+    const sent=await sendDraft(result.instruction);
+    if(sent)await api.hideContainer();
+    return sent;
+  }
   function addDirectorComposer(parent){
     const root=el('div',parent,{class:'sd-panel sd-unified-comp'});
     el('div',root,{class:'sd-title'},'스토리 디렉터 · 현재 장면');
-    el('p',root,{class:'sd-muted'},'질문·인물 반응·다음 장면 지시문만 다뤄. 세계관 수정이나 장기 계획 변경은 실행하지 않아.');
-    const entry=makeTextarea(root,4,'예: 대전역에 도착했으니 자연스럽게 다음 여행 일정으로 넘어가자.');
+    el('p',root,{class:'sd-muted'},'기본은 AI 자율 전개야. 다음 대사·감정·행동을 AI가 결정하며 너는 전체 흐름만 다듬으면 돼.');
+    const entry=makeTextarea(root,4,'비워두면 AI가 다음 장면을 스스로 이어가. 고칠 방향이 있을 때만 적어.');
     entry.value=project.directorInput||'';ui.composer=entry;
     entry.addEventListener('input',()=>syncDirectorInput(entry.value));
     entry.addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();void submitDirectorMode('talk');}});
     const actions=el('div',root,{class:'sd-row sd-director-buttons'});
     btn(actions,'상담만 하기',()=>void submitDirectorMode('talk'),'sd-btn');
     btn(actions,'반응만 판정',()=>void submitDirectorMode('check'),'sd-btn');
-    btn(actions,'연출 지시문 만들기',()=>void submitDirectorMode('auto'),'sd-btn sd-primary');
-    el('div',root,{class:'sd-texthint'},'Ctrl+Enter: 상담만 하기 · 어떤 버튼을 누르더라도 탭이 자동으로 바뀌지 않아.');
+    btn(actions,'AI 자율 전개안 보기',()=>void submitDirectorMode('auto'),'sd-btn');
+    btn(actions,'AI에게 맡겨 바로 이어가기',()=>void action('AI 자율 진행',async()=>{syncFields();await autoContinueAndSend(ui.composer.value.trim());renderResult();renderHistory();}),'sd-btn sd-primary');
+    el('div',root,{class:'sd-texthint'},'자율 전개는 입력 없이 실행 가능 · 바로 이어가기는 확인 후 실제 채팅에 전송돼 · Ctrl+Enter는 상담');
     return root;
   }
   function renderWorldPanel(){
@@ -1837,8 +1879,8 @@
     const main=ui.views.main;
     const grid=el('div',main,{class:'sd-grid'}),left=el('div',grid),aside=el('aside',grid,{class:'sd-sticky'});
     const compose=el('div',left,{class:'sd-panel'});
-    el('h2',compose,{class:'sd-title'},'캐릭터에 관해 질문하거나, 다음 장면을 지시해');
-    el('div',compose,{class:'sd-sub'},'상담은 질문에만 답하고 실제 장면을 진행하지 않아. 명시적으로 장면 작성할 때만 연출 지시문을 만들어.');
+    el('h2',compose,{class:'sd-title'},'AI가 이야기를 스스로 진행하고, 너는 전체 방향만 다듬어');
+    el('div',compose,{class:'sd-sub'},'입력 없이도 AI 집필자에게 자율 진행을 맡길 수 있어. 상담·판정·세부 지시는 선택 기능이야.');
     addDirectorComposer(compose);
     const mainAdvanced=el('details',compose,{class:'sd-advanced'});
     el('summary',mainAdvanced,{},'고급: 기존 모드·프롬프트 직접 선택');
@@ -1848,7 +1890,7 @@
     quickChoices.forEach(([title,mode,seed],i)=>{const b=el('button',quick,{class:'sd-pill',type:'button'});iconLabel(b,['scales','handshake','pen','search'][i],title);b.onclick=()=>{ui.mode.value=mode;if(!ui.composer.value.trim())ui.composer.value=seed;ui.composer.focus();syncDirectorInput(ui.composer.value);updateFullSubmitLabel();scheduleSave();};});
     const sendRow=el('div',mainAdvanced,{class:'sd-row sd-between'});
     ui.mode=el('select',sendRow,{class:'sd-field sd-narrow'});MODES.filter(([v])=>v!=='revise').forEach(([v,t])=>el('option',ui.mode,{value:v},t));
-    const send=btn(sendRow,'다음 연출 지시문 만들기',()=>void submit(),'sd-btn sd-primary');ui.fullSubmit=send;
+    const send=btn(sendRow,'AI 자율 전개안 만들기',()=>void submit(),'sd-btn sd-primary');ui.fullSubmit=send;
     ui.fullHint=el('div',mainAdvanced,{class:'sd-texthint'},'질문으로 입력하면 지시문이 아니라 사전 상담으로 처리해.');
     ui.mode.addEventListener('change',()=>{project.mode=ui.mode.value;updateFullSubmitLabel();scheduleSave();});updateFullSubmitLabel();
     const out=el('div',left,{class:'sd-panel'});ui.resultTitle=el('div',out,{class:'sd-title'},'상담·지시문 결과');ui.result=el('div',out);
@@ -1943,7 +1985,7 @@
   async function submitDirectorMode(mode){
     await action('스토리 디렉터 '+mode,async()=>{
       if(layoutMode!=='full'||ui?.activeTab!=='main')throw new Error('스토리 디렉터 탭에서만 실행할 수 있어.');
-      syncFields();const input=ui.composer.value.trim();if(!input)throw new Error('현재 장면에 관해 질문하거나 원하는 전개를 적어 줘.');
+      syncFields();const input=ui.composer.value.trim();if(!input&&mode!=='auto')throw new Error('상담 또는 판정 내용을 입력해 줘.');
       await runDirector(input,mode);syncDirectorInput('');
       renderResult();renderHistory();renderSources();renderLogs();
       // Keep the tab fixed: a question cannot redirect to world/plan editing.
@@ -2035,7 +2077,7 @@
     const preserved=!!visibleDraft&&!r.instruction;
     if(visibleDraft){
       if(r.authorial&&!preserved)el('div',p,{class:'sd-note sd-world-ok'},'사용자가 정한 시스템 효과·장면 진행 조건을 우선 반영했어. 별도 갈등이나 발각을 강제로 추가하지 않아.');
-      el('div',p,{class:'sd-title'},preserved?'이전에 작성한 지시문 · 상담 내용은 아직 미반영':'다음 장면 연출 지시문 · 직접 수정 가능');
+      el('div',p,{class:'sd-title'},r.mode==='auto'?'AI 자율 전개안 · 필요할 때만 수정':preserved?'이전에 작성한 지시문 · 상담 내용은 아직 미반영':'다음 장면 연출 지시문 · 직접 수정 가능');
       const area=makeTextarea(p,5,'다음 장면에 사용할 지시문을 고쳐봐.');area.value=visibleDraft;
       d.instruction=area;
       area.addEventListener('input',()=>{project.dockDraft=area.value;if(project.last?.instruction)project.last.instruction=area.value;scheduleSave();if(ui.instruction)ui.instruction.value=area.value;});
@@ -2048,7 +2090,7 @@
         dockButton(actions,'상담 반영해 다시 만들기',()=>{d.composer.value='기존 지시문과 방금 논의한 판단을 반영해 다음 장면을 다시 판정하고 2~4문장 연출 지시문을 만들어줘.';syncDirectorInput(d.composer.value);d.composer.focus();});
       }else{
         dockButton(actions,'다시 작성',()=>action('판정/지시문 다시 작성',async()=>{
-          await regenerateLastInstruction('현재 장면의 판정은 유지하면서 2~4문장 연출 지시문으로 간결하게 작성. 소설 본문 금지');
+          await regenerateLastInstruction(r.mode==='auto'?'집필 AI가 감정·대사·다음 사건을 스스로 결정하는 자율 전개안으로 재작성':'현재 장면의 판정은 유지하면서 2~4문장 연출 지시문으로 간결하게 작성. 소설 본문 금지');
           renderDockHistory();renderDockResult();
         }));
       }
@@ -2065,7 +2107,7 @@
       if(r.evidence)el('div',details,{class:'sd-bubble sd-ai'},r.evidence);
       for(const n of (r.actor_positions||[]))el('div',details,{class:'sd-dock-mini'},`${n.name||'?'} · ${n.verdict||'?'} · ${n.presence||'?'}: ${n.basis||''}`);
     }
-    if(r.options?.length){
+    if(r.options?.length&&r.mode!=='auto'){
       const picks=el('div',p,{class:'sd-dock-toolbar'});
       for(const choice of r.options.slice(0,3)){
         dockButton(picks,'↳ '+clip(choice,46),()=>{d.composer.value=choice;syncDirectorInput(choice);d.composer.focus();},'sd-btn sd-small');
@@ -2079,7 +2121,7 @@
   async function dockSubmit(mode){
     const d=ui?.dock;if(!d)return;
     await action(mode==='talk'?'디렉터 상담':mode==='check'?'인물 가능성 판정':'인물 판정·지시문',async()=>{
-      const input=d.composer.value.trim();if(!input)throw new Error('검토할 전개를 입력해 줘.');
+      const input=d.composer.value.trim();if(!input&&mode!=='auto')throw new Error('상담 또는 판정 내용을 입력해 줘.');
       project.input=input;
       await runDirector(input,mode);
       syncDirectorInput('');
@@ -2133,14 +2175,15 @@
     d.history=el('div',d.scroll,{class:'sd-dock-thread'});
     d.result=el('div',d.scroll,{class:'sd-dock-result'});
     const composer=el('div',shell,{class:'sd-dock-compose'});
-    d.composer=makeTextarea(composer,3,'예: 다음 장면에서 ○○이 제안을 거절하는 게 설정에 맞아? 그 다음엔 어떻게 협상할까?');
+    d.composer=makeTextarea(composer,3,'비워두면 AI가 알아서 이어가. 전체 방향에서 바꿀 점만 적어.');
     d.composer.value=project.directorInput||'';
     d.composer.addEventListener('input',()=>syncDirectorInput(d.composer.value));
     d.composer.addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();void dockSubmit('talk');}});
     const actions=el('div',composer,{class:'sd-dock-actions'});
     dockButton(actions,'상담만 하기',()=>void dockSubmit('talk'),'sd-btn');
     dockButton(actions,'반응만 판정',()=>void dockSubmit('check'),'sd-btn');
-    dockButton(actions,'연출 지시문 만들기',()=>void dockSubmit('auto'),'sd-btn sd-primary');
+    dockButton(actions,'AI 자율 전개안 보기',()=>void dockSubmit('auto'),'sd-btn');
+    dockButton(actions,'AI에게 맡겨 바로 이어가기',()=>void action('AI 자율 진행',async()=>{await autoContinueAndSend(d.composer.value.trim());renderDockHistory();renderDockResult();}),'sd-btn sd-primary');
     el('div',composer,{class:'sd-dock-mini'},'Ctrl+Enter: 상담만 · 이 패널은 스토리 디렉터 전용. 설계 탭으로 자동 전환하지 않아.');
     // The mini tray stays in this same iframe. It never discards the editor or
     // restarts an in-progress model request when restoring the drawer.
