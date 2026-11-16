@@ -1184,6 +1184,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
       if(authorConflict)variation='사용자 지정 장면 조건에 위배된 초안을 버리고 다시 작성할 것. '+authorConflict+'. 숨긴 비밀을 폭로하거나 새로운 갈등을 강제하지 말 것. '+variation;
     }
      if(decision?.boundary?.enforced)return hardBoundaryAnchor(decision);
+     if(mode==='auto')return clip('실제 채팅과 기존 인물 성격·관계를 바탕으로 AI가 대사·행동·감정과 다음 사건을 스스로 선택해 계속 진행해. 사용자가 직접 확정한 조건을 지키고 세부 연출을 다시 묻지 마. 새로운 갈등은 근거가 있을 때만 자연스럽게 발생시켜.',490);
      // A writer's-room request can still be honoured if the model keeps
      // inventing side conflicts: use the author's own direction, not the
      // model's unwanted rewrite.
@@ -1202,8 +1203,9 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     const request=lastDirectorRequest(),fresh=await readSources(request);
     if(fresh.key!==current.key)throw new Error('채팅이 바뀌었어. 새로고침해 줘.');
     current=fresh;
-    const checked=isAuthorSceneDirection(request)?authoredDecision(request):await judgeSituation(request);
-    const draft=await generateInstruction(request,checked,variation);
+    const mode=project.last.mode==='auto'?'auto':'instruct';
+    const checked=isAuthorSceneDirection(request)?authoredDecision(request):mode==='auto'?autonomousDecision():await judgeSituation(request);
+    const draft=await generateInstruction(request,checked,variation,mode);
     project.last={...project.last,...checked,instruction:draft};
     project.dockDraft=draft;
     project.last.draftError='';
@@ -1227,8 +1229,14 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     const ci=await api.getCurrentCharacterIndex(),ti=await api.getCurrentChatIndex();
     if(ci!==current.ci||ti!==current.ti)throw new Error('다른 봇/채팅으로 전환됐어. 먼저 상단의 새로고침을 눌러줘.');
   }
+  function autonomousDecision(){
+    return {reply:'실제 채팅과 인물 설정을 바탕으로 AI가 다음 장면·대사·감정·사건을 스스로 결정하게 할게. 네가 세부 반응까지 지정할 필요는 없어.',
+      verdict:'판정 불필요',evidence:'자율 전개는 NPC의 특정 선택을 미리 판정하는 요청이 아니라 서사 전개를 집필 AI에 맡기는 요청이야.',
+      npc_reaction:'',options:[],actor_positions:[],boundary:{level:'none',violated:false,enforced:false},instruction:''};
+  }
   async function runDirector(input,mode) {
-    if(!input.trim())throw new Error('하고 싶은 전개를 한 줄이라도 입력해줘.');
+    if(!String(input||'').trim()&&mode!=='auto')throw new Error('상담하거나 세부 지시할 내용을 입력해 줘.');
+    input=String(input||'').trim()||AUTO_CONTINUE_REQUEST;
     await verifySession();
     await flushSave();
     const fresh=await readSources([input,project.goal].filter(Boolean).join('\n').slice(0,3000));
@@ -1239,8 +1247,8 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     if(needsInstruction(actualMode)){
       // Fictional system mechanics and explicit scene/time constraints belong
       // to the author, not a vote by NPCs. Adjudicate only voluntary choices.
-      res=isAuthorSceneDirection(input)?authoredDecision(input):await judgeSituation(input);
-      try{res.instruction=await generateInstruction(input,res,'이번 제안에 대한 별도 GM 판정에 따르는 짧은 연출 지시문 작성');}
+      res=isAuthorSceneDirection(input)?authoredDecision(input):actualMode==='auto'?autonomousDecision():await judgeSituation(input);
+      try{res.instruction=await generateInstruction(input,res,actualMode==='auto'?'NPC 감정과 대화, 다음 전개는 집필 AI가 스스로 선택':'이번 제안에 대한 별도 GM 판정에 따르는 짧은 연출 지시문 작성',actualMode);}
       catch(error){res.draftError='초안 생성 실패: '+(error?.message||error);console.warn('[SD] draft generation',error);}
     }else if(actualMode==='check'){
       // In an exploratory question, a full hard-boundary GM audit is rarely appropriate.
@@ -1501,7 +1509,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
   async function sendDraft(value){
     const s=value.trim();if(!s)throw new Error('보낼 지시문이 없어.');
     await verifySession();
-    let question='이 지시문을 실제 채팅에 사용자 메시지로 보내고 답변을 생성할까?';
+    let question=project.last?.mode==='auto'?'AI가 다음 장면을 스스로 전개하도록 현재 채팅에 요청할까?':'이 지시문을 실제 채팅에 사용자 메시지로 보내고 답변을 생성할까?';
     if(current.userMessageCount===0)question='아직 실제 사용자 메시지가 없는 채팅이야. 첫 메시지의 선택지를 건너뛸 수 있어. 그래도 전송할까?';
     if(!window.confirm(question))return false;
     await flushSave();
@@ -1676,6 +1684,13 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     el('div',root,{class:'sd-texthint'},'설계 탭 안에서만 작업 유형을 추천해. 실제 설정 반영은 검토 후 별도 승인.');
     ui.planRoutePreview=el('div',root);
     return root;
+  }
+  async function autoContinueAndSend(input){
+    const result=await runDirector(input,'auto');
+    if(!result.instruction)throw new Error(result.draftError||'AI 자율 전개안 생성에 실패해 채팅을 변경하지 않았어.');
+    const sent=await sendDraft(result.instruction);
+    if(sent)await api.hideContainer();
+    return sent;
   }
   function addDirectorComposer(parent){
     const root=el('div',parent,{class:'sd-panel sd-unified-comp'});
@@ -1966,7 +1981,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
   async function submitDirectorMode(mode){
     await action('스토리 디렉터 '+mode,async()=>{
       if(layoutMode!=='full'||ui?.activeTab!=='main')throw new Error('스토리 디렉터 탭에서만 실행할 수 있어.');
-      syncFields();const input=ui.composer.value.trim();if(!input)throw new Error('현재 장면에 관해 질문하거나 원하는 전개를 적어 줘.');
+      syncFields();const input=ui.composer.value.trim();if(!input&&mode!=='auto')throw new Error('상담 또는 판정 내용을 입력해 줘.');
       await runDirector(input,mode);syncDirectorInput('');
       renderResult();renderHistory();renderSources();renderLogs();
       // Keep the tab fixed: a question cannot redirect to world/plan editing.
@@ -2102,7 +2117,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
   async function dockSubmit(mode){
     const d=ui?.dock;if(!d)return;
     await action(mode==='talk'?'디렉터 상담':mode==='check'?'인물 가능성 판정':'인물 판정·지시문',async()=>{
-      const input=d.composer.value.trim();if(!input)throw new Error('검토할 전개를 입력해 줘.');
+      const input=d.composer.value.trim();if(!input&&mode!=='auto')throw new Error('상담 또는 판정 내용을 입력해 줘.');
       project.input=input;
       await runDirector(input,mode);
       syncDirectorInput('');
