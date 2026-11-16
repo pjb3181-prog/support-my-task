@@ -11,12 +11,15 @@
 | 스토리 | Story Runner (`story_runner`) | 0.95.10 | [story_runner.ts](https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_runner.ts) | 스토리 실행·기억·품질 검수 |
 | 스토리 | Mutation State Router (`mutation_state_router_v2`) | 0.79.6 | [mutation_state.ts](https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/mutation_state.ts) | 뮤테이션 및 세계관 정본 관리 |
 | 스토리 | Bard Editor Lab (`bard_editor_lab`) | 0.3.11 | [bard_editor_lab.js](https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js) | 장면 검토·퇴고·모델 협업 |
-| 스토리 | Story Director (`story_director`) | 1.2.7 | [story_director.ts](https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts) | 다음 장면 지시·설계·자문 |
+| 스토리 | Story Director (`story_director`) | 1.2.8 | [story_director.ts](https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts) | AI 자율 전개·서사 감수(세부 지시 선택) |
 | 스토리 | World Editor Lab (`world_editor_lab`) | 0.1.2 | [world_editor_lab.js](https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/world_editor_lab.js) | 세계관/캐릭터 수정안·승인·복원 |
 | 이미지 | Character Mixer (`character_mixer`) | 0.10.5 | [character_mixer.js](https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js) | 캐릭터·장면별 이미지 수집/출력 |
 | 이미지 | Asset Link Bridge - Multi Module (`risubard_asset_link_bridge`) | 0.8.1 | [Asset_Link_Bridge.js](https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-plugins/asset-link-bridge/Asset_Link_Bridge.js) | 외부 이미지 모듈↔캐릭터 매핑 |
 
 JSON용 인덱스: [plugin-manifest.json](./plugin-manifest.json). 실제 소스의 헤더(`//@name`, `//@version`, `//@update-url`)를 기준으로 기록함. `Character Mixer`, `Bard Editor Lab`, `World Editor Lab`, `Asset Link Bridge`는 JS를 정본 설치 파일로 사용하고, 나머지 3종은 TS 파일을 사용함. `Asset_Link_Bridge.ts`도 존재하지만 **JS와 TS는 같은 플러그인 ID**이므로 둘 다 설치하지 말 것.
+
+
+> **Story Director v1.2.8 (2026-11-16):** 기본 `auto`는 AI가 대사·감정·다음 사건을 독립적으로 결정하는 자율 전개 모드로 변경됨. 입력 없이도 다음 장면을 요청할 수 있고, `AI에게 맡겨 바로 이어가기`는 전송 확인 후 집필 AI를 호출한다. 기존 `check`·`judge`·`instruct`와 per-chat 기록·설정·업데이트 경로는 유지한다. 다만 여러 턴을 무제한으로 연속 생성하는 기능은 아니다. 실제 모바일에서의 설치/모델 출력은 별도 검증 필요.
 
 ## PC → 모바일 적용
 
