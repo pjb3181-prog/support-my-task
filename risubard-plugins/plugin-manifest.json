@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "checked_at": "2026-11-16",
+  "repository": "pjb3181-prog/support-my-task",
+  "branch": "main",
+  "policy": {
+    "source_of_truth": "github-main-for-plugin-source",
+    "device_direction": "PC -> Android",
+    "installation_rule": "install-only-plugins-actually-enabled-on-PC",
+    "installed_pc_inventory_verified": false,
+    "host_api": "3.0",
+    "update_behavior": "GitHub //@update-url is checked by RisuBard, but installation requires user confirmation",
+    "syncs": "plugin-source-and-versions-only",
+    "not_synced": [
+      "pluginStorage settings and cached data",
+      "character/chat/persona/lorebook/module data",
+      "image asset files",
+      "model/API configuration and credentials",
+      "PC-local external services"
+    ]
+  },
+  "plugins": [
+    {
+      "id": "story_runner",
+      "name": "Story Runner",
+      "version": "0.95.10",
+      "group": "story",
+      "format": "ts",
+      "source_path": "risubard-updates/story_runner.ts",
+      "download_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_runner.ts",
+      "update_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_runner.ts",
+      "role": "스토리 실행·기억·품질 검수",
+      "caution": "Mutation State Router, Bard Editor Lab과 연동 기능이 있음. 원본과 플러그인 설정은 별도로 보관."
+    },
+    {
+      "id": "mutation_state_router_v2",
+      "name": "Mutation State Router",
+      "version": "0.79.6",
+      "group": "story",
+      "format": "ts",
+      "source_path": "risubard-updates/mutation_state.ts",
+      "download_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/mutation_state.ts",
+      "update_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/mutation_state.ts",
+      "role": "뮤테이션 및 세계관 정본 관리",
+      "caution": "적용된 세계관/로어북/모듈은 플러그인 파일만으로 이전되지 않음."
+    },
+    {
+      "id": "bard_editor_lab",
+      "name": "Bard Editor Lab",
+      "version": "0.3.11",
+      "group": "story",
+      "format": "js",
+      "source_path": "risubard-updates/bard_editor_lab.js",
+      "download_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js",
+      "update_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/bard_editor_lab.js",
+      "role": "장면 검토·퇴고·모델 협업",
+      "caution": "선택한 model/memory/otherAx 슬롯과 스타일 기준선은 모바일에서 별도 확인."
+    },
+    {
+      "id": "story_director",
+      "name": "Story Director",
+      "version": "1.2.7",
+      "group": "story",
+      "format": "ts",
+      "source_path": "risubard-updates/story_director.ts",
+      "download_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts",
+      "update_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts",
+      "role": "다음 장면 지시·설계·자문",
+      "caution": "플러그인 저장소에 기록된 프로젝트·설계 상태는 코드 업데이트만으로 동기화되지 않음."
+    },
+    {
+      "id": "world_editor_lab",
+      "name": "World Editor Lab",
+      "version": "0.1.2",
+      "group": "story",
+      "format": "js",
+      "source_path": "risubard-updates/world_editor_lab.js",
+      "download_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/world_editor_lab.js",
+      "update_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/world_editor_lab.js",
+      "role": "세계관/캐릭터 수정안·승인·복원",
+      "caution": "캐릭터 카드와 로어북의 실제 변경 내용은 별도의 데이터 동기화가 필요."
+    },
+    {
+      "id": "character_mixer",
+      "name": "Character Mixer",
+      "version": "0.10.5",
+      "group": "assets",
+      "format": "js",
+      "source_path": "risubard-updates/character_mixer.js",
+      "download_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js",
+      "update_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/character_mixer.js",
+      "role": "캐릭터·장면별 이미지 수집/출력",
+      "caution": "Windows 전용 로컬 Python 브리지(127.0.0.1:18765)는 Android에 그대로 따라오지 않음. 이미지 에셋과 자격정보는 별개."
+    },
+    {
+      "id": "risubard_asset_link_bridge",
+      "name": "Asset Link Bridge - Multi Module",
+      "version": "0.8.1",
+      "group": "assets",
+      "format": "js",
+      "source_path": "risubard-plugins/asset-link-bridge/Asset_Link_Bridge.js",
+      "download_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-plugins/asset-link-bridge/Asset_Link_Bridge.js",
+      "update_url": "https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-plugins/asset-link-bridge/Asset_Link_Bridge.js",
+      "role": "외부 이미지 모듈↔캐릭터 매핑",
+      "caution": "원본 에셋 모듈이 모바일에도 존재해야 하며, 모듈 0개 문제는 플러그인 소스 동기화만으로 해결되지 않을 수 있음."
+    }
+  ]
+}
