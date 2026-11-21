@@ -1096,7 +1096,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     return /[?？]/.test(s) || /(?:어디까지|어느\s*정도|가능(?:한|해|할까|할지)|허용(?:돼|해|하나|범위)|어떻게\s*생각|왜\s*거절|설정상\s*맞)/.test(s);
   }
   function selectInteractionMode(input,mode){
-    if(mode==='auto'&&/(?:지시문|연출문|집필용\s*(?:문구|지시))/.test(String(input||''))&&!/[?？]/.test(String(input||'')))return 'instruct';
+    if(mode==='auto')return /(?:지시문|연출문|집필용\s*(?:문구|지시))/.test(String(input||''))&&!/[?？]/.test(String(input||''))?'instruct':'auto';
     if(!needsInstruction(mode))return mode;
     const s=String(input||'');
     const explicitExecution=/(?:진행해|진행하자|넘어가|이어가|이어줘|전개해|유지해|풀지\s*마|고정해|적용해|입혀|시작해|계속\s*진행)/.test(s);
@@ -1110,7 +1110,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     if(!ui?.mode||!ui?.fullSubmit)return;
     const mode=ui.mode.value;
     ui.fullSubmit.textContent={talk:'질문·상담하기',check:'인물 입장 확인 (지시문 없음)',revise:'계획 수정안 논의',review:'진행 점검',instruct:'지시문만 작성',judge:'판정 + 지시문 작성',auto:'상담·검토·추천 받기'}[mode]||'요청하기';
-    if(ui.fullHint)ui.fullHint.textContent=['talk','check','revise','review'].includes(mode)?'상담 결과는 실제 채팅의 사건으로 반영되지 않아. 지시문은 별도로 요청할 때만 생성해.':'질문으로만 입력하면 자동으로 사전 상담으로 전환돼. 실제 지시문은 승인한 경우에만 전송해.';
+    if(ui.fullHint)ui.fullHint.textContent=mode==='auto'?'기본은 스토리 상담·교정·추천이야. 결과를 확인한 뒤 필요할 때만 지시문을 생성하고, 실제 채팅 전송은 별도 승인해.':['talk','check','revise','review'].includes(mode)?'상담 결과는 실제 채팅의 사건으로 반영되지 않아. 지시문은 별도로 요청할 때만 생성해.':'명시적인 집필 지시문만 전송 승인 후 적용해.';
   }
   function autonomousDraftNeedsRewrite(value){
     const source=clip(value,9000);
@@ -1207,8 +1207,9 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     const request=lastDirectorRequest(),fresh=await readSources(request);
     if(fresh.key!==current.key)throw new Error('채팅이 바뀌었어. 새로고침해 줘.');
     current=fresh;
-    const mode=project.last.mode==='auto'?'auto':'instruct';
-    const checked=isAuthorSceneDirection(request)?authoredDecision(request):mode==='auto'?autonomousDecision():await judgeSituation(request);
+    const advisory=project.last.mode==='auto'&&!project.last.instruction;
+    const mode=advisory?'instruct':project.last.mode==='auto'?'auto':'instruct';
+    const checked=advisory?{...project.last}:isAuthorSceneDirection(request)?authoredDecision(request):mode==='auto'?autonomousDecision():await judgeSituation(request);
     const draft=await generateInstruction(request,checked,variation,mode);
     project.last={...project.last,...checked,instruction:draft};
     project.dockDraft=draft;
