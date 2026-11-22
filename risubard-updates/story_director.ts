@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.2.10
+//@version 1.3.0
 //@description 스토리 편집 파트너: 설정 검토·교정·추천 중심. 지시문은 선택적으로 작성하고 실제 채팅에 자동 전송하지 않음.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.2.10';
+  const VERSION = '1.3.0';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -1434,6 +1434,24 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     ui.mode.value=project.mode;ui.model.value=project.model;ui.pacing.value=project.pacing;ui.contextDepth.value=project.contextDepth;
     ui.composer.value=project.directorInput||'';if(ui.goalMirror)ui.goalMirror.value=project.goal||'';if(ui.onboard)refreshOnboarding();updateFullSubmitLabel();
   }
+  function renderFlowHistory(){
+    if(!ui?.flowHistory||!project)return;
+    const root=ui.flowHistory;root.replaceChildren();
+    const conversations=list(project.talks).filter(t=>t.mode==='bootstrap'||t.mode==='revise'||t.mode==='plan'||t.mode==='world_talk').slice(-8);
+    const worldTalk=list(world?.dialogue).slice(-6);
+    if(!conversations.length&&!worldTalk.length){
+      el('div',root,{class:'sd-empty'},'원하는 이야기를 상담하면 이곳에 대화가 정리돼.');return;
+    }
+    for(const t of conversations){
+      el('div',root,{class:'sd-bubble sd-user'},clip(t.user||'',1600));
+      el('div',root,{class:'sd-bubble sd-ai'},clip(t.reply||'',3500));
+    }
+    for(const t of worldTalk){
+      if(t?.user)el('div',root,{class:'sd-bubble sd-user'},clip(t.user,1600));
+      if(t?.reply)el('div',root,{class:'sd-bubble sd-ai'},clip(t.reply,3500));
+    }
+    root.scrollTop=root.scrollHeight;
+  }
   function renderHistory(){
     const p=ui.history;p.replaceChildren();
     if(!project.talks.length){el('div',p,{class:'sd-empty'},'아직 디렉터와 대화한 기록이 없어. 원하는 전개를 한 줄 입력해봐.');return;}
@@ -1442,6 +1460,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
       const b=el('div',p,{class:'sd-bubble sd-ai'});el('div',b,{class:'sd-mini'},'Story Director'+(t.verdict && t.verdict!=='판정 불필요'?' · '+(t.mode==='check'?'가정상 ':'')+t.verdict:''));el('div',b,{},t.reply);
     });
     p.scrollTop=p.scrollHeight;
+    renderFlowHistory();
   }
   function renderResult(){
     const root=ui.result;root.replaceChildren();const r=project.last;
@@ -1683,8 +1702,8 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
   }
   function addPlanComposer(parent){
     const root=el('div',parent,{class:'sd-panel sd-unified-comp'});
-    el('div',root,{class:'sd-title'},'이야기 설계 · AI와 설정 상의');
-    el('p',root,{class:'sd-muted'},'이곳에서는 세계관·주인공 성향·장기 계획만 다뤄. 실제 다음 장면의 지시문은 스토리 디렉터에서 작성해.');
+    el('div',root,{class:'sd-title'},'전체 흐름 · AI와 이야기 상담');
+    el('p',root,{class:'sd-muted'},'원하는 결말, 관계, 전개의 큰 방향을 편하게 상담해. 확정된 설정은 위에 정리하고, 당장 적용할 지시문은 지금 지시 탭에서 다뤄.');
     const entry=makeTextarea(root,4,'예: 한성이 친하지 않은 사람에게도 스킨십을 하는 습관이 이야기 속 장점과 단점으로 나타났으면 해.');
     entry.value=project.planInput||'';ui.planComposer=entry;
     entry.addEventListener('input',()=>syncPlanInput(entry.value));
@@ -1703,7 +1722,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
   }
   function addDirectorComposer(parent){
     const root=el('div',parent,{class:'sd-panel sd-unified-comp'});
-    el('div',root,{class:'sd-title'},'스토리 디렉터 · 현재 장면');
+    el('div',root,{class:'sd-title'},'지금 지시 · AI와 장면 상담');
     el('p',root,{class:'sd-muted'},'기본은 스토리 검토·교정·추천이야. 자율 전개안은 별도 요청으로 만들고, 실제 채팅 전송은 승인받아 진행해.');
     const entry=makeTextarea(root,4,'현재 스토리의 문제점 검토, 설정 오류 교정, 다음 전개 추천을 요청해 줘.');
     entry.value=project.directorInput||'';ui.composer=entry;
@@ -1878,15 +1897,18 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     btn(headBtns,'닫기',()=>{syncFields();void Promise.all([flushSave(),flushWorldSave()]).finally(()=>api.hideContainer());},'sd-btn sd-small');
     ui.identity=el('div',root,{class:'sd-sub'});
     const nav=el('nav',root,{class:'sd-nav'});
-    [['plan','이야기 설계','plan'],['main','스토리 디렉터','director'],['settings','자료·설정','settings'],['logs','기록·복원','logs']].forEach(([key,title,kind])=>{
+    [['plan','전체 흐름','plan'],['main','지금 지시','director'],['settings','플러그인 설정','settings']].forEach(([key,title,kind])=>{
       ui.tabs[key]=el('button',nav,{type:'button','aria-selected':key==='plan'});iconLabel(ui.tabs[key],kind,title);ui.tabs[key].onclick=()=>{syncFields();scheduleSave();visible(key);};
       ui.views[key]=el('section',root,{});
     });
     const main=ui.views.main;
     const grid=el('div',main,{class:'sd-grid'}),left=el('div',grid),aside=el('aside',grid,{class:'sd-sticky'});
+    const historyPanel=el('div',left,{class:'sd-panel'});
+    el('div',historyPanel,{class:'sd-title'},'AI와 나눈 대화');
+    ui.history=el('div',historyPanel,{class:'sd-log'});
     const compose=el('div',left,{class:'sd-panel'});
-    el('h2',compose,{class:'sd-title'},'AI가 이야기를 스스로 진행하고, 너는 전체 방향만 다듬어');
-    el('div',compose,{class:'sd-sub'},'입력 없이도 AI 집필자에게 자율 진행을 맡길 수 있어. 상담·판정·세부 지시는 선택 기능이야.');
+    el('h2',compose,{class:'sd-title'},'지금 어떤 전개를 원해?');
+    el('div',compose,{class:'sd-sub'},'현재 장면을 AI와 상담하고, 아래 생성된 지시문을 직접 수정할 수 있어. 실제 RP 전송은 승인 후 진행돼.');
     addDirectorComposer(compose);
     const mainAdvanced=el('details',compose,{class:'sd-advanced'});
     el('summary',mainAdvanced,{},'고급: 기존 모드·프롬프트 직접 선택');
@@ -1900,12 +1922,23 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     ui.fullHint=el('div',mainAdvanced,{class:'sd-texthint'},'질문으로 입력하면 지시문이 아니라 사전 상담으로 처리해.');
     ui.mode.addEventListener('change',()=>{project.mode=ui.mode.value;updateFullSubmitLabel();scheduleSave();});updateFullSubmitLabel();
     const out=el('div',left,{class:'sd-panel'});ui.resultTitle=el('div',out,{class:'sd-title'},'상담·지시문 결과');ui.result=el('div',out);
-    const historyPanel=el('div',left,{class:'sd-panel'});el('div',historyPanel,{class:'sd-title'},'이전 상담');ui.history=el('div',historyPanel,{class:'sd-log'});
+    
     const side=el('div',aside,{class:'sd-panel'});el('div',side,{class:'sd-title'},'현재 이야기');ui.sourceStats=el('div',side,{class:'sd-stats'});
     el('div',side,{class:'sd-texthint'},'계획은 이야기 설계 탭에서만 변경해. 여기서는 현재 장면만 다뤄.');
     btn(side,'이야기 설계 보기',()=>{syncFields();visible('plan');},'sd-btn sd-soft');
     const plan=ui.views.plan;
+    const goalCard=el('div',plan,{class:'sd-panel'});
+    el('div',goalCard,{class:'sd-title'},'확정된 전체 방향');
+    el('p',goalCard,{class:'sd-muted'},'원하는 엔딩과 장기 목표만 정해 두면 돼. AI와 상담한 결과는 아래에 정리하고 언제든 수정할 수 있어.');
+    ui.goal=makeTextarea(goalCard,5,'예: 주요 인물을 구하면서 성배전쟁을 끝내고, 여성 서번트는 가능한 경우 현대에 정착시킨다.');
+    ui.goal.addEventListener('input',()=>{project.goal=ui.goal.value;if(ui.goalMirror)ui.goalMirror.value=ui.goal.value;scheduleSave();});
+    const goalActions=el('div',goalCard,{class:'sd-actions'});
+    btn(goalActions,'전체 방향 저장',()=>action('전체 목표 저장',async()=>{syncFields();await flushSave();}),'sd-btn sd-primary');
     addPlanComposer(plan);
+    const flowThread=el('div',plan,{class:'sd-panel'});
+    el('div',flowThread,{class:'sd-title'},'AI와 의논한 내용');
+    ui.flowHistory=el('div',flowThread,{class:'sd-log'});
+
     const planAdvanced=el('details',plan,{class:'sd-advanced'});
     el('summary',planAdvanced,{},'고급: 자료 원문·기존 입력칸 직접 열기');
     const intro=el('div',planAdvanced,{class:'sd-panel'});
@@ -1926,8 +1959,8 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     el('p',pHead,{class:'sd-muted'},'원하는 사건을 짧게 적어도 되고 비워도 돼. 비워 두면 AI가 읽은 자료를 바탕으로 여러 시작 방향을 제안해.');
     label(pHead,'이야기 방향 / 보고 싶은 소재');
     const mainGoal=makeTextarea(pHead,4,'예: 관계는 천천히 변하되 사건은 빠르게. 거절과 협상이 자주 등장했으면 좋겠어.');
-    ui.goal=mainGoal;ui.goalMirror=mainGoal;
-    mainGoal.addEventListener('input',()=>{project.goal=mainGoal.value;scheduleSave();});
+    ui.goalMirror=mainGoal;
+    mainGoal.addEventListener('input',()=>{project.goal=mainGoal.value;ui.goal.value=mainGoal.value;scheduleSave();});
     const row1=el('div',pHead,{class:'sd-actions'});
     btn(row1,'설정으로 AI 설계안 생성',()=>action('설계',async()=>{syncFields();await runBootstrap();renderResult();renderSources();renderHistory();renderPlanDraft();visible('plan');ui.planDraft?.scrollIntoView?.({behavior:'smooth',block:'start'}); }),'sd-btn sd-primary');
     btn(row1,'수정 내용 저장',()=>action('설정 저장',async()=>{syncFields();await flushSave();renderSources();}), 'sd-btn');
@@ -1946,7 +1979,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
      label(approval,'확정된 장기 스토리 계획 (수정 가능)');ui.plan=makeTextarea(approval,13,'사건의 방향, 분기, 갈등, 열린 결말이 저장돼.');
      [ui.canon,ui.hardLimits,ui.plan].forEach(x=>x.addEventListener('input',()=>{syncFields();scheduleSave();}));
     const config=ui.views.settings;
-    const cfg=el('div',config,{class:'sd-panel'});el('div',cfg,{class:'sd-title'},'자료 연결 및 사용 설정');
+    const cfg=el('div',config,{class:'sd-panel'});el('div',cfg,{class:'sd-title'},'플러그인 설정');
     ui.sourceDesc=el('p',cfg,{class:'sd-muted'});
     const guardHelp=el('div',cfg,{class:'sd-note'});
     el('div',guardHelp,{},'일반 채팅에도 캐릭터의 독립성과 현재 페르소나를 반영하려면 이 채팅에만 보정을 켤 수 있어. 기본값은 꺼짐. 첫 사용에 RisuBard 메시지 보정 권한을 물어볼 수 있으며, 서사 보조 프롬프트만 추가하고 사용자의 메시지를 차단하거나 직접 전송하지 않아.');
@@ -1974,7 +2007,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     btn(cfgBtns,'현재 자료 새로 읽기',()=>action('자료 갱신',async()=>{syncFields();current=await readSources(project.goal);renderSources();await save();}),'sd-btn sd-primary');
     btn(cfgBtns,'설정 저장',()=>action('저장',async()=>{syncFields();await flushSave();}),'sd-btn');
     const raw=el('details',cfg,{class:'sd-details'});el('summary',raw,{},'실제로 수집된 컨텍스트 확인');ui.sourceRaw=makeTextarea(raw,14,'자료를 읽으면 이곳에 표시돼.');ui.sourceRaw.readOnly=true;
-    const logs=ui.views.logs;
+    const logs=el('details',config,{class:'sd-panel sd-advanced'});el('summary',logs,{},'고급: 기록·복원');
     const lp=el('div',logs,{class:'sd-panel'});el('div',lp,{class:'sd-title'},'기록 및 되돌리기');
     el('div',lp,{class:'sd-muted'},'대화는 캐릭터/채팅별로 분리 저장해. 최근 전송 기록을 확인하거나 이번 디렉터 상담만 비울 수 있어. 실제 채팅은 수정하지 않아.');
     const logsArea=el('div',lp);ui.appliedArea=logsArea;
@@ -1982,7 +2015,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     btn(logButtons,'상담 기록 비우기',()=>action('상담 기록 정리',async()=>{if(!window.confirm('이 채팅의 디렉터 상담 기록만 지울까? 계획과 실제 채팅은 보존돼.'))return;project.talks=[];project.last=null;project.pendingPlan=null;project.pendingCanon=null;await save();renderHistory();renderResult();renderLogs();}),'sd-btn sd-danger');
     btn(logButtons,'전체 설정 초기화',()=>action('플러그인 설정 초기화',async()=>{if(!window.confirm('이 채팅의 Story Director 저장값(계획/판정/기록)을 모두 초기화할까? 봇과 실제 채팅은 그대로야.'))return;project=normState(null);await save();setProjectFields();renderHistory();renderResult();renderSources();renderLogs();}),'sd-btn sd-danger');
     ui.status=el('div',root,{class:'sd-status',role:'status'},'준비됨');ui.loading=el('div',root,{class:'sd-note sd-hidden'},'모델 응답을 기다리는 중이야. 이 창을 닫으면 생성 결과가 표시되지 않을 수 있어.');
-    setProjectFields();ui.goalMirror.value=project.goal;renderHistory();renderResult();renderSources();renderWorldPanel();renderPlanDraft();renderLogs();renderRoutePreviews();visible(project.activeTab||'plan');
+    setProjectFields();ui.goalMirror.value=project.goal;renderHistory();renderResult();renderSources();renderWorldPanel();renderPlanDraft();renderLogs();renderRoutePreviews();renderFlowHistory();visible(['plan','main','settings'].includes(project.activeTab)?project.activeTab:'plan');
   }
   function renderLogs(){if(!ui?.appliedArea)return;ui.appliedArea.replaceChildren();
     if(!project.applied.length){el('div',ui.appliedArea,{class:'sd-empty'},'아직 채팅에 전송한 지시문이 없어.');return;}
