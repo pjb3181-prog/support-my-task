@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.3.1
+//@version 1.3.2
 //@description 스토리 편집 파트너: 설정 검토·교정·추천 중심. 지시문은 선택적으로 작성하고 실제 채팅에 자동 전송하지 않음.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.3.1';
+  const VERSION = '1.3.2';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -1785,10 +1785,14 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     entry.addEventListener('input',()=>syncDirectorInput(entry.value));
     entry.addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();void submitDirectorMode('talk');}});
     const actions=el('div',root,{class:'sd-row sd-director-buttons'});
-    btn(actions,'상담만 하기',()=>void submitDirectorMode('talk'),'sd-btn');
-    btn(actions,'반응만 판정',()=>void submitDirectorMode('check'),'sd-btn');
-    btn(actions,'AI 자율 전개안 보기',()=>void submitDirectorMode('auto',true),'sd-btn');
-    btn(actions,'AI에게 맡겨 바로 이어가기',()=>void action('AI 자율 진행',async()=>{syncFields();await autoContinueAndSend(ui.composer.value.trim());renderResult();renderHistory();}),'sd-btn sd-primary');
+    btn(actions,'AI와 상담',()=>void submitDirectorMode('talk'),'sd-btn');
+    btn(actions,'지시문 생성',()=>void submitDirectorMode('instruct'),'sd-btn sd-primary');
+    const extras=el('details',root,{class:'sd-advanced'});
+    el('summary',extras,{},'고급: 반응 판정·자율 전개');
+    const extraActions=el('div',extras,{class:'sd-actions'});
+    btn(extraActions,'반응만 판정',()=>void submitDirectorMode('check'),'sd-btn');
+    btn(extraActions,'AI 자율 전개안 보기',()=>void submitDirectorMode('auto',true),'sd-btn');
+    btn(extraActions,'AI에게 맡겨 바로 이어가기',()=>void action('AI 자율 진행',async()=>{syncFields();await autoContinueAndSend(ui.composer.value.trim());renderResult();renderHistory();}),'sd-btn');
     el('div',root,{class:'sd-texthint'},'기본 입력은 상담·검토 · 자율 전개안은 별도 요청 · 바로 이어가기는 승인 후 실제 채팅 전송');
     return root;
   }
