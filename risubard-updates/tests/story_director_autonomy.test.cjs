@@ -32,7 +32,7 @@ test('main screen has exactly the three requested tabs, with legacy tools collap
   assert.match(code, /고급: 자료 원문·기존 입력칸 직접 열기/)
   assert.match(code, /ui\.flowHistory/)
   assert.match(code, /ui\.flowProposal/)
-  assert.match(code, /ui\.instruction/)
+  assert.match(source, /ui\.instruction=ta/)
   assert.match(code, /현재 이야기/)
 })
 
