@@ -16,7 +16,7 @@ const list = v => Array.isArray(v) ? v : []
 test('plugin syntax, identity, storage prefix and automatic update endpoint remain stable', () => {
   assert.doesNotThrow(() => new Function(source))
   assert.match(source.slice(0,800), /\/\/@name story_director/)
-  assert.match(source.slice(0,800), /\/\/@version 1\.3\.1/)
+  assert.match(source.slice(0,800), /\/\/@version 1\.3\.2/)
   assert.match(source.slice(0,1100), /\/\/@update-url https:\/\/raw\.githubusercontent\.com\/pjb3181-prog\/support-my-task\/main\/risubard-updates\/story_director\.ts/)
   assert.match(source, /const PREFIX = 'story_director_v1:'/)
   assert.match(source, /await api\.registerSetting\('Story Director'/)
@@ -34,6 +34,9 @@ test('main screen has exactly the three requested tabs, with legacy tools collap
   assert.match(code, /ui\.flowProposal/)
   assert.match(source, /ui\.instruction=ta/)
   assert.match(code, /현재 이야기/)
+  assert.match(source, /btn\(actions,'AI와 상담'/)
+  assert.match(source, /btn\(actions,'지시문 생성'/)
+  assert.match(source, /고급: 반응 판정·자율 전개/)
 })
 
 test('long-term flow chat asks the model but never writes a proposed goal without approval', async () => {
