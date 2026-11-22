@@ -1241,8 +1241,8 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
   }
   async function runDirector(input,mode,forceAutonomous=false) {
     if(!String(input||'').trim()&&mode!=='auto')throw new Error('상담하거나 세부 지시할 내용을 입력해 줘.');
-    const emptyAuto=mode==='auto'&&!String(input||'').trim();
-    input=String(input||'').trim()||AUTO_CONTINUE_REQUEST;
+    // Explicit autonomous drafting is separate from ordinary advisory input.
+    input=String(input||'').trim()||(forceAutonomous?'실제 채팅에서 확인된 다음 장면의 중심 사건과 사용자가 정한 목표를 이어가되 다른 사건이나 인물 역할을 지어내지 마.':'현재 실제 채팅을 분석하고 교정 또는 추천할 중요한 사항을 알려줘.');
     await verifySession();
     await flushSave();
     const fresh=await readSources([input,project.goal].filter(Boolean).join('\n').slice(0,3000));
