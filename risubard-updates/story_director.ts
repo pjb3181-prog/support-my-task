@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.3.5
+//@version 1.3.6
 //@description 스토리 편집 파트너: 설정 검토·교정·추천 중심. 지시문은 선택적으로 작성하고 실제 채팅에 자동 전송하지 않음.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.3.5';
+  const VERSION = '1.3.6';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -1054,7 +1054,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
         ? '지금 질문은 작가실에서 하는 사전 상담이다. 플레이어가 접촉/제안을 실제로 시도했다고 간주하지 않고, 상대의 허용 가능성을 성격과 실제 기록의 범위 안에서만 설명하라. 확인되지 않은 허용 범위를 임의로 확정하지 말고 불확실성 및 당시 상황을 구분하라. 여러 번 질문해도 새로운 사건이 발생한 것은 아니다. '
         : '아래 요청은 플레이어가 시도하거나 제안하려는 행동이다. 요청한 결과가 이미 성립했다고 가정하지 말라. ') +
       '각 NPC별로 성격·선호·체면·기존 관계·최근 실제 사건을 근거로 수락/조건부 수락/보류/거절/역제안/판정 불가를 독립적으로 판단하라. ' +
-      '판정을 위한 반대 증거, 본인의 이해관계, 선행 조건을 먼저 검토하라. 맥락이 부족하면 판정 불가/보류를 선택하라. ' +
+      '수락과 반대의 근거, 각자의 목적과 선행 조건을 대등하게 검토하라. 협력·신뢰·기대·공감도 독립적인 인물 판단이다. 중요한 선택의 근거가 부족하면 불확실성을 표시하되 이를 의무적인 반대 사건으로 바꾸지 마라. ' +
       '현재 장면에 있는 인물과 배경 설정에만 등장한 인물을 구별하고, 후자는 이 장면에 참여시키지 말라. 실질적 선택이나 신념 위반이 아닌 친구간 농담·말다툼은 대체로 자연스럽게 주고받게 하며, 인물별 개성과 말투를 지켜라. 사소한 불쾌 가능성을 매번 절대 금기로 키우지 마라. ' +
       '플레이어 페르소나의 매력 또는 초자연적 설정이 영향이 있다면 어느 원문에 근거하는지 따로 설명하라. ' +
       '매력·호감·친분은 반응 가능성에 영향을 줄 수 있으므로 반영하되, 자발적 접촉 동의를 자동 수락으로 간주하지 마라. 명시된 초자연적 효과는 실제 적용 여부와 범위를 확인해 결과만 판정하고, 그 효과를 자발적 동의로 오인하지 마라. ' +
@@ -1120,7 +1120,8 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     const undecided=/(?:할지|할는지|하는지|하려는지|될지|있는지|일지|갈지|할까|할지라도)[^.!?\n]{0,100}(?:혹은|또는|아니면)|(?:다음\s*(?:장면|사건|전개)|핵심\s*(?:사건|행동|전개|결과))[^.!?\n]{0,60}(?:맡겨|맡기|스스로\s*(?:선택|결정)|자율적으로\s*(?:선택|결정))|(?:AI가|AI에게)[^.!?\n]{0,70}(?:다음\s*(?:사건|장면|전개)|핵심\s*(?:사건|행동|전개))[^.!?\n]{0,40}(?:스스로|자율적으로|맡겨|맡기)/;
     const concrete=/(?:하게\s*해|하도록\s*해|이어가|진행해|시작해|전개해|넘어가|보여줘|다뤄|유지해|마무리해|포함해|연결해|묻도록|제안하게|받아들이게|거절하게|확인해|정리해|끝내|전환해|이동해|돌아가|출발해|도착해)/;
     const boilerplate=/(?:반응|감정|대사)(?:은|는|을|를|도|과|·|,|\s){0,12}[^.!?\n]{0,65}(?:각자|각자의|인물의|캐릭터의)[^.!?\n]{0,45}(?:자발적으로|자율적으로|스스로)[^.!?\n]{0,20}(?:결정|판단|선택)|(?:팀원|인물|캐릭터|직원)(?:들)?(?:의)?\s*반응[^.!?\n]{0,100}(?:자발적으로|자율적으로)\s*(?:결정|판단|선택)|(?:곧바로|바로|즉시)?\s*(?:전원|모두)(?:의)?\s*동의로\s*이어지지\s*않도록/;
-    return handoff.test(s)||undecided.test(s)||boilerplate.test(s)||!concrete.test(s);
+    const forcedDissent=/(?:전원|모두)(?:의|가)?\s*(?:동의|수락|찬성|합의)(?:로|하(?:게|는\s*것을)?)?\s*(?:이어지지|하지)?\s*않(?:게|도록)|(?:전원|모두)(?:의)?\s*(?:동의|찬성|수락)(?:를|을)?\s*(?:금지|피하|막아)/;
+    return handoff.test(s)||undecided.test(s)||boilerplate.test(s)||forcedDissent.test(s)||!concrete.test(s);
   }
   function instructionNeedsRewrite(value){
     const s=clip(value,9000);
@@ -1141,7 +1142,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     return false;
   }
   function draftMessages(userRequest,decision,variation='',mode='instruct'){
-    const msgs=preparePrompt(mode==='auto'?'auto':'instruct',userRequest||AUTO_CONTINUE_REQUEST);
+    const msgs=preparePrompt(mode==='auto'?'auto':'instruct',userRequest||AUTO_CONTINUE_REQUEST,{independent:true});
     // One drafting policy for all explicit instruction modes. Advisory modes
     // still use preparePrompt alone, so their behaviour is not changed.
     msgs[0].content+='\n\n[연출 지시문 작성 전용 · 앞선 상담용 형식·문장 수·길이 지침보다 우선] '+
@@ -1150,6 +1151,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
       '예시·비유·질문형·구어체·미완성 문장은 의도를 이해하기 위한 단서다. 확정된 사건과 방법의 후보를 구분해, 비어 있는 연결 과정은 설정에 맞게 하나의 구체적인 서사적 선택으로 보완하라. 다만 현실에서 악용될 수 있는 구체적인 범행 수법 등은 만들지 말고 이야기의 동기와 결과 중심으로 다뤄라. '+
       '전개안을 원하면 현재 상황→핵심 행동→그에 따른 변화→다음 사건 또는 도달점의 인과를 명료하게 연결하라. 사용자가 제공하지 않은 과거 사실을 만들지 말고, 새로 제안하는 사건은 미래의 연출로 제시한다. '+
       '사용자가 이미 자연스러운 호의·협력·화해·유머·카타르시스 등을 기대하는 상황이라면, 확인된 설정상 이유 없이 반대·의심·난색·실패·전원 동의 금지 같은 제약을 추가하지 마라. 반대로 실제 설정에 근거한 중요한 반대와 인물의 경계는 보존한다. '+
+      '장면의 정서적 목적을 먼저 구별하라. 책임을 강조하는 격려와 신뢰의 표현은 질책이나 위협이 아니다. 진지한 말도 따뜻함, 인정받는 기쁨, 기대, 의욕, 유머와 협력으로 이어질 수 있다. 균형을 맞춘다는 명목으로 공기를 무겁게 만들거나 냉소·눈치·반발·온도차를 의무적으로 추가하지 마라. 필요한 실무 질문도 공동의 목표를 구체화하는 대화일 수 있다. 모든 등장인물에게 서로 다른 입장이나 반대를 배정할 필요가 없다. 실제 맥락의 근거를 따르며 사용자 의도에 맞는 긍정적인 결과도 자연스럽게 허용하라. ' +
       '인물 반응은 각자 성격에 맡긴다는 일반론이나 NPC가 자발적으로 결정하게 하라는 문장을 결과에 덧붙이지 마라. 필요한 반응의 방향이나 사건의 결과만 구체화하고 세부 대사와 묘사는 집필 AI에 남긴다. 사용자 제공 대사의 요지와 특유의 어조는 살리고, 직접 인용을 요구한 경우에만 해당 대사를 그대로 유지한다. '+
       '예: 사용자가 오래된 동네 서점의 마지막 영업일에 단골들이 찾아와 주인에게 새로운 출발을 권하고 싶다고 하면, 단골들의 방문을 계기로 그동안의 추억과 감사가 자연스럽게 오가고, 주인이 망설이던 새 출발 이야기를 꺼내도록 연결한다. 요청하지 않은 불화나 반대를 억지로 덧붙이지 않는다. '+
       '단순 장면은 1~3문장, 여러 사건이 이어지는 요청은 필요한 만큼 4~8문장 또는 짧은 문단 여러 개로 작성한다. 통상 100~800자, 최대 1200자. 분량을 채우기 위한 반복은 금지한다. 소설 본문이나 기획 해설이 아니라 바로 전달할 명령형 연출 지시문을 JSON {"instruction":"연출 지시문"}으로 출력한다.';
@@ -1160,7 +1162,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     }else{
       msgs[0].content+='\n\n[판정·지시문 작성] 실제로 확인된 중요한 인물의 경계와 판정은 존중하되, 일반적인 반응 가능성이나 가정상의 반대를 의무적 갈등으로 확대하지 마라. 사용자 요청의 인과적 전개를 살리는 것이 우선이며, 확인된 사실과 제안된 다음 사건을 구분한다.';
     }
-    msgs[1].content+='\n\n[이전 GM 판정/제안] '+JSON.stringify({
+    msgs[1].content+='\n\n[이번 요청의 참고 정보 · 가상 판정은 실제 사건이나 의무적인 반발의 근거가 아님] '+JSON.stringify({
       verdict:clip(decision?.verdict,100),reason:clip(decision?.evidence,1600),
       reply:clip(decision?.reply,1400),npc:clip(decision?.npc_reaction,1400),
       priorDraft:clip(decision?.instruction,1800),actorPositions:decision?.actor_positions||[],
@@ -1210,8 +1212,8 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     if(fresh.key!==current.key)throw new Error('채팅이 바뀌었어. 새로고침해 줘.');
     current=fresh;
     const advisory=project.last.mode==='auto'&&!project.last.instruction;
-    const mode=advisory?'instruct':project.last.mode==='auto'?'auto':'instruct';
-    const checked=advisory?{...project.last}:isAuthorSceneDirection(request)?authoredDecision(request):mode==='auto'?autonomousDecision():await judgeSituation(request);
+    const mode=advisory?'instruct':project.last.mode==='auto'?'auto':project.last.mode==='judge'?'judge':'instruct';
+    const checked=isAuthorSceneDirection(request)?authoredDecision(request):mode==='judge'?await judgeSituation(request):autonomousDecision();
     const draft=await generateInstruction(request,checked,variation,mode);
     project.last={...project.last,...checked,instruction:draft};
     project.dockDraft=draft;
@@ -1258,8 +1260,9 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     }else if(needsInstruction(actualMode)){
       // Fictional system mechanics and explicit scene/time constraints belong
       // to the author, not a vote by NPCs. Adjudicate only voluntary choices.
-      res=isAuthorSceneDirection(input)?authoredDecision(input):actualMode==='auto'?autonomousDecision():await judgeSituation(input);
-      try{res.instruction=await generateInstruction(input,res,actualMode==='auto'?'사용자 구상의 사건 순서와 의도·말맛을 보존하고 비어 있는 인과적 연결을 보완해 실제 전개안으로 발전시켜':'이번 제안에 대한 별도 GM 판정에 따르는 짧은 연출 지시문 작성',actualMode);}
+      // An ordinary writing request is not an approval hearing.
+      res=isAuthorSceneDirection(input)?authoredDecision(input):actualMode==='judge'?await judgeSituation(input):autonomousDecision();
+      try{res.instruction=await generateInstruction(input,res,actualMode==='auto'?'사용자 구상의 사건 순서와 의도·말맛을 보존하고 비어 있는 인과적 연결을 보완해 실제 전개안으로 발전시켜':actualMode==='judge'?'실제 근거가 확인된 GM 판정을 참고해 연출 지시문 작성':'사용자 의도와 장면의 정서를 보존하고 자연스러운 후속 행동을 구체화해',actualMode);}
       catch(error){res.draftError='초안 생성 실패: '+(error?.message||error);console.warn('[SD] draft generation',error);}
     }else if(actualMode==='check'){
       // In an exploratory question, a full hard-boundary GM audit is rarely appropriate.

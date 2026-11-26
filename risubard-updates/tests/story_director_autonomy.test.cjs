@@ -16,7 +16,7 @@ const list = v => Array.isArray(v) ? v : []
 test('plugin syntax, identity, storage prefix and automatic update endpoint remain stable', () => {
   assert.doesNotThrow(() => new Function(source))
   assert.match(source.slice(0,800), /\/\/@name story_director/)
-  assert.match(source.slice(0,800), /\/\/@version 1\.3\.5/)
+  assert.match(source.slice(0,800), /\/\/@version 1\.3\.6/)
   assert.match(source.slice(0,1100), /\/\/@update-url https:\/\/raw\.githubusercontent\.com\/pjb3181-prog\/support-my-task\/main\/risubard-updates\/story_director\.ts/)
   assert.match(source, /const PREFIX = 'story_director_v1:'/)
   assert.match(source, /await api\.registerSetting\('Story Director'/)
@@ -84,6 +84,8 @@ test('auto continuation decides core scene beats while leaving prose to the writ
     assert.match(prompt,/전원 동의 금지/)
     assert.match(prompt,/대사의 말맛/)
     assert.match(prompt,/최대 1200자/)
+    assert.match(prompt,/책임을 강조하는 격려와 신뢰의 표현은 질책이나 위협이 아니다/)
+    assert.match(prompt,/모든 등장인물에게 서로 다른 입장이나 반대를 배정할 필요가 없다/)
   }
 })
 
@@ -111,6 +113,12 @@ test('ordinary auto consultation does not automatically send or generate a direc
   assert.equal(calls.judge,0)
   assert.equal(result.instruction,'')
   assert.equal(project.goal,'happy ending')
+  const direct=await fn('팀원들의 노력과 가능성을 인정하고 함께 새 목표를 정하자', 'instruct')
+  assert.equal(direct.instruction,'tiny directive')
+  assert.equal(calls.judge,0)
+  assert.equal(calls.draft,1)
+  await fn('이 제안을 상대가 수락할지 판정해', 'judge')
+  assert.equal(calls.judge,1)
 })
 
 test('autonomous draft generation never sends chat or closes the editor', async () => {
@@ -180,4 +188,21 @@ test('longer multi-beat directions fit the new size limit',()=>{
   assert.ok(long.length>500&&long.length<1200)
   assert.equal(fn(long),false)
   assert.equal(fn(long.repeat(4)),true)
+})
+
+test('fresh draft excludes previous unapproved draft and preserves emotional purpose',()=>{
+  const block=extract('  function draftMessages(userRequest,decision,variation=', '  async function generateInstruction(')
+  let options
+  const fn=new Function('preparePrompt','AUTO_CONTINUE_REQUEST','clip','authoredLimits',block+'\nreturn draftMessages')(
+    (mode,input,opts)=>{options=opts;return [{role:'system',content:''},{role:'user',content:input}]},
+    '',clip,()=>({}))
+  const result=fn('여러분을 믿고 투자하는 거예요. 성과에 따라 보상받도록 함께 노력합시다.',{},'','instruct')
+  assert.equal(options.independent,true)
+  assert.match(result[0].content,/실무 질문도 공동의 목표/)
+})
+test('team agreement is not rejected by default',()=>{
+  const block=extract('  function autonomousDraftNeedsRewrite(value){','  function instructionNeedsRewrite(value){')
+  const fn=new Function('clip',block+'\nreturn autonomousDraftNeedsRewrite')(clip)
+  assert.equal(fn('새로운 팀의 방향과 성과 기준을 함께 논의하도록 해. 곧바로 전원 동의로 이어지지 않게 하고 서로 다른 반응을 보이게 해.'),true)
+  assert.equal(fn('팀원들이 자신들의 능력을 인정받았다는 기대를 드러내고, 각자의 목표와 성과 기준을 함께 구체화하는 대화로 이어가.'),false)
 })
