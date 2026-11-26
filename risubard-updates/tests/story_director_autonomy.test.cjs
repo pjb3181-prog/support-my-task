@@ -16,7 +16,7 @@ const list = v => Array.isArray(v) ? v : []
 test('plugin syntax, identity, storage prefix and automatic update endpoint remain stable', () => {
   assert.doesNotThrow(() => new Function(source))
   assert.match(source.slice(0,800), /\/\/@name story_director/)
-  assert.match(source.slice(0,800), /\/\/@version 1\.3\.3/)
+  assert.match(source.slice(0,800), /\/\/@version 1\.3\.4/)
   assert.match(source.slice(0,1100), /\/\/@update-url https:\/\/raw\.githubusercontent\.com\/pjb3181-prog\/support-my-task\/main\/risubard-updates\/story_director\.ts/)
   assert.match(source, /const PREFIX = 'story_director_v1:'/)
   assert.match(source, /await api\.registerSetting\('Story Director'/)
@@ -64,7 +64,7 @@ test('long-term flow chat asks the model but never writes a proposed goal withou
   assert.equal(ui.planComposer.value,'')
 })
 
-test('auto continuation delegates NPC decisions and does not pre-script them', () => {
+test('auto continuation decides core scene beats while leaving prose to the writer', () => {
   const block=extract('  function draftMessages(userRequest,decision,variation=', '  async function generateInstruction(')
   const fn=new Function('preparePrompt','AUTO_CONTINUE_REQUEST','clip','authoredLimits',block+'\nreturn draftMessages')(
     (mode,input)=>[{role:'system',content:'base mode='+mode},{role:'user',content:input}],
@@ -72,7 +72,10 @@ test('auto continuation delegates NPC decisions and does not pre-script them', (
   const auto=fn('',{verdict:'판정 불필요'},'','auto')
   assert.match(auto[0].content,/AI 자율 전개 전용/)
   assert.match(auto[0].content,/본문 AI가|집필 AI가/)
-  assert.match(auto[0].content,/사용자가 명시하지 않은 반응/)
+  assert.match(auto[0].content,/개연성 있는 다음 사건 하나를 선택/)
+  assert.match(auto[0].content,/구체적인 핵심 행동/)
+  assert.match(auto[0].content,/반응 방향 또는 장면의 도달점/)
+  assert.match(auto[0].content,/구체적인 대사, 표정, 문장, 세부 동작/)
   assert.doesNotMatch(auto[0].content,/8시간 뒤 나미가 깨어나는/)
 })
 
@@ -129,4 +132,28 @@ test('explicit final send still requires user approval', () => {
   assert.match(source,/if\(current\.userMessageCount===0\)/)
   assert.match(source,/ta\.addEventListener\('input',\(\)=>\{project\.last\.instruction=ta\.value/)
   assert.equal((source.match(/api\.sendChat\(/g)||[]).length,1)
+})
+
+test('autonomous draft validator rejects unresolved alternatives and delegation', () => {
+  const block=extract('  function autonomousDraftNeedsRewrite(value){','  function instructionNeedsRewrite(value){')
+  const fn=new Function('clip',block+'\nreturn autonomousDraftNeedsRewrite')(clip)
+  assert.equal(fn('회의가 끝나면 민수가 자리에서 일어나려는지, 혹은 여전히 머무는지 자연스럽게 이어가. 다음 사건은 집필 AI가 스스로 결정하게 해.'),true)
+  assert.equal(fn('다음 장면은 집필 AI가 자율적으로 결정하게 해.'),true)
+  assert.equal(fn('회의가 끝나면 민수와 지윤이 로비로 이동하도록 해. 민수가 다음 약속 시간을 확인하고 지윤이 다른 시간을 제안하는 장면까지 이어가.'),false)
+  assert.equal(fn('두 사람이 정류장으로 이동해. 대사와 표정은 인물 성격에 맞게 자연스럽게 표현해.'),false)
+})
+test('autonomous generation retries vague drafts and never falls back to generic delegation', async () => {
+  const block=extract('  async function generateInstruction(userRequest,decision,variation=', '  function lastDirectorRequest(){')
+  const validation=extract('  function autonomousDraftNeedsRewrite(value){','  function instructionNeedsRewrite(value){')
+  const validate=new Function('clip',validation+'\nreturn autonomousDraftNeedsRewrite')(clip)
+  let calls=0
+  const good='회의가 끝나면 로비로 이동하도록 해. 민수가 다음 약속 시간을 제안하는 장면까지 이어가.'
+  const bad='다음 사건은 집필 AI가 스스로 결정하게 해.'
+  const make=(responses)=>new Function('draftMessages','askModel','parseObject','clip','inventedConflictOrContradiction','instructionNeedsRewrite','autonomousDraftNeedsRewrite',block+'\nreturn generateInstruction')(
+    ()=>[{content:''}],async()=>JSON.stringify({instruction:responses[Math.min(calls++,responses.length-1)]}),JSON.parse,clip,()=>'',()=>false,validate)
+  assert.equal(await make([bad,good])('다음 장면',{},'','auto'),good)
+  assert.equal(calls,2)
+  calls=0
+  await assert.rejects(make([bad])('다음 장면',{},'','auto'),/구체적인 다음 장면 지시문/)
+  assert.equal(calls,2)
 })
