@@ -16,7 +16,7 @@ const list = v => Array.isArray(v) ? v : []
 test('plugin syntax, identity, storage prefix and automatic update endpoint remain stable', () => {
   assert.doesNotThrow(() => new Function(source))
   assert.match(source.slice(0,800), /\/\/@name story_director/)
-  assert.match(source.slice(0,800), /\/\/@version 1\.3\.4/)
+  assert.match(source.slice(0,800), /\/\/@version 1\.3\.5/)
   assert.match(source.slice(0,1100), /\/\/@update-url https:\/\/raw\.githubusercontent\.com\/pjb3181-prog\/support-my-task\/main\/risubard-updates\/story_director\.ts/)
   assert.match(source, /const PREFIX = 'story_director_v1:'/)
   assert.match(source, /await api\.registerSetting\('Story Director'/)
@@ -77,6 +77,14 @@ test('auto continuation decides core scene beats while leaving prose to the writ
   assert.match(auto[0].content,/반응 방향 또는 장면의 도달점/)
   assert.match(auto[0].content,/구체적인 대사, 표정, 문장, 세부 동작/)
   assert.doesNotMatch(auto[0].content,/8시간 뒤 나미가 깨어나는/)
+  for(const mode of ['auto','instruct','judge']){
+    const prompt=fn('여러 장면을 연결해',{},'',mode)[0].content
+    assert.match(prompt,/핵심 사건 하나만 남겨 나머지를 삭제하지 마라/)
+    assert.match(prompt,/비어 있는 연결 과정/)
+    assert.match(prompt,/전원 동의 금지/)
+    assert.match(prompt,/대사의 말맛/)
+    assert.match(prompt,/최대 1200자/)
+  }
 })
 
 test('ordinary auto consultation does not automatically send or generate a directive', async () => {
@@ -156,4 +164,20 @@ test('autonomous generation retries vague drafts and never falls back to generic
   calls=0
   await assert.rejects(make([bad])('다음 장면',{},'','auto'),/구체적인 다음 장면 지시문/)
   assert.equal(calls,2)
+})
+
+test('director rejects boilerplate opposition or delegation and accepts developed scene direction',()=>{
+  const block=extract('  function autonomousDraftNeedsRewrite(value){','  function instructionNeedsRewrite(value){')
+  const fn=new Function('clip',block+'\nreturn autonomousDraftNeedsRewrite')(clip)
+  assert.equal(fn('서점의 마지막 영업일을 진행해. 단골들의 반응은 각자 성격과 상황에 따라 자발적으로 결정되게 해.'),true)
+  assert.equal(fn('새 출발을 제안하도록 해. 곧바로 전원 동의로 이어지지 않도록 하고 대화를 이어가.'),true)
+  assert.equal(fn('마지막 영업일에 단골들이 찾아와 그동안의 추억을 이야기하도록 해. 감사의 인사가 이어지면서 주인이 새로운 서점을 열고 싶다는 계획을 털어놓는 장면까지 이어가.'),false)
+})
+test('longer multi-beat directions fit the new size limit',()=>{
+  const block=extract('  function instructionNeedsRewrite(value){','  function draftMessages(userRequest,decision,variation=')
+  const fn=new Function('clip',block+'\nreturn instructionNeedsRewrite')(clip)
+  const long='단골들과 추억을 이야기하는 장면을 이어가. '.repeat(24)
+  assert.ok(long.length>500&&long.length<1200)
+  assert.equal(fn(long),false)
+  assert.equal(fn(long.repeat(4)),true)
 })
