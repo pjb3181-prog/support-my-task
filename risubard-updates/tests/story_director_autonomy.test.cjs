@@ -71,7 +71,7 @@ test('auto continuation decides core scene beats while leaving prose to the writ
     'continue the story',clip,()=>({}))
   const auto=fn('',{verdict:'판정 불필요'},'','auto')
   assert.match(auto[0].content,/AI 자율 전개 전용/)
-  assert.match(auto[0].content,/본문 AI가|집필 AI가/)
+  assert.match(auto[0].content,/집필 AI에 남긴다/)
   assert.match(auto[0].content,/개연성 있는 다음 사건 하나를 선택/)
   assert.match(auto[0].content,/구체적인 핵심 행동/)
   assert.match(auto[0].content,/반응 방향 또는 장면의 도달점/)
