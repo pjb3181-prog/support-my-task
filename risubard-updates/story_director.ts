@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.3.2
+//@version 1.3.3
 //@description 스토리 편집 파트너: 설정 검토·교정·추천 중심. 지시문은 선택적으로 작성하고 실제 채팅에 자동 전송하지 않음.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.3.2';
+  const VERSION = '1.3.3';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -1769,12 +1769,10 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     ui.planRoutePreview=el('div',root);
     return root;
   }
-  async function autoContinueAndSend(input){
+  async function generateAutonomousDraft(input){
     const result=await runDirector(input,'auto',true);
     if(!result.instruction)throw new Error(result.draftError||'AI 자율 전개안 생성에 실패해 채팅을 변경하지 않았어.');
-    const sent=await sendDraft(result.instruction);
-    if(sent)await api.hideContainer();
-    return sent;
+    return result;
   }
   function addDirectorComposer(parent){
     const root=el('div',parent,{class:'sd-panel sd-unified-comp'});
@@ -1791,9 +1789,8 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     el('summary',extras,{},'고급: 반응 판정·자율 전개');
     const extraActions=el('div',extras,{class:'sd-actions'});
     btn(extraActions,'반응만 판정',()=>void submitDirectorMode('check'),'sd-btn');
-    btn(extraActions,'AI 자율 전개안 보기',()=>void submitDirectorMode('auto',true),'sd-btn');
-    btn(extraActions,'AI에게 맡겨 바로 이어가기',()=>void action('AI 자율 진행',async()=>{syncFields();await autoContinueAndSend(ui.composer.value.trim());renderResult();renderHistory();}),'sd-btn');
-    el('div',root,{class:'sd-texthint'},'기본 입력은 상담·검토 · 자율 전개안은 별도 요청 · 바로 이어가기는 승인 후 실제 채팅 전송');
+    btn(extraActions,'AI에게 맡겨 지시문 작성',()=>void action('AI 자율 지시문 작성',async()=>{syncFields();await generateAutonomousDraft(ui.composer.value.trim());renderResult();renderHistory();}),'sd-btn sd-primary');
+    el('div',root,{class:'sd-texthint'},'기본 입력은 상담·검토 · 자율 지시문은 초안만 생성 · 실제 채팅은 별도 전송 버튼을 눌러야 진행');
     return root;
   }
   function renderWorldPanel(){
@@ -2284,8 +2281,8 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     const actions=el('div',composer,{class:'sd-dock-actions'});
     dockButton(actions,'상담만 하기',()=>void dockSubmit('talk'),'sd-btn');
     dockButton(actions,'반응만 판정',()=>void dockSubmit('check'),'sd-btn');
-    dockButton(actions,'AI 자율 전개안 보기',()=>void dockSubmit('auto'),'sd-btn');
-    dockButton(actions,'AI에게 맡겨 바로 이어가기',()=>void action('AI 자율 진행',async()=>{await autoContinueAndSend(d.composer.value.trim());renderDockHistory();renderDockResult();}),'sd-btn sd-primary');
+    dockButton(actions,'AI 전개 방향 검토',()=>void dockSubmit('auto'),'sd-btn');
+    dockButton(actions,'AI에게 맡겨 지시문 작성',()=>void action('AI 자율 지시문 작성',async()=>{await generateAutonomousDraft(d.composer.value.trim());renderHistory();renderResult();renderDockHistory();renderDockResult();}),'sd-btn sd-primary');
     el('div',composer,{class:'sd-dock-mini'},'Ctrl+Enter: 상담만 · 이 패널은 스토리 디렉터 전용. 설계 탭으로 자동 전환하지 않아.');
     // The mini tray stays in this same iframe. It never discards the editor or
     // restarts an in-progress model request when restoring the drawer.

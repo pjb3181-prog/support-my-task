@@ -16,7 +16,7 @@ const list = v => Array.isArray(v) ? v : []
 test('plugin syntax, identity, storage prefix and automatic update endpoint remain stable', () => {
   assert.doesNotThrow(() => new Function(source))
   assert.match(source.slice(0,800), /\/\/@name story_director/)
-  assert.match(source.slice(0,800), /\/\/@version 1\.3\.2/)
+  assert.match(source.slice(0,800), /\/\/@version 1\.3\.3/)
   assert.match(source.slice(0,1100), /\/\/@update-url https:\/\/raw\.githubusercontent\.com\/pjb3181-prog\/support-my-task\/main\/risubard-updates\/story_director\.ts/)
   assert.match(source, /const PREFIX = 'story_director_v1:'/)
   assert.match(source, /await api\.registerSetting\('Story Director'/)
@@ -102,10 +102,31 @@ test('ordinary auto consultation does not automatically send or generate a direc
   assert.equal(project.goal,'happy ending')
 })
 
-test('explicit next-scene generation and final send still require user approval', () => {
-  assert.match(source,/async function autoContinueAndSend\(input\)/)
-  assert.match(source,/await sendDraft\(result\.instruction\)/)
+test('autonomous draft generation never sends chat or closes the editor', async () => {
+  const block=extract('  async function generateAutonomousDraft(input){','  function addDirectorComposer(parent){')
+  let calls=0
+  const draft={instruction:'Continue the next scene.'}
+  const fn=new Function('runDirector',block+'\nreturn generateAutonomousDraft')(async (input,mode,force)=>{
+    calls++
+    assert.equal(input,'next scene')
+    assert.equal(mode,'auto')
+    assert.equal(force,true)
+    return draft
+  })
+  assert.equal(await fn('next scene'),draft)
+  assert.equal(calls,1)
+  assert.doesNotMatch(block,/sendDraft|sendChat|hideContainer|confirm/)
+  assert.doesNotMatch(source,/autoContinueAndSend|AI에게 맡겨 바로 이어가기/)
+  assert.equal((source.match(/await generateAutonomousDraft\(/g)||[]).length,2)
+})
+test('failed autonomous drafting does not send chat', async () => {
+  const block=extract('  async function generateAutonomousDraft(input){','  function addDirectorComposer(parent){')
+  const fn=new Function('runDirector',block+'\nreturn generateAutonomousDraft')(async()=>({instruction:'',draftError:'draft failed'}))
+  await assert.rejects(fn(''),/draft failed/)
+})
+test('explicit final send still requires user approval', () => {
   assert.match(source,/if\(!window\.confirm\(question\)\)return false/)
   assert.match(source,/if\(current\.userMessageCount===0\)/)
   assert.match(source,/ta\.addEventListener\('input',\(\)=>\{project\.last\.instruction=ta\.value/)
+  assert.equal((source.match(/api\.sendChat\(/g)||[]).length,1)
 })
