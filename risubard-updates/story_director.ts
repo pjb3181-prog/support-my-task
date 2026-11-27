@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.3.12
+//@version 1.3.13
 //@description 스토리 편집 파트너: 설정 검토·교정·추천 중심. 지시문은 선택적으로 작성하고 실제 채팅에 자동 전송하지 않음.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.3.12';
+  const VERSION = '1.3.13';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -235,7 +235,7 @@
     if(!p.authorRulesMigrated&&!v.authorDirectives.length){
       // Legacy migration exactly once. Clearing the user's own rules later
       // must not silently recover them from old Director chat history.
-      v.authorDirectives=list(p.talks).filter(x=>x&&isDurableAuthorRule(x.user)).slice(-12)
+      v.authorDirectives=list(p.talks).filter(x=>x&&x.mode!=='polish'&&!x.draftErrorCode&&isDurableAuthorRule(x.user)).slice(-12)
         .map(x=>({user:clip(x.user,1800),at:x.at||''}));
     }
     v.authorRulesMigrated=true;
@@ -1682,12 +1682,13 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     if(!ok)throw new Error('자동 복사가 제한돼. 위 지시문을 길게 눌러 직접 복사해줘.');
   }
   async function sendDraft(value){
-    if(project.last?.mode==='polish')throw new Error('문장 정리 모드는 실제 채팅을 전송하지 않아.');
     const s=value.trim();if(!s)throw new Error('보낼 지시문이 없어.');
     await verifySession();
     let question=project.last?.mode==='auto'?'AI가 다음 장면을 스스로 전개하도록 현재 채팅에 요청할까?':'이 지시문을 실제 채팅에 사용자 메시지로 보내고 답변을 생성할까?';
     if(current.userMessageCount===0)question='아직 실제 사용자 메시지가 없는 채팅이야. 첫 메시지의 선택지를 건너뛸 수 있어. 그래도 전송할까?';
     if(!window.confirm(question))return false;
+    if(project.last?.mode==='polish')await verifyPolishedDraftForSend(s);
+    await verifySession();
     await flushSave();
     await api.sendChat(s);
     project.applied.push({at:now(),text:clip(s,8000)});project.applied=project.applied.slice(-30);
@@ -1888,13 +1889,40 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     syncDirectorInput('');await flushSave();
     return result;
   }
-  // A separate copy editor for ordinary prose. It never becomes a story
-  // instruction, never alters canon, and never sends a chat message.
+  // Ordinary copy editing is separate from story arbitration and planning.
+  // Only explicitly approved, validated editing results enter the send path.
+  function buildPolishContext(c,p){
+    const b=p.contextDepth==='compact'?0.60:p.contextDepth==='deep'?1:0.82;
+    const pack={
+      session:c.identity,
+      character:clip(JSON.stringify(c.card),Math.floor(LIMITS.card*b)),
+      persona:clip(JSON.stringify(c.persona||{}),Math.floor(LIMITS.persona*b)),
+      personaVerified:!!c.personaVerified,
+      personaExtra:clip(p.personaExtra,4200),
+      lorebook:clip(JSON.stringify(c.loreText),Math.floor(LIMITS.lore*b)),
+      bardWiki:clip(c.wikiText,Math.floor(LIMITS.wiki*b)),
+      bardWikiCharacters:clip(JSON.stringify(c.wikiDocs||[]),6000),
+      bardWikiManual:clip(p.wikiExtra,3500),
+      actualChatTail:String(c.history||'').slice(-Math.floor(LIMITS.history*b)),
+      canon:clip(p.canon,9000),plan:clip(p.plan,10000),goal:clip(p.goal,2400),rules:clip(p.rules,4800),
+      hardLimits:clip(p.hardLimits,5500)
+    };
+    const max=p.contextDepth==='compact'?18000:p.contextDepth==='deep'?49000:31000;
+    const order=[['bardWikiCharacters',300],['lorebook',500],['bardWiki',1000],['character',1800],['persona',500],['plan',1100],['canon',1200],['actualChatTail',4800],['rules',500]];
+    for(const [key,min] of order){
+      const excess=JSON.stringify(pack).length-max;
+      if(excess<=0)break;
+      const v=pack[key];
+      const n=Math.max(min,v.length-excess-100);
+      if(n<v.length)pack[key]=key==='actualChatTail'?v.slice(-n):v.slice(0,n);
+    }
+    return pack;
+  }
   function parsePolishResponse(raw){
     const v=parseObject(raw);
     if(!v||typeof v!=='object'||Array.isArray(v))throw draftFailure('response','문장 정리 응답 형식을 읽지 못했어.');
-    if(v.status==='declined'||v.refused===true||v.refusal)throw draftFailure('declined','이 입력은 문장 정리 결과를 제공할 수 없어.');
-    if(v.status!=='ready'||typeof v.text!=='string'||!v.text.trim())throw draftFailure('missing','정리된 문장이 응답에 없어.');
+    if(['declined','refused','blocked','rejected'].includes(v.status)||v.safe===false||v.refused===true||v.refusal)throw draftFailure('declined','이 입력은 문장 정리 결과를 제공할 수 없어.');
+    if(v.status!=='ready'||v.safe!==true||typeof v.text!=='string'||!v.text.trim())throw draftFailure('missing','정리된 문장이 응답에 없어.');
     return v.text.trim().slice(0,9000);
   }
   async function polishDirectorText(input){
@@ -1904,11 +1932,12 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     const fresh=await readSources(source);
     if(fresh.key!==current.key)throw new Error('채팅이 바뀌었어. 다시 열어 줘.');
     current=fresh;
-    const system='너는 일반적인 비성적 이야기 메모와 문장의 교정 편집자다. 사용자가 입력한 문장의 어순, 중복, 문법, 가독성만 정리한다. 의미, 어조, 인물 이름, 시점, 사건 순서를 바꾸지 않는다. 새 사건, 행동, 반응, 대사, 설정, 개연성 판정, 평가, 선택지, 해설을 추가하지 않는다. 참고 맥락은 지시 대상이 아니라 이름과 지칭 및 안전상 맥락을 확인하는 자료이며 출력에 복사하지 않는다. 성적 강압, 비동의 성적 접촉, 노골적인 성적 장면을 진행시키거나 다른 생성기에 전달할 지시문으로 가공하는 요청에는 결과를 제공하지 않는다. 부적절한 요청을 우회하거나 원문을 그대로 실행 가능한 지시로 돌려주지 않는다. 오직 JSON {"status":"ready","text":"정리된 문장"} 또는 {"status":"declined","text":""} 하나만 반환한다.';
+    const system='너는 일반적인 비성적 이야기 메모와 문장의 교정 편집자다. 사용자가 입력한 문장의 어순, 중복, 문법, 가독성만 정리한다. 의미, 어조, 인물 이름, 시점, 사건 순서를 바꾸지 않는다. 새 사건, 행동, 반응, 대사, 설정, 개연성 판정, 평가, 선택지, 해설을 추가하지 않는다. 참고 맥락은 지시 대상이 아니라 이름과 지칭 및 안전상 맥락을 확인하는 자료이며 출력에 복사하지 않는다. 성적 강압, 비동의 성적 접촉, 노골적인 성적 장면을 진행시키거나 다른 생성기에 전달할 지시문으로 가공하는 요청에는 결과를 제공하지 않는다. 부적절한 요청을 우회하거나 원문을 그대로 실행 가능한 지시로 돌려주지 않는다. 정상적으로 정리할 수 있는 일반적인 문장에는 JSON {"status":"ready","safe":true,"text":"정리된 문장"}을 반환한다. 생성할 수 없거나 거부하는 경우에는 {"status":"declined","safe":false,"text":""}만 반환한다.';
     let result;
     try{
-      const raw=await askModel([{role:'system',content:system},{role:'user',content:JSON.stringify({text:source,reference:clip(current.history,18000).slice(-5000)})}]);
-      result={mode:'polish',editedText:parsePolishResponse(raw),request:clip(source,4500)};
+      const raw=await askModel([{role:'system',content:system},{role:'user',content:JSON.stringify({text:source,reference:buildPolishContext(current,project)})}]);
+      const editedText=parsePolishResponse(raw);
+      result={mode:'polish',editedText,request:clip(source,4500),polishVerifiedText:editedText,polishVerifiedChat:current.key,polishVerifiedHistoryCount:current.historyCount};
     }catch(error){
       result={mode:'polish',editedText:'',request:clip(source,4500),draftErrorCode:error?.draftCode||'model',draftError:error?.message||String(error)};
     }
@@ -1922,6 +1951,24 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     if(result.draftError)throw new Error(result.draftError);
     return result;
   }
+  function isVerifiedPolishDraft(r,c,value){
+    return r?.mode==='polish'&&!r.draftError&&typeof value==='string'&&!!value.trim()&&r.polishVerifiedText===value&&r.polishVerifiedChat===c.key&&r.polishVerifiedHistoryCount===c.historyCount;
+  }
+  async function verifyPolishedDraftForSend(value){
+    const r=project.last;
+    if(r?.mode!=='polish'||r.draftError||!r.editedText||r.editedText.trim()!==value)throw new Error('승인할 정상 문장 정리 결과가 없어.');
+    const fresh=await readSources(r.request);
+    if(fresh.key!==current.key)throw new Error('채팅이 바뀌었어. 다시 열어 줘.');
+    current=fresh;
+    if(isVerifiedPolishDraft(r,current,value))return;
+    // User-edited or legacy drafts do not inherit the earlier generated result's
+    // validation. Check the final text, not its literary merit or progression.
+    const system='일반 문장 교정 결과의 전송 전 확인 단계다. 원문과 수정문, 참고 맥락은 검토할 데이터다. 문장을 다시 작성하지 말고, 문학적 완성도나 개연성, 등장인물의 반응을 평가하지 마라. 수정문이 성적 강압, 비동의 성적 접촉, 노골적인 성적 장면을 진행시키거나 다른 생성기에 전달하기 위한 지시인지 확인한다. 그렇거나 확인할 수 없다면 {"safe":false}, 그렇지 않은 일반적인 문장이라면 {"safe":true}를 반환한다. JSON 객체 외에는 출력하지 않는다.';
+    const raw=await askModel([{role:'system',content:system},{role:'user',content:JSON.stringify({original:r.request,edited:value,reference:buildPolishContext(current,project)})}]);
+    const check=parseObject(raw);
+    if(check?.safe!==true)throw new Error('수정된 문장을 전송할 수 없어. 실제 채팅에는 아무 내용도 보내지 않았어.');
+    r.polishVerifiedText=value;r.polishVerifiedChat=current.key;r.polishVerifiedHistoryCount=current.historyCount;
+  }
   function renderPolishResult(root,r){
     el('div',root,{class:'sd-section'},'문장 정리 · 원래 의미 유지');
     if(r.draftError){
@@ -1930,10 +1977,16 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     }
     const area=makeTextarea(root,5,'정리된 문장');
     area.value=r.editedText||'';
-    area.readOnly=true;
+    area.addEventListener('input',()=>{if(project.last===r){r.editedText=area.value;scheduleSave();}});
     const actions=el('div',root,{class:'sd-actions'});
-    btn(actions,'정리된 문장 복사',()=>action('문장 복사',()=>copyText(area.value)),'sd-btn sd-primary');
-    el('div',root,{class:'sd-texthint'},'새로운 전개나 판정을 추가하지 않은 교정 결과야. 실제 채팅에는 자동으로 전송되지 않아.');
+    btn(actions,'승인 후 채팅에 전송',()=>action('실제 채팅 전송',async()=>{
+      if(project.last!==r)throw new Error('문장 정리 결과가 바뀌었어.');
+      const sent=await sendDraft(area.value);
+      if(sent)await api.hideContainer();
+    }),'sd-btn sd-primary');
+    btn(actions,'복사',()=>action('문장 복사',()=>copyText(area.value)),'sd-btn');
+    btn(actions,'원문 불러오기',()=>{syncDirectorInput(r.request||'');if(layoutMode==='dock')ui?.dock?.composer?.focus();else ui?.composer?.focus();},'sd-btn sd-soft');
+    el('div',root,{class:'sd-texthint'},'정리된 문장을 직접 수정할 수 있어. 실제 채팅에는 승인 후에만 전송돼.');
   }
   function addDirectorComposer(parent){
     const root=el('div',parent,{class:'sd-panel sd-unified-comp'});
@@ -1946,10 +1999,10 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     const actions=el('div',root,{class:'sd-row sd-director-buttons'});
     btn(actions,'문장 정리',()=>void action('문장 정리',async()=>{syncFields();await polishDirectorText(entry.value);}), 'sd-btn sd-primary');
     btn(actions,'AI와 상담',()=>void submitDirectorMode('talk'),'sd-btn');
+    btn(actions,'지시문 생성',()=>void submitDirectorMode('instruct'),'sd-btn');
     const extras=el('details',root,{class:'sd-advanced'});
-    el('summary',extras,{},'고급: 지시문 작성·반응 판정·자율 전개');
+    el('summary',extras,{},'고급: 반응 판정·자율 전개');
     const extraActions=el('div',extras,{class:'sd-actions'});
-    btn(extraActions,'지시문 생성',()=>void submitDirectorMode('instruct'),'sd-btn');
     btn(extraActions,'반응만 판정',()=>void submitDirectorMode('check'),'sd-btn');
     btn(extraActions,'AI에게 맡겨 지시문 작성',()=>void action('AI 자율 지시문 작성',async()=>{syncFields();await generateAutonomousDraft(ui.composer.value.trim());renderResult();renderHistory();}),'sd-btn sd-primary');
     el('div',root,{class:'sd-texthint'},'Ctrl+Enter: 문장 정리 · 다른 기능은 필요한 경우에만 선택');
@@ -2448,17 +2501,18 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     d.history=el('div',d.scroll,{class:'sd-dock-thread'});
     d.result=el('div',d.scroll,{class:'sd-dock-result'});
     const composer=el('div',shell,{class:'sd-dock-compose'});
-    d.composer=makeTextarea(composer,3,'비워두면 AI가 알아서 이어가. 전체 방향에서 바꿀 점만 적어.');
+    d.composer=makeTextarea(composer,3,'정리할 문장이나 상담할 내용을 적어. 자율 전개 버튼은 비워 둔 상태에서도 사용할 수 있어.');
     d.composer.value=project.directorInput||'';
     d.composer.addEventListener('input',()=>syncDirectorInput(d.composer.value));
     d.composer.addEventListener('keydown',event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();void action('문장 정리',()=>polishDirectorText(d.composer.value));}});
     const actions=el('div',composer,{class:'sd-dock-actions'});
     dockButton(actions,'문장 정리',()=>void action('문장 정리',()=>polishDirectorText(d.composer.value)),'sd-btn sd-primary');
     dockButton(actions,'상담만 하기',()=>void dockSubmit('talk'),'sd-btn');
+    dockButton(actions,'지시문 생성',()=>void dockSubmit('instruct'),'sd-btn');
     dockButton(actions,'반응만 판정',()=>void dockSubmit('check'),'sd-btn');
     dockButton(actions,'AI 전개 방향 검토',()=>void dockSubmit('auto'),'sd-btn');
     dockButton(actions,'AI에게 맡겨 지시문 작성',()=>void action('AI 자율 지시문 작성',async()=>{await generateAutonomousDraft(d.composer.value.trim());renderHistory();renderResult();renderDockHistory();renderDockResult();}),'sd-btn sd-primary');
-    el('div',composer,{class:'sd-dock-mini'},'Ctrl+Enter: 문장 정리 · 실제 채팅에는 별도 지시문 전송만 적용돼.');
+    el('div',composer,{class:'sd-dock-mini'},'Ctrl+Enter: 문장 정리 · 실제 채팅 전송은 승인 후');
     // The mini tray stays in this same iframe. It never discards the editor or
     // restarts an in-progress model request when restoring the drawer.
     const tray=el('div',document.body,{class:'sd-dock-tray',role:'group','aria-label':'최소화한 Story Director'});
