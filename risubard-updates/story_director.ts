@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.3.9
+//@version 1.3.10
 //@description 스토리 편집 파트너: 설정 검토·교정·추천 중심. 지시문은 선택적으로 작성하고 실제 채팅에 자동 전송하지 않음.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.3.9';
+  const VERSION = '1.3.10';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -1162,7 +1162,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
         '중요한 단서 발견, 새로운 정보 전달, NPC의 독립적인 결정, 과제 완료, 자연스러운 장소·시간 이동, 관계의 작은 변화처럼 이야기의 현재 상태가 달라지는 도달점을 명시한다. 새로운 사건은 확인된 목표와 맥락에서 자연스럽게 제안하고 과거 사실인 것처럼 쓰지 마라. '+
         '기존 장면의 목적이 달성되었다면 다음 의미 있는 순간으로 이동하라. 중요한 선택을 건너뛰거나 모든 장면에 갈등·반전을 억지로 추가하지 마라. 느린 전개라도 작은 변화는 가능하다. 사용자가 의도적으로 현재 장면에 머물기를 요청하면 그 요청을 존중하고 의미 있는 장면 목적을 달성하라. '+
         '플레이어의 미지정 행동이나 결정을 강제하지 않고, NPC의 자율성·동의·거부·중단 의사를 존중한다. 성적 강압이나 비동의 성적 행위를 전개하거나 강화하지 말고, 해당 맥락에서는 비성적이고 안전한 방향으로 전환한다. '+
-        '핵심 사건을 선택지로 나열하거나 사용자·집필 AI에게 넘기지 마라. 대사와 세부 묘사는 집필 AI에 남긴다. 이번 응답에서 실행할 사건과 도달점이 지시문 자체에 반드시 포함되어야 한다.';
+        '핵심 사건을 선택지로 나열하거나 사용자·집필 AI에게 넘기지 마라. 대사와 세부 묘사는 집필 AI에 남긴다. 이번 응답에서 실행할 사건과 도달점이 지시문 자체에 반드시 포함되어야 한다. 마지막 응답 형식: 안전한 일반 서사 지시문을 작성할 수 있을 때만 JSON {"status":"ready","instruction":"실행할 사건과 도달점"}을 반환한다. 생성할 수 없거나 거부하는 경우에는 {"status":"declined","instruction":""}을 반환하고 부적절한 내용을 되풀이하지 마라. 상태를 숨기거나 거부를 지시문으로 포장하지 마라.';
     }else{
       msgs[0].content+='\n\n[판정·지시문 작성] 실제로 확인된 중요한 인물의 경계와 판정은 존중하되, 일반적인 반응 가능성이나 가정상의 반대를 의무적 갈등으로 확대하지 마라. 사용자 요청의 인과적 전개를 살리는 것이 우선이며, 확인된 사실과 제안된 다음 사건을 구분한다.';
     }
@@ -1182,7 +1182,21 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     return error;
   }
   function draftFailureLabel(code){
-    return ({unsafe:'내용 검토 미통과',format:'검토 응답 형식 오류',stalled:'전개 변화 부족',model:'모델 호출 오류',draft:'초안 형식 또는 설정 오류'})[code]||'초안 생성 실패';
+    return ({unsafe:'내용 검토 미통과',declined:'모델이 지시문 생성 거부',missing:'지시문 필드 누락 또는 빈 값',response:'초안 응답 형식 오류',format:'검토 응답 형식 오류',stalled:'전개 변화 부족',model:'모델 호출 오류',draft:'초안 형식 또는 설정 오류'})[code]||'초안 생성 실패';
+  }
+  // Auto drafts must be explicit structured instructions, never a refusal
+  // or an arbitrary response substituted as executable direction.
+  function inspectAutoDraftResponse(parsed){
+    if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))return {code:'response',message:'모델이 지정된 JSON 객체를 반환하지 않았어. 지시문 또는 거부 여부를 확인할 수 없어.'};
+    if(parsed.status==='declined'||parsed.refused===true||parsed.refusal===true||(typeof parsed.refusal==='string'&&parsed.refusal.trim()))return {code:'declined',message:'모델이 지시문 생성을 거부했어. 자동 재시도하거나 채팅에 전송하지 않아.'};
+    if(parsed.status!=null&&parsed.status!=='ready')return {code:'response',message:'모델이 알 수 없는 응답 상태를 반환했어.'};
+    const value=typeof parsed.instruction==='string'&&parsed.instruction.trim()?parsed.instruction:parsed.next_instruction;
+    if(typeof value!=='string'||!value.trim()){
+      const known=['instruction','next_instruction','reply','verdict','evidence','status'];
+      const fields=known.filter(key=>Object.prototype.hasOwnProperty.call(parsed,key));
+      return {code:'missing',message:'JSON 응답은 수신했지만 사용할 지시문이 없어. 확인된 필드: '+(fields.join(', ')||'없음')+'. 모델 거부인지 형식 문제인지는 확정할 수 없어.'};
+    }
+    return {code:'ready',instruction:value.trim()};
   }
   function progressionReviewProblem(review){
     if(review?.safe===false)return {code:'unsafe',message:'안전한 전개 방향으로 전환이 필요함'};
@@ -1214,7 +1228,12 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
       let response;
       try{response=await askModel(messages);}catch(error){if(mode==='auto')throw draftFailure('model','초안 생성 모델 호출 실패. 연결 상태를 확인해 줘.');throw error;}
       const parsed=parseObject(response);
-      const candidate=clip(parsed?.instruction||parsed?.next_instruction||(!parsed?response:''),9000);
+      let candidate;
+      if(mode==='auto'){
+        const checked=inspectAutoDraftResponse(parsed);
+        if(checked.code!=='ready')throw draftFailure(checked.code,checked.message);
+        candidate=clip(checked.instruction,9000);
+      }else candidate=clip(parsed?.instruction||parsed?.next_instruction||(!parsed?response:''),9000);
       const authorConflict=inventedConflictOrContradiction(candidate,userRequest);
        if(!instructionNeedsRewrite(candidate)&&!authorConflict&&!autonomousDraftNeedsRewrite(candidate)){
          let finalCandidate=candidate;
