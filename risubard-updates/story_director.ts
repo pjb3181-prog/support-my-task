@@ -1,14 +1,14 @@
 //@name story_director
 //@display-name Story Director - 스토리 디렉터
 //@api 3.0
-//@version 1.3.8
+//@version 1.3.9
 //@description 스토리 편집 파트너: 설정 검토·교정·추천 중심. 지시문은 선택적으로 작성하고 실제 채팅에 자동 전송하지 않음.
 // @ts-nocheck
 //@update-url https://raw.githubusercontent.com/pjb3181-prog/support-my-task/main/risubard-updates/story_director.ts
 
 (async () => {
   'use strict';
-  const VERSION = '1.3.8';
+  const VERSION = '1.3.9';
   const PREFIX = 'story_director_v1:'; // preserve v0.1/v0.2 state
   const api = risuai;
   let current = null, project = null, ui = null;
@@ -1176,6 +1176,14 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     return msgs;
   }
   // Independent review: valid directive syntax alone does not prove narrative progress.
+  function draftFailure(code,message){
+    const error=new Error(message);
+    error.draftCode=code;
+    return error;
+  }
+  function draftFailureLabel(code){
+    return ({unsafe:'내용 검토 미통과',format:'검토 응답 형식 오류',stalled:'전개 변화 부족',model:'모델 호출 오류',draft:'초안 형식 또는 설정 오류'})[code]||'초안 생성 실패';
+  }
   function progressionReviewProblem(review){
     if(review?.safe===false)return {code:'unsafe',message:'안전한 전개 방향으로 전환이 필요함'};
     if(!review||typeof review.safe!=='boolean'||typeof review.accepted!=='boolean')return {code:'format',message:'검토 모델의 JSON 또는 불리언 응답 형식 오류'};
@@ -1198,12 +1206,13 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     return review;
   }
   async function generateInstruction(userRequest,decision,variation='',mode='instruct'){
-    let lastReason='',safeTransition=false;
+    let lastReason='',lastCode='draft',safeTransition=false;
     for(let attempt=0;attempt<2;attempt++){
       const messages=draftMessages(userRequest,decision,variation,mode);
       if(attempt===1)messages[0].content+='\n\n[재시도] 이전 초안의 문제: '+lastReason+'. 요청에 담긴 주요 사건·동기·분위기·순서를 빠뜨리지 말고, 요약이 아니라 인과적으로 연결된 연출안으로 다시 써. 불필요한 반대·선택지·포괄적 위임 문구는 제거하고 실제 지시문만 반환해.';
       if(mode==='auto'&&safeTransition)messages[0].content+='\n\n[안전한 전환 재작성 · 최우선] 이전 후보를 이어가거나 우회하지 말고 문제가 되는 행위를 종료한다. 안전한 비성적 장면으로 자연스럽게 전환하고, NPC의 독립적인 선택과 거부·중단 의사 및 플레이어의 선택권을 보존한다. 기존 사용자 요청이나 설정과 충돌해도 성적 강압·비동의 성적 행위는 진행하지 않는다. 새 장면의 사건과 도달점을 구체화하고 지정된 JSON 형식을 지킨다.';
-      const response=await askModel(messages);
+      let response;
+      try{response=await askModel(messages);}catch(error){if(mode==='auto')throw draftFailure('model','초안 생성 모델 호출 실패. 연결 상태를 확인해 줘.');throw error;}
       const parsed=parseObject(response);
       const candidate=clip(parsed?.instruction||parsed?.next_instruction||(!parsed?response:''),9000);
       const authorConflict=inventedConflictOrContradiction(candidate,userRequest);
@@ -1216,11 +1225,11 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
          if(mode==='auto'){
            let review;
            try{review=await reviewAutonomousProgression(messages,finalCandidate);}
-           catch(error){throw new Error('전개 검토 모델 호출 실패. 보조 모델 연결 또는 응답 상태를 확인해 줘.');}
+           catch(error){throw draftFailure('model','전개 검토 모델 호출 실패. 보조 모델 연결 또는 응답 상태를 확인해 줘.');}
            const problem=progressionReviewProblem(review);
            if(problem){
-             lastReason=problem.message;
-             if(problem.code==='format')throw new Error('전개 검토 형식 오류: '+lastReason+'. 검토 응답을 두 번 확인했지만 읽을 수 없었어. 다른 보조 모델을 선택하거나 다시 작성해 줘.');
+             lastReason=problem.message;lastCode=problem.code;
+             if(problem.code==='format')throw draftFailure('format','검토 응답을 두 번 확인했지만 지정된 형식으로 읽을 수 없었어. 안전 여부나 전개 수준은 확인되지 않았어.');
              if(problem.code==='unsafe')safeTransition=true;
              continue;
            }
@@ -1228,10 +1237,10 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
          }
          return finalCandidate;
        }
-      lastReason=authorConflict||(candidate&&autonomousDraftNeedsRewrite(candidate)?'다음 장면의 핵심 결정이 모호하거나 집필 AI에게 위임됨':candidate?('소설 본문/장황한 설명 형태로 생성됨('+candidate.length+'자)'):'지시문 내용 누락');
+      lastCode='draft';lastReason=authorConflict||(candidate&&autonomousDraftNeedsRewrite(candidate)?'다음 장면의 핵심 결정이 모호하거나 집필 AI에게 위임됨':candidate?('소설 본문/장황한 설명 형태로 생성됨('+candidate.length+'자)'):'지시문 내용 누락');
       if(authorConflict)variation='사용자 지정 장면 조건에 위배된 초안을 버리고 다시 작성할 것. '+authorConflict+'. 숨긴 비밀을 폭로하거나 새로운 갈등을 강제하지 말 것. '+variation;
     }
-     if(mode==='auto')throw new Error(safeTransition?'안전한 전개안으로 전환해 보았지만 검토를 통과하지 못했어. 비성적 다음 사건이나 장면 전환을 요청해 줘.':'자율 전개 검토를 통과한 지시문을 만들지 못했어 ('+lastReason+'). 다시 작성해 줘.');
+     if(mode==='auto')throw draftFailure(safeTransition?'unsafe':lastCode,safeTransition?'내용 검토에서 미통과하여 안전한 비성적 전환을 시도했지만 유효한 초안을 만들지 못했어.':'자율 전개안을 만들지 못했어 ('+lastReason+'). 다시 작성해 줘.');
      if(decision?.boundary?.enforced)return hardBoundaryAnchor(decision);
      // A writer's-room request can still be honoured if the model keeps
      // inventing side conflicts: use the author's own direction, not the
@@ -1254,8 +1263,16 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     const advisory=project.last.mode==='auto'&&!project.last.instruction&&!project.last.draftError;
     const mode=advisory?'instruct':project.last.mode==='auto'?'auto':project.last.mode==='judge'?'judge':'instruct';
     const checked=isAuthorSceneDirection(request)?authoredDecision(request):mode==='judge'?await judgeSituation(request):autonomousDecision();
-    const draft=await generateInstruction(request,checked,variation,mode);
-    project.last={...project.last,...checked,progression:checked.progression||null,instruction:draft};
+    let draft;
+    try{draft=await generateInstruction(request,checked,variation,mode);}
+    catch(error){
+      if(mode==='auto'){
+        project.last={...project.last,...checked,progression:null,instruction:'',draftErrorCode:error?.draftCode||'draft',draftError:error?.message||String(error),reply:'자율 전개안을 생성하지 못했어. 실제 채팅에는 아무 내용도 전송하지 않았어.'};
+        project.dockDraft='';await save();renderResult();renderDockResult();
+      }
+      throw error;
+    }
+    project.last={...project.last,...checked,progression:checked.progression||null,instruction:draft,draftErrorCode:''};
     project.dockDraft=draft;
     project.last.draftError='';
     await save();renderResult();renderSources();
@@ -1303,7 +1320,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
       // An ordinary writing request is not an approval hearing.
       res=isAuthorSceneDirection(input)?authoredDecision(input):actualMode==='judge'?await judgeSituation(input):autonomousDecision();
       try{res.instruction=await generateInstruction(input,res,actualMode==='auto'?'사용자 구상의 사건 순서와 의도·말맛을 보존하고 비어 있는 인과적 연결을 보완해 실제 전개안으로 발전시켜':actualMode==='judge'?'실제 근거가 확인된 GM 판정을 참고해 연출 지시문 작성':'사용자 의도와 장면의 정서를 보존하고 자연스러운 후속 행동을 구체화해',actualMode);}
-      catch(error){res.draftError='초안 생성 실패: '+(error?.message||error);if(actualMode==='auto'){res.reply='자율 전개안을 생성하지 못했어. 아래 오류 안내를 확인해 줘. 실제 채팅에는 아무 내용도 전송하지 않았어.';res.evidence='전개 검토 미통과 또는 모델 응답 오류.';}console.warn('[SD] draft generation',error);}
+      catch(error){res.draftError=error?.message||String(error);res.draftErrorCode=error?.draftCode||'draft';if(actualMode==='auto'){res.reply='자율 전개안을 생성하지 못했어. 실제 채팅에는 아무 내용도 전송하지 않았어.';res.evidence=draftFailureLabel(res.draftErrorCode);}console.warn('[SD] draft generation',error);}
     }else if(actualMode==='check'){
       // In an exploratory question, a full hard-boundary GM audit is rarely appropriate.
       // Keep it for actual consequential boundary questions; casual interactions
@@ -1566,10 +1583,10 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
   }
   function renderResult(){
     const root=ui.result;root.replaceChildren();const r=project.last;
-    if(ui?.resultTitle)ui.resultTitle.textContent=r?.mode==='auto'&&!r?.instruction?'스토리 검토·추천':lastModeIsConsultation()?'상담·가능성 검토 결과':r?.mode==='auto'?'AI 자율 전개안':'바로 사용할 다음 지시문';
+    if(ui?.resultTitle)ui.resultTitle.textContent=r?.mode==='auto'&&r?.draftError?'AI 자율 전개안 생성 실패':r?.mode==='auto'&&!r?.instruction?'스토리 검토·추천':lastModeIsConsultation()?'상담·가능성 검토 결과':r?.mode==='auto'?'AI 자율 전개안':'바로 사용할 다음 지시문';
     if(!r){el('div',root,{class:'sd-empty'},'스토리에 대한 생각을 적으면 맥락·설정·인과관계를 검토하고 교정과 추천을 제공해. 지시문은 필요할 때 별도로 작성할 수 있어.');return;}
     // The actual usable draft is the primary output. The analysis is optional.
-    if((lastModeIsConsultation()||(r.mode==='auto'&&!r.instruction)) && r.reply){
+    if(!r.draftError&&(lastModeIsConsultation()||(r.mode==='auto'&&!r.instruction)) && r.reply){
       el('div',root,{class:'sd-section'},r.mode==='check'?'인물 반응·가능성 확인 · 실제 장면 변화 없음':r.mode==='auto'?'스토리 검토·추천 · 실제 장면 변화 없음':'스토리 상담 · 실제 장면 변화 없음');
       el('div',root,{class:'sd-response'},r.reply);
       if(r.autoRouted)el('div',root,{class:'sd-texthint'},'질문으로 인식해서 지시문 생성 대신 사전 상담으로 전환했어. 다음 장면을 작성하려면 직접 지시문을 요청해.');
@@ -1588,7 +1605,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     }else{
       ui.instruction=null;
       if(!project.pendingPlan&&!project.pendingCanon&&!lastModeIsConsultation()){
-        if(r.mode!=='auto'||r.draftError)el('div',root,{class:'sd-note'},r.draftError||'실제로 보낼 지시문 초안이 아직 없어. 아래 버튼으로 초안을 생성할 수 있어.');
+        if(r.mode!=='auto'||r.draftError)el('div',root,{class:'sd-note'},(r.draftError?draftFailureLabel(r.draftErrorCode)+' · '+r.draftError:'')||'실제로 보낼 지시문 초안이 아직 없어. 아래 버튼으로 초안을 생성할 수 있어.');
         btn(root,r.mode==='auto'?'원한다면 지시문 초안 작성':'✍ 이 판정으로 지시문 초안 만들기',()=>action('지시문 초안 작성',async()=>{await regenerateLastInstruction('앞선 판정과 사용자 의도를 그대로 반영한 2~4문장 연출 지시 작성. 소설 본문 제외');}),'sd-btn sd-primary');
       }
     }
@@ -2004,7 +2021,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     document.body.replaceChildren();document.getElementById('sd-css')?.remove();const style=el('style',document.head,{id:'sd-css'});style.textContent=STYLE;
     const root=el('main',document.body,{class:'sd-app'});ui={buttons:[],views:{},tabs:{},activeTab:project?.activeTab||'plan',instruction:null,worldExpanded:!!(world?.draft||world?.playerDraft)};
     const header=el('div',root,{class:'sd-header'}),brand=el('div',header);
-    el('div',brand,{class:'sd-kicker'},'RISUBARD · STORY GM');el('div',brand,{class:'sd-brand'},'Story Director');
+    el('div',brand,{class:'sd-kicker'},'RISUBARD · STORY GM · v'+VERSION);el('div',brand,{class:'sd-brand'},'Story Director');
     const headBtns=el('div',header,{class:'sd-actions'});
     btn(headBtns,'↻ 채팅 새로고침',()=>action('채팅 새로고침',reload),'sd-btn sd-small');
     btn(headBtns,'채팅 옆 빠른 상담',()=>void openDock(),'sd-btn sd-small');
@@ -2223,7 +2240,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     const p=d.result;p.replaceChildren();
     const r=project.last;
     if(!r){el('div',p,{class:'sd-dock-mini'},'판정 결과와 승인할 지시문이 여기에 표시돼.');return;}
-    if((lastModeIsConsultation()||(r.mode==='auto'&&!r.instruction))&&r.reply){
+    if(!r.draftError&&(lastModeIsConsultation()||(r.mode==='auto'&&!r.instruction))&&r.reply){
       el('div',p,{class:'sd-section'},r.mode==='check'?'인물 반응·가능성 확인':'상담 답변 · 실제 장면 변화 없음');
       el('div',p,{class:'sd-response'},r.reply);
       if(r.autoRouted)el('div',p,{class:'sd-texthint'},'질문으로 인식해 지시문을 생성하지 않았어.');
@@ -2253,7 +2270,9 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
       dockButton(actions,'복사',()=>action('지시문 복사',async()=>copyText(area.value)));
       if(instructionNeedsRewrite(visibleDraft))el('div',p,{class:'sd-texthint'},'지시문 형식을 다시 점검해야 할 수 있어.');
     }else if(r.draftError){
-      el('div',p,{class:'sd-note sd-world-warning'},r.draftError);
+      el('div',p,{class:'sd-section'},'AI 자율 전개안 생성 실패 · v'+VERSION);
+      el('div',p,{class:'sd-note sd-world-warning'},draftFailureLabel(r.draftErrorCode)+' · '+r.draftError);
+      el('div',p,{class:'sd-dock-mini'},'실제 채팅에는 아무 내용도 전송되지 않았어.');
       dockButton(p,'이 판정으로 지시문 생성',()=>action('지시문 재생성',async()=>{await regenerateLastInstruction();renderDockResult();}),'sd-btn sd-primary');
     }
     if(r.reply||r.evidence||r.actor_positions?.length){
@@ -2324,7 +2343,7 @@ ${autonomyRules}\n현재 수행 지침: ${modeInstructions(mode)}.`;
     dockButton(tools,'↻ 현재 채팅 읽기',()=>void dockReload(),'sd-btn sd-small');
     dockButton(tools,'세계관/이야기 설계',()=>void expandDockToFull('plan'),'sd-btn sd-small');
     addGuardToggle(tools);
-    el('span',tools,{class:'sd-dock-mini'},'채팅과 동시에 사용 · 전송은 승인 후');
+    el('span',tools,{class:'sd-dock-mini'},'v'+VERSION+' · 전송은 승인 후');
     d.status=el('div',header,{class:'sd-dock-status',role:'status'},'준비됨');
     d.loading=el('div',header,{class:'sd-dock-load sd-hidden'},'모델이 판정·작성 중이야. 채팅은 그대로 열려 있어.');
     d.scroll=el('div',shell,{class:'sd-dock-scroll'});
